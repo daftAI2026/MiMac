@@ -1,0 +1,12 @@
+{
+  "name": "MiMac",
+  "identifier": "dev.mimac.app",
+  "version": "0.1.0",
+  "main": "./cmd/mimac",
+  "out": "dist",
+  "macos": {
+    "minimumSystemVersion": "14.2",
+    "signingIdentity": "-",
+    "infoPlist": { "LSUIElement": true }
+  }
+}

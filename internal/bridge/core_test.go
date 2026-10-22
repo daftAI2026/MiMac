@@ -1,0 +1,637 @@
+package bridge
+
+import (
+	"errors"
+	"reflect"
+	"testing"
+)
+
+func mustBinding(t *testing.T, policy EndPolicy, keys ...Key) Binding {
+	t.Helper()
+	b, err := NewBinding(policy, keys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func mustDevice(t *testing.T, id string, generation uint64) Device {
+	t.Helper()
+	d, err := NewDevice(id, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func mustPress(t *testing.T, device Device, button string, id uint64) PressToken {
+	t.Helper()
+	p, err := NewPressToken(device, button, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func mustStep(t *testing.T, core *Core, event Event) []Effect {
+	t.Helper()
+	effects, err := core.Step(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return effects
+}
+
+func setupCore(t *testing.T, binding Binding) (*Core, Device) {
+	t.Helper()
+	core, err := NewCore(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := mustDevice(t, "remote-1", 1)
+	mustStep(t, core, DeviceConnected(device))
+	mustStep(t, core, RouteAvailable(true))
+	mustStep(t, core, ScopeAvailable(true))
+	return core, device
+}
+
+func keyTransitions(effects []Effect) []string {
+	var got []string
+	for _, effect := range effects {
+		switch e := effect.(type) {
+		case KeyDownEffect:
+			got = append(got, "down:"+string(e.Key))
+		case KeyUpEffect:
+			got = append(got, "up:"+string(e.Key))
+		}
+	}
+	return got
+}
+
+func tapKeys(t *testing.T, effects []Effect) [][]Key {
+	t.Helper()
+	var got [][]Key
+	for _, effect := range effects {
+		if tap, ok := effect.(TargetTapEffect); ok {
+			got = append(got, tap.Keys())
+		}
+	}
+	return got
+}
+
+func hasEffect[T any](effects []Effect) bool {
+	var zero T
+	wanted := reflect.TypeOf(zero)
+	for _, effect := range effects {
+		if reflect.TypeOf(effect) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func blockedReason(effects []Effect) (BlockReason, bool) {
+	for _, effect := range effects {
+		if blocked, ok := effect.(BlockedEffect); ok {
+			return blocked.Reason, true
+		}
+	}
+	return 0, false
+}
+
+func TestCoreRequiresExplicitDeviceRouteAndScope(t *testing.T) {
+	core, err := NewCore(mustBinding(t, PolicyExactEdge, "space"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := core.Snapshot(); snapshot.HasDevice || snapshot.RouteKnown || snapshot.ScopeKnown {
+		t.Fatalf("new core should preserve unknown readiness explicitly: %#v", snapshot)
+	}
+	device := mustDevice(t, "remote-1", 1)
+	press := mustPress(t, device, "voice", 1)
+	if got := mustStep(t, core, VoiceBegan(press)); len(got) != 0 {
+		t.Fatalf("disconnected press produced effects: %#v", got)
+	}
+	mustStep(t, core, DeviceConnected(device))
+	if snapshot := core.Snapshot(); !snapshot.HasDevice || !snapshot.Connected || snapshot.RouteKnown || snapshot.ScopeKnown {
+		t.Fatalf("device connect should not invent route/scope readiness: %#v", snapshot)
+	}
+	noRoutePress := mustPress(t, device, "voice", 2)
+	if got := mustStep(t, core, VoiceBegan(noRoutePress)); len(got) != 0 {
+		t.Fatalf("press without known route/scope produced effects: %#v", got)
+	}
+	mustStep(t, core, VoiceEnded(noRoutePress))
+	mustStep(t, core, RouteAvailable(true))
+	noScopePress := mustPress(t, device, "voice", 3)
+	if got := mustStep(t, core, VoiceBegan(noScopePress)); len(got) != 0 {
+		t.Fatalf("press without known scope produced effects: %#v", got)
+	}
+	mustStep(t, core, VoiceEnded(noScopePress))
+	mustStep(t, core, ScopeAvailable(true))
+	got := mustStep(t, core, VoiceBegan(mustPress(t, device, "voice", 4)))
+	if !hasEffect[PrepareSourceEffect](got) || !reflect.DeepEqual(keyTransitions(got), []string{"down:space"}) {
+		t.Fatalf("ready core did not begin explicitly: %#v", got)
+	}
+}
+
+func TestExactEdgeFreezesBindingAndReleasesInReverseChordOrder(t *testing.T) {
+	inputKeys := []Key{"ctrl", "shift", "space"}
+	initial, err := NewBinding(PolicyExactEdge, inputKeys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputKeys[0] = "mutated"
+	core, device := setupCore(t, initial)
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	if got, want := keyTransitions(begin), []string{"down:ctrl", "down:shift", "down:space"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("key-down order = %v, want %v", got, want)
+	}
+	prep := prepareToken(t, begin)
+	ready := mustStep(t, core, SourcePrepared(prep, "source-a"))
+	if !hasEffect[OpenGateEffect](ready) {
+		t.Fatalf("prepared source did not open gate: %#v", ready)
+	}
+	newKeys := []Key{"option", "enter"}
+	newBinding, err := NewBinding(PolicyAfterDrain, newKeys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKeys[0] = "mutated-again"
+	mustStep(t, core, Configure(newBinding))
+	if got := core.Snapshot().Session.Binding.Keys(); !reflect.DeepEqual(got, []Key{"ctrl", "shift", "space"}) {
+		t.Fatalf("session binding changed under configuration: %v", got)
+	}
+	release := mustStep(t, core, VoiceEnded(press))
+	if got, want := keyTransitions(release), []string{"up:space", "up:shift", "up:ctrl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact-edge release order = %v, want %v", got, want)
+	}
+	if !hasEffect[StopSourceEffect](release) || !hasEffect[KeyUpEffect](release) {
+		t.Fatalf("release did not stop capture and release held keys: %#v", release)
+	}
+	drained := mustStep(t, core, SourceDrained(prep))
+	if !hasEffect[CloseGateEffect](drained) || !hasEffect[DisposeResourceEffect](drained) {
+		t.Fatalf("completion omitted cleanup: %#v", drained)
+	}
+	snapshot := core.Snapshot()
+	if snapshot.HasSession || snapshot.Adopted.Policy() != PolicyAfterDrain || !reflect.DeepEqual(snapshot.Adopted.Keys(), []Key{"option", "enter"}) {
+		t.Fatalf("pending config was not adopted after completion: %#v", snapshot)
+	}
+}
+
+func TestAfterDrainKeepsLeaseUntilLocalDrain(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "ctrl", "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	mustStep(t, core, SourcePrepared(token, "source-a"))
+	newBinding := mustBinding(t, PolicyExactEdge, "enter")
+	mustStep(t, core, Configure(newBinding))
+	release := mustStep(t, core, VoiceEnded(press))
+	if got := keyTransitions(release); len(got) != 0 {
+		t.Fatalf("after-drain key released at physical edge: %v", got)
+	}
+	if got := core.Snapshot().HeldKeys; !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
+		t.Fatalf("key lease was not held while draining: %v", got)
+	}
+	if got := mustStep(t, core, SourceDrained(token)); !reflect.DeepEqual(keyTransitions(got), []string{"up:space", "up:ctrl"}) {
+		t.Fatalf("after-drain key-up order = %v", keyTransitions(got))
+	}
+	if got := core.Snapshot().Adopted.Keys(); !reflect.DeepEqual(got, []Key{"enter"}) {
+		t.Fatalf("configuration not adopted at drain boundary: %v", got)
+	}
+}
+
+func TestEarlyReleaseCancelsPreparationAndDisposesLateResource(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	ended := mustStep(t, core, VoiceEnded(press))
+	if hasEffect[OpenGateEffect](ended) || !hasEffect[StopSourceEffect](ended) || !hasEffect[KeyUpEffect](ended) {
+		t.Fatalf("early release did not cancel preparation safely: %#v", ended)
+	}
+	if core.Snapshot().HasSession {
+		t.Fatal("early release left an active session")
+	}
+	late := mustStep(t, core, SourcePrepared(token, "late-source"))
+	if hasEffect[OpenGateEffect](late) || len(late) != 1 {
+		t.Fatalf("late prepared source should only be disposed: %#v", late)
+	}
+	disposed, ok := late[0].(DisposeResourceEffect)
+	if !ok || disposed.ResourceID != "late-source" {
+		t.Fatalf("late resource was not disposed: %#v", late)
+	}
+}
+
+func TestPreparationFailureCleansUpAndAppliesPendingConfig(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyExactEdge, "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	mustStep(t, core, Configure(mustBinding(t, PolicyAfterDrain, "enter")))
+	failed := mustStep(t, core, SourceFailed(token))
+	if got, want := keyTransitions(failed), []string{"up:space"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("failed preparation did not release held keys: got %v want %v", got, want)
+	}
+	if !hasEffect[CloseGateEffect](failed) || !hasEffect[StopSourceEffect](failed) {
+		t.Fatalf("failed preparation omitted cleanup requests: %#v", failed)
+	}
+	snapshot := core.Snapshot()
+	if snapshot.HasSession || snapshot.Adopted.Policy() != PolicyAfterDrain || !reflect.DeepEqual(snapshot.Adopted.Keys(), []Key{"enter"}) {
+		t.Fatalf("failure did not finish session and adopt pending config: %#v", snapshot)
+	}
+}
+
+func TestToggleCancellationLocksKeysUntilExplicitConfirmation(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyToggle, "ctrl", "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	if got := tapKeys(t, begin); !reflect.DeepEqual(got, [][]Key{{"ctrl", "space"}}) {
+		t.Fatalf("toggle start did not preserve chord order: %v", got)
+	}
+	mustStep(t, core, SourcePrepared(token, "source-a"))
+	ended := mustStep(t, core, VoiceEnded(press))
+	if hasEffect[TargetTapEffect](ended) {
+		t.Fatalf("physical release should wait for local drain before the stop tap: %#v", ended)
+	}
+	cancelled := mustStep(t, core, RouteAvailable(false))
+	if hasEffect[TargetTapEffect](cancelled) {
+		t.Fatalf("cancellation guessed target toggle state: %#v", cancelled)
+	}
+	if got := core.Snapshot().RecoveryKeys; !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
+		t.Fatalf("toggle cancellation recovery set = %v", got)
+	}
+	mustStep(t, core, RouteAvailable(true))
+	mustStep(t, core, Configure(mustBinding(t, PolicyToggle, "option")))
+	ordinary := mustPress(t, device, "ordinary", 2)
+	if reason, ok := blockedReason(mustStep(t, core, OrdinaryBegan(ordinary, "space"))); !ok || reason != BlockToggleRecoveryRequired {
+		t.Fatalf("ordinary mapping bypassed recovery lock: reason=%v ok=%v", reason, ok)
+	}
+	ordinarySpace := mustPress(t, device, "ordinary", 2)
+	mustStep(t, core, OrdinaryEnded(ordinarySpace))
+	if core.Snapshot().HasSession {
+		t.Fatal("blocked ordinary press started a voice session")
+	}
+	// Reconfiguring back to an uncertain toggle key also remains blocked.
+	mustStep(t, core, Configure(mustBinding(t, PolicyToggle, "space")))
+	if reason, ok := blockedReason(mustStep(t, core, VoiceBegan(mustPress(t, device, "voice", 3)))); !ok || reason != BlockToggleRecoveryRequired {
+		t.Fatalf("configuration change cleared toggle recovery: reason=%v ok=%v", reason, ok)
+	}
+	mustStep(t, core, VoiceEnded(mustPress(t, device, "voice", 3)))
+	mustStep(t, core, ConfirmToggleIdle("space"))
+	allowed := mustStep(t, core, VoiceBegan(mustPress(t, device, "voice", 4)))
+	if !hasEffect[TargetTapEffect](allowed) {
+		t.Fatalf("explicit idle confirmation did not clear recovery: %#v", allowed)
+	}
+}
+
+func TestRecoveryBlocksReconfiguredVoiceChord(t *testing.T) {
+	for _, policy := range []EndPolicy{PolicyExactEdge, PolicyAfterDrain} {
+		name := map[EndPolicy]string{
+			PolicyExactEdge:  "exact-edge",
+			PolicyAfterDrain: "after-drain",
+		}[policy]
+		t.Run(name, func(t *testing.T) {
+			core, device := setupCore(t, mustBinding(t, PolicyToggle, "ctrl", "space"))
+			oldPress := mustPress(t, device, "voice", 1)
+			begin := mustStep(t, core, VoiceBegan(oldPress))
+			prepareToken(t, begin)
+
+			mustStep(t, core, RouteAvailable(false))
+			mustStep(t, core, VoiceEnded(oldPress))
+			mustStep(t, core, RouteAvailable(true))
+			mustStep(t, core, Configure(mustBinding(t, policy, "ctrl", "space")))
+
+			blockedPress := mustPress(t, device, "voice", 2)
+			blocked := mustStep(t, core, VoiceBegan(blockedPress))
+			if reason, ok := blockedReason(blocked); !ok || reason != BlockToggleRecoveryRequired {
+				t.Fatalf("reconfigured voice chord bypassed recovery lock: reason=%v ok=%v effects=%#v", reason, ok, blocked)
+			}
+			if hasEffect[KeyDownEffect](blocked) || hasEffect[PrepareSourceEffect](blocked) {
+				t.Fatalf("recovery-blocked voice press acquired keys or prepared a source: %#v", blocked)
+			}
+			mustStep(t, core, VoiceEnded(blockedPress))
+
+			// A disjoint chord remains usable while recovery is pending.
+			mustStep(t, core, Configure(mustBinding(t, policy, "enter")))
+			disjointPress := mustPress(t, device, "voice", 3)
+			disjoint := mustStep(t, core, VoiceBegan(disjointPress))
+			if reason, ok := blockedReason(disjoint); ok {
+				t.Fatalf("disjoint voice chord was blocked during recovery: reason=%v effects=%#v", reason, disjoint)
+			}
+			if !hasEffect[PrepareSourceEffect](disjoint) || !reflect.DeepEqual(keyTransitions(disjoint), []string{"down:enter"}) {
+				t.Fatalf("disjoint voice chord did not start normally: %#v", disjoint)
+			}
+			mustStep(t, core, VoiceEnded(disjointPress))
+			if got := core.Snapshot().RecoveryKeys; !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
+				t.Fatalf("using a disjoint chord cleared recovery state: %v", got)
+			}
+
+			// Explicit confirmation clears only the caller-confirmed uncertainty.
+			mustStep(t, core, Configure(mustBinding(t, policy, "ctrl", "space")))
+			mustStep(t, core, ConfirmToggleIdle("ctrl", "space"))
+			allowedPress := mustPress(t, device, "voice", 4)
+			allowed := mustStep(t, core, VoiceBegan(allowedPress))
+			if reason, ok := blockedReason(allowed); ok {
+				t.Fatalf("confirmed voice chord remained blocked: reason=%v effects=%#v", reason, allowed)
+			}
+			if !hasEffect[PrepareSourceEffect](allowed) || !reflect.DeepEqual(keyTransitions(allowed), []string{"down:ctrl", "down:space"}) {
+				t.Fatalf("explicit confirmation did not permit voice chord: %#v", allowed)
+			}
+			mustStep(t, core, VoiceEnded(allowedPress))
+		})
+	}
+}
+
+func TestToggleCompletesWithSecondTapOnlyAfterDrain(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyToggle, "ctrl", "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	mustStep(t, core, SourcePrepared(token, "source-a"))
+	ordinary := mustPress(t, device, "ordinary", 2)
+	if reason, ok := blockedReason(mustStep(t, core, OrdinaryBegan(ordinary, "space"))); !ok || reason != BlockOrdinaryConflictsWithToggle {
+		t.Fatalf("ordinary mapping overlapped a live toggle session: reason=%v ok=%v", reason, ok)
+	}
+	mustStep(t, core, OrdinaryEnded(ordinary))
+	mustStep(t, core, VoiceEnded(press))
+	if got := tapKeys(t, mustStep(t, core, SourceDrained(token))); !reflect.DeepEqual(got, [][]Key{{"ctrl", "space"}}) {
+		t.Fatalf("normal toggle completion did not request stop chord: %v", got)
+	}
+	if got := core.Snapshot().RecoveryKeys; len(got) != 0 {
+		t.Fatalf("successful toggle acquired a recovery lock: %v", got)
+	}
+}
+
+func TestOrdinaryKeyLeasesAcrossButtonsAndChordOrdering(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "voice"))
+	one := mustPress(t, device, "button-1", 1)
+	two := mustPress(t, device, "button-2", 2)
+	if got, want := keyTransitions(mustStep(t, core, OrdinaryBegan(one, "ctrl", "alt"))), []string{"down:ctrl", "down:alt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first chord down = %v, want %v", got, want)
+	}
+	if got := mustStep(t, core, OrdinaryBegan(two, "alt")); len(got) != 0 {
+		t.Fatalf("shared key generated duplicate down: %#v", got)
+	}
+	if got, want := keyTransitions(mustStep(t, core, OrdinaryEnded(one))), []string{"up:ctrl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reverse chord release with shared lease = %v, want %v", got, want)
+	}
+	if got := core.Snapshot().HeldKeys; !reflect.DeepEqual(got, []Key{"alt"}) {
+		t.Fatalf("shared key released before last owner: %v", got)
+	}
+	if got, want := keyTransitions(mustStep(t, core, OrdinaryEnded(two))), []string{"up:alt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("last owner did not release shared key: %v, want %v", got, want)
+	}
+}
+
+func TestDuplicateBeginMismatchedUpAndOldGenerationAreHarmless(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "voice"))
+	first := mustPress(t, device, "button", 1)
+	begin := mustStep(t, core, OrdinaryBegan(first, "space"))
+	if !reflect.DeepEqual(keyTransitions(begin), []string{"down:space"}) {
+		t.Fatalf("ordinary key did not start: %#v", begin)
+	}
+	if got := mustStep(t, core, OrdinaryBegan(first, "space")); len(got) != 0 {
+		t.Fatalf("duplicate begin produced effects: %#v", got)
+	}
+	wrongUp := mustPress(t, device, "button", 2)
+	if got := mustStep(t, core, OrdinaryEnded(wrongUp)); len(got) != 0 || !reflect.DeepEqual(core.Snapshot().HeldKeys, []Key{"space"}) {
+		t.Fatalf("mismatched release changed ownership: effects=%#v keys=%v", got, core.Snapshot().HeldKeys)
+	}
+	nextDevice := mustDevice(t, "remote-1", 2)
+	connectEffects := mustStep(t, core, DeviceConnected(nextDevice))
+	if !reflect.DeepEqual(keyTransitions(connectEffects), []string{"up:space"}) {
+		t.Fatalf("connection generation change failed to release old key: %#v", connectEffects)
+	}
+	newPress := mustPress(t, nextDevice, "button", 3)
+	mustStep(t, core, OrdinaryBegan(newPress, "space"))
+	if got := mustStep(t, core, OrdinaryEnded(first)); len(got) != 0 || !reflect.DeepEqual(core.Snapshot().HeldKeys, []Key{"space"}) {
+		t.Fatalf("old-generation up released new lease: effects=%#v keys=%v", got, core.Snapshot().HeldKeys)
+	}
+	if got := keyTransitions(mustStep(t, core, OrdinaryEnded(newPress))); !reflect.DeepEqual(got, []string{"up:space"}) {
+		t.Fatalf("new owner did not release key: %v", got)
+	}
+}
+
+func TestReleaseObservedBeforeBeginPreventsLateStart(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyExactEdge, "space"))
+	press := mustPress(t, device, "voice", 1)
+	if got := mustStep(t, core, VoiceEnded(press)); len(got) != 0 {
+		t.Fatalf("unmatched release produced effects: %#v", got)
+	}
+	if got := mustStep(t, core, VoiceBegan(press)); len(got) != 0 {
+		t.Fatalf("late began opened a session after its release: %#v", got)
+	}
+	snapshot := core.Snapshot()
+	if snapshot.HasSession || len(snapshot.HeldKeys) != 0 {
+		t.Fatalf("release-before-begin left active state: %#v", snapshot)
+	}
+}
+
+func TestVoiceAndOrdinaryOwnersShareOnePhysicalKeyTransition(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
+	ordinary := mustPress(t, device, "ordinary", 1)
+	voice := mustPress(t, device, "voice", 2)
+	if got := keyTransitions(mustStep(t, core, OrdinaryBegan(ordinary, "space"))); !reflect.DeepEqual(got, []string{"down:space"}) {
+		t.Fatalf("ordinary start = %v", got)
+	}
+	voiceBegin := mustStep(t, core, VoiceBegan(voice))
+	if got := keyTransitions(voiceBegin); len(got) != 0 {
+		t.Fatalf("shared key generated duplicate down: %v", got)
+	}
+	token := prepareToken(t, voiceBegin)
+	mustStep(t, core, SourcePrepared(token, "source"))
+	if got := keyTransitions(mustStep(t, core, OrdinaryEnded(ordinary))); len(got) != 0 {
+		t.Fatalf("ordinary release lifted voice's key: %v", got)
+	}
+	mustStep(t, core, VoiceEnded(voice))
+	if got := keyTransitions(mustStep(t, core, SourceDrained(token))); !reflect.DeepEqual(got, []string{"up:space"}) {
+		t.Fatalf("last voice owner did not release key: %v", got)
+	}
+}
+
+func TestDisconnectCancelsSessionAndDisposesLateCallbacks(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
+	voice := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(voice))
+	token := prepareToken(t, begin)
+	mustStep(t, core, SourcePrepared(token, "accepted"))
+	ordinary := mustPress(t, device, "ordinary", 2)
+	mustStep(t, core, OrdinaryBegan(ordinary, "ctrl"))
+	newDevice := mustDevice(t, "remote-1", 2)
+	effects := mustStep(t, core, DeviceConnected(newDevice))
+	if !hasEffect[CloseGateEffect](effects) || !hasEffect[StopSourceEffect](effects) {
+		t.Fatalf("device replacement did not cancel active session: %#v", effects)
+	}
+	if got, want := keyTransitions(effects), []string{"up:space", "up:ctrl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("replacement key releases = %v, want %v", got, want)
+	}
+	if !containsDisposed(effects, "accepted") {
+		t.Fatalf("accepted resource not disposed on replacement: %#v", effects)
+	}
+	if got := mustStep(t, core, SourcePrepared(token, "late")); len(got) != 1 || !containsDisposed(got, "late") || hasEffect[OpenGateEffect](got) {
+		t.Fatalf("stale callback was not disposed without opening gate: %#v", got)
+	}
+	if core.Snapshot().HasSession || len(core.Snapshot().HeldKeys) != 0 {
+		t.Fatal("device replacement left old session or key ownership")
+	}
+}
+
+func TestScopeLossReleasesAllHeldKeysAndSuppressesHeldOrdinaryPress(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
+	voice := mustPress(t, device, "voice", 1)
+	voiceBegin := mustStep(t, core, VoiceBegan(voice))
+	token := prepareToken(t, voiceBegin)
+	mustStep(t, core, SourcePrepared(token, "source"))
+	ordinary := mustPress(t, device, "ordinary", 2)
+	mustStep(t, core, OrdinaryBegan(ordinary, "ctrl"))
+	if got, want := keyTransitions(mustStep(t, core, ScopeAvailable(false))), []string{"up:space", "up:ctrl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope loss did not release every lease: got %v want %v", got, want)
+	}
+	if got := core.Snapshot().HeldKeys; len(got) != 0 {
+		t.Fatalf("scope loss left held keys: %v", got)
+	}
+	mustStep(t, core, ScopeAvailable(true))
+	if got := mustStep(t, core, OrdinaryBegan(mustPress(t, device, "ordinary", 3), "ctrl")); len(got) != 0 {
+		t.Fatalf("new begin was accepted while the physical button is still held: %#v", got)
+	}
+	if got := mustStep(t, core, OrdinaryEnded(ordinary)); len(got) != 0 {
+		t.Fatalf("release after scope loss repeated key-up: %#v", got)
+	}
+	fresh := mustPress(t, device, "ordinary", 4)
+	if got := keyTransitions(mustStep(t, core, OrdinaryBegan(fresh, "ctrl"))); !reflect.DeepEqual(got, []string{"down:ctrl"}) {
+		t.Fatalf("fresh press after release did not acquire key: %v", got)
+	}
+	if got := keyTransitions(mustStep(t, core, OrdinaryEnded(fresh))); !reflect.DeepEqual(got, []string{"up:ctrl"}) {
+		t.Fatalf("fresh press cleanup = %v", got)
+	}
+	mustStep(t, core, VoiceEnded(voice))
+}
+
+func TestMatchedTimeoutCancelsAndCleansPreparedSource(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyExactEdge, "ctrl", "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	mustStep(t, core, SourcePrepared(token, "source"))
+	timeout := mustStep(t, core, SessionTimeout(token))
+	if got, want := keyTransitions(timeout), []string{"up:space", "up:ctrl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("timeout did not release in reverse order: got %v want %v", got, want)
+	}
+	if !hasEffect[CloseGateEffect](timeout) || !hasEffect[StopSourceEffect](timeout) || !containsDisposed(timeout, "source") {
+		t.Fatalf("timeout omitted source cleanup: %#v", timeout)
+	}
+	if snapshot := core.Snapshot(); snapshot.HasSession || len(snapshot.HeldKeys) != 0 {
+		t.Fatalf("timeout left live ownership: %#v", snapshot)
+	}
+}
+
+func TestToggleTapConflictsWithAnyLeasedChordMember(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyToggle, "ctrl", "space"))
+	ordinary := mustPress(t, device, "ordinary", 1)
+	mustStep(t, core, OrdinaryBegan(ordinary, "space"))
+	voice := mustPress(t, device, "voice", 2)
+	if reason, ok := blockedReason(mustStep(t, core, VoiceBegan(voice))); !ok || reason != BlockTapConflictsWithHeldKey {
+		t.Fatalf("toggle chord overlapped a leased member: reason=%v ok=%v", reason, ok)
+	}
+	if core.Snapshot().HasSession || hasEffect[TargetTapEffect](mustStep(t, core, VoiceBegan(mustPress(t, device, "voice-2", 3)))) {
+		t.Fatal("blocked toggle press started unexpectedly")
+	}
+	mustStep(t, core, VoiceEnded(voice))
+	mustStep(t, core, VoiceEnded(mustPress(t, device, "voice-2", 3)))
+	mustStep(t, core, OrdinaryEnded(ordinary))
+}
+
+func TestSnapshotAndBindingAccessorsDoNotExposeMutableState(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "ctrl", "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	snap := core.Snapshot()
+	keys := snap.Session.Binding.Keys()
+	keys[0] = "changed"
+	adopted := snap.Adopted.Keys()
+	adopted[1] = "changed"
+	mustStep(t, core, SourcePrepared(token, "source"))
+	if got := tapKeys(t, begin); len(got) != 0 {
+		t.Fatalf("non-toggle unexpectedly produced tap: %v", got)
+	}
+	if got := core.Snapshot().Session.Binding.Keys(); !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
+		t.Fatalf("snapshot mutation affected session: %v", got)
+	}
+	if got := core.Snapshot().Adopted.Keys(); !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
+		t.Fatalf("snapshot mutation affected adopted config: %v", got)
+	}
+}
+
+type unknownEvent struct{}
+
+func (unknownEvent) bridgeEvent() {}
+
+func TestInvalidAndUnknownEventsFailWithoutMutatingState(t *testing.T) {
+	core, _ := setupCore(t, mustBinding(t, PolicyExactEdge, "space"))
+	before := core.Snapshot()
+	if _, err := core.Step(Configure(Binding{})); !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("zero binding error = %v", err)
+	}
+	if _, err := core.Step(OrdinaryBegan(mustPress(t, mustDevice(t, "remote-1", 1), "button", 1), "space", "space")); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("duplicate chord error = %v", err)
+	}
+	if _, err := core.Step(unknownEvent{}); !errors.Is(err, ErrUnknownEvent) {
+		t.Fatalf("unknown event error = %v", err)
+	}
+	if after := core.Snapshot(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("invalid event mutated state: before=%#v after=%#v", before, after)
+	}
+	var zero Core
+	if _, err := zero.Step(DeviceConnected(mustDevice(t, "remote-1", 1))); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("zero-value core error = %v", err)
+	}
+}
+
+func TestStaleDrainedAndTimeoutDoNotTouchNewSession(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyExactEdge, "space"))
+	firstPress := mustPress(t, device, "voice", 1)
+	firstBegin := mustStep(t, core, VoiceBegan(firstPress))
+	firstToken := prepareToken(t, firstBegin)
+	mustStep(t, core, SourcePrepared(firstToken, "first"))
+	mustStep(t, core, VoiceEnded(firstPress))
+	mustStep(t, core, SourceDrained(firstToken))
+	secondPress := mustPress(t, device, "voice", 2)
+	mustStep(t, core, VoiceBegan(secondPress))
+	before := core.Snapshot()
+	if got := mustStep(t, core, VoiceEnded(firstPress)); len(got) != 0 {
+		t.Fatalf("old physical release affected the new press: %#v", got)
+	}
+	if got := mustStep(t, core, SourceDrained(firstToken)); len(got) != 0 {
+		t.Fatalf("stale drain produced effects: %#v", got)
+	}
+	if got := mustStep(t, core, SessionTimeout(firstToken)); len(got) != 0 {
+		t.Fatalf("stale timeout produced effects: %#v", got)
+	}
+	if after := core.Snapshot(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("stale callbacks touched new session: before=%#v after=%#v", before, after)
+	}
+}
+
+func prepareToken(t *testing.T, effects []Effect) SessionToken {
+	t.Helper()
+	for _, effect := range effects {
+		if prepared, ok := effect.(PrepareSourceEffect); ok {
+			return prepared.Token
+		}
+	}
+	t.Fatalf("prepare-source effect not found in %#v", effects)
+	return SessionToken{}
+}
+
+func containsDisposed(effects []Effect, resourceID string) bool {
+	for _, effect := range effects {
+		if disposed, ok := effect.(DisposeResourceEffect); ok && disposed.ResourceID == resourceID {
+			return true
+		}
+	}
+	return false
+}
