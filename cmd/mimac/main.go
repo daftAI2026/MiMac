@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	brand "mimac.local/mimac/Assets/Brand"
 )
 
 type hostReport struct {
@@ -21,36 +22,18 @@ type hostReport struct {
 	WindowsClosed    int    `json:"windows_closed"`
 	ClosedBeforeQuit bool   `json:"settings_closed_before_quit"`
 	QuitCallbacks    int    `json:"quit_callbacks"`
+	CaptureWritten   bool   `json:"capture_written"`
 	NormalExit       bool   `json:"normal_exit"`
 	Error            string `json:"error,omitempty"`
 }
 
 type shell struct {
+	settingsState
 	window  *mygo.Window
 	tray    *mygo.Tray
 	closing bool // Main-thread state, independent of framework dispatcher shutdown.
 	cancel  context.CancelFunc
 	report  hostReport
-}
-
-func (s *shell) settings(c *ui.Context) {
-	t := c.Theme()
-	ui.Column(c).Fill().Padding(24).Gap(18).Children(func() {
-		ui.Text(c, "MiMac").FontSize(28).Bold()
-		ui.Text(c, "用遥控器，连接你使用的语音工具。").FontSize(14).TextColor(t.TextMuted)
-		ui.Divider(c)
-		ui.Column(c).Gap(12).Children(func() {
-			ui.Text(c, "遥控器　尚未连接").FontSize(16)
-			ui.Text(c, "语音工具　尚未选择").FontSize(16)
-			ui.Text(c, "音频通道　尚未建立").FontSize(16)
-		})
-		ui.Spacer(c)
-		ui.Row(c).Gap(10).Children(func() {
-			ui.Text(c, "小米 Pro 2").FontSize(12).TextColor(t.TextMuted)
-			ui.Spacer(c)
-			ui.Button(c, "关闭窗口").OnClick(func() { s.window.Close() })
-		})
-	})
 }
 
 func (s *shell) showSettings() {
@@ -62,7 +45,7 @@ func (s *shell) showSettings() {
 		return
 	}
 	s.window = mygo.NewWindow(mygo.WindowOptions{
-		Title: "MiMac", Width: 460, Height: 330,
+		Title: "MiMac", Width: 480, Height: 420, MinWidth: 420, MinHeight: 420,
 		Content: ui.View(s.settings),
 	})
 	s.report.WindowsCreated++
@@ -73,8 +56,8 @@ func (s *shell) showSettings() {
 	})
 }
 
-func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration) {
-	tray, err := mygo.NewTray(mygo.TrayOptions{Title: "Mi", ToolTip: "MiMac"})
+func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, capturePath string) {
+	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: "MiMac"})
 	if err != nil {
 		s.report.Error = err.Error()
 		mygo.App.Quit()
@@ -98,6 +81,9 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration) {
 	})
 	if show {
 		s.showSettings()
+	}
+	if capturePath != "" {
+		s.captureSettings(ctx, capturePath)
 	}
 	if smoke > 0 {
 		go func() {
@@ -137,10 +123,15 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration) {
 func main() {
 	show := flag.Bool("show-settings", false, "open the settings window on launch")
 	smoke := flag.Duration("smoke-duration", 0, "quit after a bounded host smoke run (1s to 30s)")
+	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
 	flag.Parse()
 	if *smoke != 0 && (*smoke < time.Second || *smoke > 30*time.Second) {
 		fmt.Fprintln(os.Stderr, "smoke-duration must be 1s to 30s")
+		os.Exit(2)
+	}
+	if *capturePath != "" && (!*show || (*smoke != 0 && *smoke < 2*time.Second)) {
+		fmt.Fprintln(os.Stderr, "host-capture requires show-settings and at least 2s if smoke-duration is set")
 		os.Exit(2)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,9 +148,12 @@ func main() {
 			s.tray.Destroy()
 		}
 	})
-	mygo.App.WhenReady(func() { s.ready(ctx, *show, *smoke) })
+	mygo.App.WhenReady(func() { s.ready(ctx, *show, *smoke, *capturePath) })
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
+	}
+	if *capturePath != "" && !s.report.CaptureWritten && s.report.Error == "" {
+		s.report.Error = "settings capture did not complete"
 	}
 	s.report.NormalExit = s.report.Error == "" && s.report.QuitCallbacks == 1
 	if *reportPath != "" {
@@ -175,4 +169,45 @@ func main() {
 	if !s.report.NormalExit {
 		os.Exit(1)
 	}
+}
+
+// Capture only our own renderer through MyGo; no desktop recording API is used.
+// The explicit diagnostic flag is off by default and never selects a path itself.
+func (s *shell) captureSettings(ctx context.Context, path string) {
+	go func() {
+		timer := time.NewTimer(250 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		// Keep capture, explicit diagnostic write, and reporting in one main-thread
+		// operation so shutdown cannot leave a background write after App.Run exits.
+		mygo.RunOnMain(func() {
+			if s.closing {
+				return
+			}
+			if s.window == nil || s.window.IsDestroyed() {
+				s.report.Error = "settings capture: window is unavailable"
+				return
+			}
+			png, err := s.window.CapturePage()
+			if err == nil {
+				var file *os.File
+				file, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+				if err == nil {
+					_, err = file.Write(png)
+					if closeErr := file.Close(); err == nil {
+						err = closeErr
+					}
+				}
+			}
+			if err != nil {
+				s.report.Error = fmt.Sprintf("settings capture: %v", err)
+			} else {
+				s.report.CaptureWritten = true
+			}
+		})
+	}()
 }

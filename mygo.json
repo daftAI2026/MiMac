@@ -7,6 +7,9 @@
   "macos": {
     "minimumSystemVersion": "14.2",
     "signingIdentity": "-",
-    "infoPlist": { "LSUIElement": true }
-  }
+    "infoPlist": {
+      "LSUIElement": true
+    }
+  },
+  "icon": "Assets/Brand/app-icon.png"
 }
