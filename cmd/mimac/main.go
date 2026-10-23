@@ -15,13 +15,14 @@ import (
 )
 
 type hostReport struct {
-	Ready          bool   `json:"host_ready"`
-	TrayCreated    bool   `json:"tray_created"`
-	WindowsCreated int    `json:"windows_created"`
-	WindowsClosed  int    `json:"windows_closed"`
-	QuitCallbacks  int    `json:"quit_callbacks"`
-	NormalExit     bool   `json:"normal_exit"`
-	Error          string `json:"error,omitempty"`
+	Ready            bool   `json:"host_ready"`
+	TrayCreated      bool   `json:"tray_created"`
+	WindowsCreated   int    `json:"windows_created"`
+	WindowsClosed    int    `json:"windows_closed"`
+	ClosedBeforeQuit bool   `json:"settings_closed_before_quit"`
+	QuitCallbacks    int    `json:"quit_callbacks"`
+	NormalExit       bool   `json:"normal_exit"`
+	Error            string `json:"error,omitempty"`
 }
 
 type shell struct {
@@ -68,6 +69,7 @@ func (s *shell) showSettings() {
 	s.window.OnClosed(func() {
 		s.window = nil
 		s.report.WindowsClosed++
+		s.report.ClosedBeforeQuit = !s.closing
 	})
 }
 
@@ -99,8 +101,25 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration) {
 	}
 	if smoke > 0 {
 		go func() {
-			timer := time.NewTimer(smoke)
+			first := smoke
+			if show {
+				first = smoke / 2
+			}
+			timer := time.NewTimer(first)
 			defer timer.Stop()
+			if show {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+					mygo.RunOnMain(func() {
+						if !s.closing && s.window != nil {
+							s.window.Close()
+						}
+					})
+				}
+				timer.Reset(smoke - first)
+			}
 			select {
 			case <-ctx.Done():
 				return

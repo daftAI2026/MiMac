@@ -53,6 +53,7 @@ with tempfile.TemporaryDirectory(prefix='mimac-host-') as directory:
     result = json.loads(report.read_text())
     assert result['host_ready'] and result['tray_created'] and result['normal_exit'], result
     assert result['windows_created'] == result['windows_closed'] == result['quit_callbacks'] == 1, result
+    assert result['settings_closed_before_quit'] is True, result
     print(json.dumps(result))
 PY
     ;;
