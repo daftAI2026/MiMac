@@ -93,6 +93,8 @@ func (o *Owner) InputUID() string {
 	return o.inputUID
 }
 
+// Close requires the host to stop its PCM producer and confirm that consumers
+// have stopped using this endpoint. This owner cannot stop another process.
 // Close destroys the aggregate and tap through the native handle. On failure
 // the handle remains owned for a later retry. Native teardown must run on a
 // worker, never on the UI thread.
