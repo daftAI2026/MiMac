@@ -459,3 +459,47 @@ func (*xiaomiRouteBareSource) Stop(context.Context) error { return nil }
 func (*xiaomiRouteBareSource) Close() error               { return nil }
 
 var _ audiosession.Source = (*xiaomiRouteBareSource)(nil)
+
+// Health inspection must stay responsive while the remote has not sent START.
+func TestXiaomiRateCheckedSourceHealthDoesNotWaitForStart(t *testing.T) {
+	underlying := &xiaomiWaitingReadySource{entered: make(chan struct{})}
+	source := &xiaomiRateCheckedSource{inner: underlying, expectedRate: 16000}
+	ctx, cancel := context.WithCancel(context.Background())
+	readDone := make(chan struct{})
+	go func() { defer close(readDone); _, _ = source.Read(ctx, make([]int16, 320)) }()
+	defer func() { cancel(); <-readDone }()
+	<-underlying.entered
+	healthDone := make(chan error, 1)
+	go func() { healthDone <- source.Err() }()
+	select {
+	case err := <-healthDone:
+		if err != nil {
+			t.Fatalf("health before START: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("health query blocked behind remote START")
+	}
+	transportErr := errors.New("transport disconnected while awaiting START")
+	underlying.setErr(transportErr)
+	go func() { healthDone <- source.Err() }()
+	select {
+	case err := <-healthDone:
+		if !errors.Is(err, transportErr) {
+			t.Fatalf("health lost transport failure: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("transport failure blocked behind remote START")
+	}
+
+}
+
+type xiaomiWaitingReadySource struct {
+	xiaomiRouteTestSource
+	entered chan struct{}
+}
+
+func (s *xiaomiWaitingReadySource) Ready(ctx context.Context) (int, error) {
+	close(s.entered)
+	<-ctx.Done()
+	return 0, ctx.Err()
+}

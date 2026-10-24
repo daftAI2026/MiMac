@@ -268,6 +268,7 @@ func (r *xiaomiAudioRoute) closeDeviceOwner(ctx context.Context) error {
 type xiaomiRateCheckedSource struct {
 	inner        audiosession.Source
 	expectedRate int
+	checkMu      sync.Mutex // Serializes readiness negotiation, never health queries.
 	mu           sync.Mutex
 	checked      bool
 	readyErr     error
@@ -277,25 +278,29 @@ func (s *xiaomiRateCheckedSource) Read(ctx context.Context, pcm []int16) (int, e
 	if s == nil || s.inner == nil {
 		return 0, atvv.ErrSourceClosed
 	}
+	s.checkMu.Lock()
 	s.mu.Lock()
-	if !s.checked {
+	checked, readyErr := s.checked, s.readyErr
+	s.mu.Unlock()
+	if !checked {
 		ready, ok := s.inner.(interface {
 			Ready(context.Context) (int, error)
 		})
 		if !ok {
-			s.readyErr = errXiaomiAudioNoReady
+			readyErr = errXiaomiAudioNoReady
 		} else {
 			actual, err := ready.Ready(ctx)
 			if err != nil {
-				s.readyErr = err
+				readyErr = err
 			} else if actual != s.expectedRate {
-				s.readyErr = fmt.Errorf("%w: got %d Hz, want %d Hz", errXiaomiAudioRateMismatch, actual, s.expectedRate)
+				readyErr = fmt.Errorf("%w: got %d Hz, want %d Hz", errXiaomiAudioRateMismatch, actual, s.expectedRate)
 			}
 		}
-		s.checked = true
+		s.mu.Lock()
+		s.readyErr, s.checked = readyErr, true
+		s.mu.Unlock()
 	}
-	readyErr := s.readyErr
-	s.mu.Unlock()
+	s.checkMu.Unlock()
 	if readyErr != nil {
 		return 0, readyErr
 	}
