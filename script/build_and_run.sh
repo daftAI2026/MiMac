@@ -18,13 +18,17 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/MiMac"
 
 # Only stop the executable belonging to this checkout, never a name match.
 python3 - "$APP_BINARY" <<'PY'
-import os, signal, subprocess, sys, time
+import os, pathlib, signal, subprocess, sys, time
 expected = sys.argv[1]
 def owned():
     rows = subprocess.check_output(['/bin/ps', '-axo', 'pid=,comm='], text=True)
     return [int(fields[0]) for line in rows.splitlines()
             if len(fields := line.strip().split(None, 1)) == 2 and fields[1] == expected]
-for pid in owned():
+processes = owned()
+recovery = pathlib.Path.home() / 'Library/Application Support/MiMac/voice-mapping-recovery.plist'
+if recovery.exists():
+    raise SystemExit('MiMac still owns a voice-key recovery record; stop the remote in MiMac before rebuilding')
+for pid in processes:
     try: os.kill(pid, signal.SIGTERM)
     except ProcessLookupError: pass
 deadline = time.monotonic() + 3
@@ -34,7 +38,13 @@ if owned():
     raise SystemExit('MiMac did not exit; build cancelled')
 PY
 
-"$GO_BIN" tool mygo build -platform "darwin/$ARCH" -skip-dmg -skip-notarize
+"$ROOT_DIR/script/build_native_settings.sh"
+
+BUILD_ARGS=(-platform "darwin/$ARCH" -skip-dmg -skip-notarize)
+if [[ -n "${MIMAC_SIGN_IDENTITY:-}" ]]; then
+  BUILD_ARGS+=(-sign "$MIMAC_SIGN_IDENTITY")
+fi
+"$GO_BIN" tool mygo build "${BUILD_ARGS[@]}"
 case "$MODE" in
   run) /usr/bin/open -n "$APP_BUNDLE" ;;
   --debug) /usr/bin/lldb -- "$APP_BINARY" ;;

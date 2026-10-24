@@ -1,0 +1,159 @@
+---
+version: alpha
+name: MiMac
+description: 原生 macOS 遥控器工具，黑白、克制、直接。
+colors:
+  primary: "#18181b"
+  background: "#ffffff"
+  muted: "#71717a"
+  surface: "#f4f4f5"
+  hover: "#e9e9ec"
+  pressed: "#dddde1"
+  border: "#d9d9de"
+  separator: "#e4e4e7"
+  model-highlight: "#ffffff"
+  accent-hover: "#3f3f46"
+  accent-pressed: "#09090b"
+  dark-primary: "#f4f4f5"
+  dark-background: "#18181b"
+  dark-muted: "#a1a1aa"
+  dark-surface: "#27272a"
+  dark-hover: "#323236"
+  dark-pressed: "#3c3c41"
+  dark-border: "#52525b"
+  dark-separator: "#3f3f46"
+  dark-accent-hover: "#e4e4e7"
+  dark-accent-pressed: "#d4d4d8"
+typography:
+  caption:
+    fontFamily: system-ui
+    fontSize: 12px
+    fontWeight: 400
+  body:
+    fontFamily: system-ui
+    fontSize: 13px
+    fontWeight: 400
+  title:
+    fontFamily: system-ui
+    fontSize: 16px
+    fontWeight: 600
+spacing:
+  xs: 4px
+  sm: 8px
+  md: 12px
+  lg: 16px
+  section: 20px
+  columns: 24px
+  pane: 20px
+  row-inset: 10px
+  row-vertical: 7px
+  control-vertical: 3px
+  control-horizontal: 12px
+  control-height: 24px
+  row-height: 38px
+  icon: 20px
+  accessory-icon: 12px
+  sidebar: 184px
+  toolbar: 52px
+  toolbar-inset: 8px
+  window-width: 900px
+  window-height: 660px
+  line: 0.5px
+  model-selection-line: 1px
+rounded:
+  control: 5px
+  group: 12px
+components:
+  button:
+    font: "{typography.body}"
+    background: "{colors.surface}"
+    foreground: "{colors.primary}"
+    hover: "{colors.hover}"
+    pressed: "{colors.pressed}"
+    radius: "{rounded.control}"
+    border-width: "{spacing.line}"
+    height: "{spacing.control-height}"
+  selection:
+    foreground: "{colors.primary}"
+    duration: 250ms
+    easing: ease-in-out
+---
+
+# MiMac Design System
+
+## Overview
+
+为使用遥控器控制 Mac 和现有语音工具的用户提供直接、安静的桌面界面。黑白中性配色，保留原生窗口、菜单和控件体验。借鉴 System Settings、Raycast 的组织方式和 Magpie 的插件边界，具体布局与文案按本文执行。
+
+本文是产品设计契约。研究过程与验收记录另存私人文档，不作为构建依赖。执行值在 cmd/mimac/design.go；修改 UI 时同时核对本文与真实窗口。格式依据 [Google Labs DESIGN.md 规范](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md)。
+
+## Colors
+
+颜色只表达层级和交互，不引入蓝色品牌强调色，不使用 Radix。浅色主要内容近黑、背景白；深色反转。主操作和普通焦点使用 primary；hover、pressed 使用对应中性表面。状态必须有明确文字，不能只靠颜色判断。遥控器动作已就绪是唯一状态色例外：使用 AppKit 的 systemGreenColor，按当前明暗外观解析；等待连接和配置指引使用中性文字，不带状态点。设备已连接不等于动作已就绪。
+
+SwiftUI 原生开关与分段控件使用 tint(.primary)，随浅深外观解析。原生 Form 表面、系统交通灯、菜单和工具栏反馈由系统管理；不通过系统全局设置改色。禁用项结合原生禁用语义和次文字色。
+
+## Typography
+
+沿用系统字体和中文 fallback，不加载额外字体。App 启动时读取 AppKit NSFont.systemFontSize 作为共同基线。YAML 记录本机标准档默认值；三档字号从系统基线派生，最小 12pt。保留正常字距与系统字体度量，不手调中文字形的基线。
+
+| 字号偏好 | 辅助 | 正文 | 标题 |
+|---|---:|---:|---:|
+| 小 | 12 | 12 | 15 |
+| 标准 | 12 | 13 | 16 |
+| 大 | 14 | 15 | 18 |
+
+内容最多三种字号，层级优先用 400/600 字重、间距和主次文字色区分。原生控件保留系统自身的文字度量。标签采用简明书面语，不添加冗余解释，不使用中点分隔文案。
+
+## Layout
+
+YAML 使用规范支持的 px 单位；在本项目中全部按 macOS 逻辑点 DIP 实现，不按 Retina 物理像素计算。
+
+默认窗口 900×660。配置最小尺寸 820×600，本机原生工具栏下实际最小外框为 820×620。侧栏固定 184，顶部内容头部 52，右侧页面四边留白 20。工具栏有独立的 8pt 起始间距，不能把内容页边距套给系统工具栏。
+
+按键映射页保持模型列与列表列 1:2，列间 24。两列顶对齐；调整窗口高度时，内容起点保持不变。左侧依次为设备 Profile 名称、模型、遥控器状态与启停按钮，整体水平居中；名称到模型、模型到状态区间距均为 20，状态与按钮间距 8。没有通栏设备标题或额外卡片。模型保持比例，最大 120×400；默认显示全部 13 个按键，窗口不足时各列按内容滚动。
+
+右侧映射行最小高 38，上下 padding 7、左右 10，行间 2。普通操作控件最小高 24。间距属于各自层级：页面外边距、设置行内边距、控件内部留白不能混为同一个数值。
+
+通用页由原生 Form 排版。外观和文字大小采用 HStack(center) 放标签与原生 Picker；Picker 隐藏自身可视标签并保留固有尺寸。直接把带标签的 Picker 放入 Form 会形成不对称的行外留白；本机验收要求两行上下外距均为 10，文字与控件垂直中心相等。不要修改分段按钮内部 padding 来补偿外层问题。
+
+## Elevation & Depth
+
+内容区域不加自定义阴影、渐变或彩色侧线。分区用留白、语义表面和 0.5pt 自绘分隔线表达。原生工具栏与系统控件的材质和阴影由系统负责，避免再叠一层模拟玻璃。
+
+## Shapes
+
+普通按钮圆角 5，设置分组圆角 12。社交链接仅首行上角、末行下角继承分组圆角，中间行保持平直；hover、按下与焦点使用同一命中边界。设备模型图保持真实轮廓，不再套装饰性卡片。所有设备Artwork经统一渲染入口使用MyGo Grayscale，原图和alpha不改，复用同一纹理；不创建额外灰度图缓存。真实图片上的选中按键使用黑色外缘与白色内环，各 1pt，中心始终透明。选中后只让轮廓闪动两次，总计 600ms，然后稳定；Reduce Motion 下直接显示稳定轮廓。按下和 hover 只改变边框，保留原始按键图案。原生控件的形状由系统定义。
+
+## Components
+
+### 导航与窗口
+
+导航依次为设备、按键映射、语音工具、插件、通用、关于；品牌保留在左下，使用主文字色。保留系统交通灯与真实 NSToolbar，返回/前进为两个 28×28 原生圆按钮，置于 64×36 的系统玻璃容器；标题用固有文字高度对齐容器中心，hover 与按下由原生按钮处理。顶部空白可拖动，不能覆盖原生按钮命中。绿色缩放只扩展当前屏幕的可用高度，保留当前宽度；再次缩放恢复，手动横向调整仍可用。SF Symbols 统一 20pt 图标槽、使用 2x 栅格源；小型外链箭头为 12pt。
+
+### 原生通用设置
+
+登录时启动与 Dock 显示为第一组；显示组包含外观和文字大小。MyGo 仍拥有窗口、菜单、主线程与事件循环；SwiftUI Form 只负责渲染，值和持久化由 Go 持有。切换页面销毁原生视图，不创建第二套应用或重复状态。
+
+### 设备映射
+
+名称、图片、热点和默认 HID 键值均来自设备插件 Profile。未来更换设备时一起切换，不在宿主中硬编码小米外观。默认键值不等于 macOS 行为，未确认的 Power/TV 继续明确标注。快捷键完整按下即保存，Escape 取消；不出现保存按钮。自定义输出是额外输出，启用状态必须如实显示。插件页分系统插件、设备、语音输入法、应用语音。分类纵向排列，每个分类内部的插件选项排两列；单项保持半宽，不跨列拉伸。插件选项与语音工具页共用 settingsColumns 布局组件，统一等宽、顶对齐、20pt列距。分类名位于分组背景外，作为与通用页一致的小标题；标题与分组内容的左侧缩进均为10pt，标题到分组间距8pt，分区间距20pt。豆包输入法和Typeless归语音输入法，ChatGPT归应用语音；类型不改变统一启停生命周期。按键核心为必需项，保留按键映射入口；语音适配器在插件页启用后自动定位安装与配置，停用取消读取并从语音工具页移除。语音工具页采用左侧可用工具、右侧当前工具配置的两列结构，只允许一个当前目标，也允许尚未选择。工具分组外留白四边统一为 10pt，选择行按控件固有 24pt 高度对齐，不叠加 38pt 行高造成额外上下空白。没有文件选择器，不自动打开第三方应用；配置缺失、格式未知与未安装分别显示。工具配置中的候选快捷键从既有预设菜单选用，复制成独立映射；不可解析的候选禁用，不自动开启输出，不宣称配置同步或目标语音已启动。
+
+### 关于与社交
+
+Logo、名称和版本居中竖排，移除包住品牌区的装饰卡片。社交入口采用品牌图标、标签、外链箭头的整行链接。水平内边距属于按钮本身，包含在点击和 hover 区域内；分隔线单独缩进 10。图标、文字、空白和左右边缘应得到一致反馈。
+
+### Motion 与可访问性
+
+侧栏和映射列表在各自区域内移动同一选中背景，使用实际行边界定位，MyGo AnimateTo 为 250ms ease-in-out。模型轮廓使用有限 MyGo Timeline，两次脉冲总计 600ms；无常驻计时器。由依赖处理中断、重定向、停止调度和 Reduce Motion。物理按下/松开、快捷键保存、hover 和焦点即时处理，不等待动画。遥控器已就绪的系统绿点使用 MyGo Loop，2秒 ease-in-out，透明度0.25–1持续呼吸；仅健康可执行状态且可见时构建，Reduce Motion下常亮。配置不足时按实际缺项显示“请启用语音插件”“请选择语音工具”或“请检查语音配置”，只用静态文字、不点击；未启用无点；该灯不表示第三方已录音。保留原生控件动效。使用真实 AX 角色、可聚焦控件和系统标签，不用无语义画布替换功能按钮。
+
+## Do's and Don'ts
+
+- 新能力复用现有宿主、插件生命周期和设置分组，不增加空置选项。
+- 先读取当前真实配置，再展示可采用动作；发现值不自动覆盖映射。
+- 只在用户本来需要做选择的地方增加选择，常规设置即时生效。
+- 以真实截图和 AX 几何核对对齐，不凭印象叠加补偿 padding。
+- 验证默认、最小宽、最小高、组合最小尺寸、浅深色与大小字号。
+- 不把独立控件试验窗口当作最终产品；最终验收使用实际 MiMac bundle。
+- 确认原生能力缺口后才添加窄桥接，不手绘系统开关或缩放控件凑尺寸。
+- 不增加常驻定时器来驱动静态界面，不为暂时的内存数字破坏状态和资源生命周期。

@@ -4,3 +4,8 @@
 dist/
 .cache/
 .toolchains/
+resources/darwin-arm64/libMiMacSettings.dylib
+resources/darwin-amd64/libMiMacSettings.dylib
+
+__pycache__/
+*.py[cod]

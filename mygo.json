@@ -9,7 +9,12 @@
     "signingIdentity": "-",
     "infoPlist": {
       "LSUIElement": true
-    }
+    },
+    "icon": "Assets/Brand/MiMac.icon"
   },
-  "icon": "Assets/Brand/app-icon.png"
+  "icon": "Assets/Brand/app-icon.png",
+  "resources": [
+    "Assets/Social/NOTICE.md",
+    "Assets/Licenses/go-plist.txt"
+  ]
 }

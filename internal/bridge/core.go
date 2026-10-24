@@ -170,6 +170,12 @@ type connectedEvent struct{ device Device }
 type disconnectedEvent struct{ device Device }
 type voiceBeganEvent struct{ press PressToken }
 type voiceEndedEvent struct{ press PressToken }
+type observedBeganEvent struct{ press PressToken }
+type targetActionBeganEvent struct {
+	press PressToken
+	plan  ActionPlan
+}
+type cancelToolActionsEvent struct{ toolID string }
 type sourcePreparedEvent struct {
 	token      SessionToken
 	resourceID string
@@ -180,6 +186,11 @@ type timeoutEvent struct{ token SessionToken }
 type routeEvent struct{ available bool }
 type scopeEvent struct{ available bool }
 type configureEvent struct{ binding Binding }
+type outputFailedEvent struct {
+	failureID           uint64
+	uncertainToggleKeys []Key
+}
+type outputRecoveredEvent struct{ failureID uint64 }
 type ordinaryBeganEvent struct {
 	press PressToken
 	keys  []Key
@@ -191,6 +202,9 @@ func (connectedEvent) bridgeEvent()         {}
 func (disconnectedEvent) bridgeEvent()      {}
 func (voiceBeganEvent) bridgeEvent()        {}
 func (voiceEndedEvent) bridgeEvent()        {}
+func (observedBeganEvent) bridgeEvent()     {}
+func (targetActionBeganEvent) bridgeEvent() {}
+func (cancelToolActionsEvent) bridgeEvent() {}
 func (sourcePreparedEvent) bridgeEvent()    {}
 func (sourceFailedEvent) bridgeEvent()      {}
 func (sourceDrainedEvent) bridgeEvent()     {}
@@ -198,6 +212,8 @@ func (timeoutEvent) bridgeEvent()           {}
 func (routeEvent) bridgeEvent()             {}
 func (scopeEvent) bridgeEvent()             {}
 func (configureEvent) bridgeEvent()         {}
+func (outputFailedEvent) bridgeEvent()      {}
+func (outputRecoveredEvent) bridgeEvent()   {}
 func (ordinaryBeganEvent) bridgeEvent()     {}
 func (ordinaryEndedEvent) bridgeEvent()     {}
 func (confirmToggleIdleEvent) bridgeEvent() {}
@@ -206,6 +222,20 @@ func DeviceConnected(device Device) Event    { return connectedEvent{device: dev
 func DeviceDisconnected(device Device) Event { return disconnectedEvent{device: device} }
 func VoiceBegan(press PressToken) Event      { return voiceBeganEvent{press: press} }
 func VoiceEnded(press PressToken) Event      { return voiceEndedEvent{press: press} }
+
+// ObservedBegan records a physical press that has no adopted ordinary-key
+// mapping. It never acquires a key lease; release it with OrdinaryEnded.
+func ObservedBegan(press PressToken) Event { return observedBeganEvent{press: press} }
+
+// TargetActionBegan freezes one resolved tool action to a physical press.
+// Release and interruption use the same active-press ledger as ordinary keys.
+func TargetActionBegan(press PressToken, plan ActionPlan) Event {
+	return targetActionBeganEvent{press: press, plan: plan.clone()}
+}
+
+// CancelToolActions interrupts active actions for toolID. It only releases
+// local key leases; it never guesses a target-side cancel action.
+func CancelToolActions(toolID string) Event { return cancelToolActionsEvent{toolID: toolID} }
 
 // SourcePrepared reports one resource prepared for token. resourceID names a
 // resource within that session; disposal effects carry both values.
@@ -221,6 +251,22 @@ func SessionTimeout(token SessionToken) Event { return timeoutEvent{token: token
 func RouteAvailable(available bool) Event     { return routeEvent{available: available} }
 func ScopeAvailable(available bool) Event     { return scopeEvent{available: available} }
 func Configure(binding Binding) Event         { return configureEvent{binding: binding.clone()} }
+
+// OutputFailed reports a failure from the system key-output sink. failureID
+// must be nonzero and increase monotonically for each distinct failure within
+// this Core's lifetime. If a TargetTapEffect may have been partially submitted,
+// pass its full chord in uncertainToggleKeys. The returned effects cancel work
+// and release logical key leases; the physical press ledger remains until
+// matching releases arrive.
+func OutputFailed(failureID uint64, uncertainToggleKeys ...Key) Event {
+	return outputFailedEvent{failureID: failureID, uncertainToggleKeys: cloneKeys(uncertainToggleKeys)}
+}
+
+// OutputRecovered reports that the sink has successfully cleaned every key it
+// may have submitted for failureID. Output remains blocked until all presses
+// recorded during that failure have ended or their device is retired.
+func OutputRecovered(failureID uint64) Event { return outputRecoveredEvent{failureID: failureID} }
+
 func OrdinaryBegan(press PressToken, keys ...Key) Event {
 	return ordinaryBeganEvent{press: press, keys: cloneKeys(keys)}
 }
@@ -267,6 +313,9 @@ const (
 	BlockTapConflictsWithHeldKey BlockReason = iota + 1
 	BlockOrdinaryConflictsWithToggle
 	BlockToggleRecoveryRequired
+	BlockActionScopeUnsupported
+	BlockActionConflictsWithToggle
+	BlockActionConflictsWithHeldKey
 )
 
 type Phase uint8
@@ -282,6 +331,8 @@ type ownerKind uint8
 const (
 	ownerVoice ownerKind = iota + 1
 	ownerOrdinary
+	ownerObserved
+	ownerAction
 )
 
 type leaseOwner struct {
@@ -300,6 +351,7 @@ type activePress struct {
 	kind  ownerKind
 	keys  []Key
 	owned bool
+	plan  ActionPlan
 }
 
 type sessionState struct {
@@ -311,22 +363,27 @@ type sessionState struct {
 }
 
 type coreState struct {
-	hasDevice      bool
-	device         Device
-	connected      bool
-	routeKnown     bool
-	routeAvailable bool
-	scopeKnown     bool
-	scopeAvailable bool
-	lastPressID    uint64
-	nextSessionID  uint64
-	adopted        Binding
-	pending        Binding
-	hasPending     bool
-	session        *sessionState
-	active         map[buttonSlot]activePress
-	leases         map[Key]map[leaseOwner]struct{}
-	uncertain      map[Key]struct{}
+	hasDevice           bool
+	device              Device
+	connected           bool
+	routeKnown          bool
+	routeAvailable      bool
+	scopeKnown          bool
+	scopeAvailable      bool
+	lastPressID         uint64
+	nextSessionID       uint64
+	configured          bool
+	adopted             Binding
+	pending             Binding
+	hasPending          bool
+	lastOutputFailureID uint64
+	outputFailureID     uint64
+	outputRecovered     bool
+	session             *sessionState
+	lastAction          *ActionSnapshot
+	active              map[buttonSlot]activePress
+	leases              map[Key]map[leaseOwner]struct{}
+	uncertain           map[Key]struct{}
 }
 
 // Core is single-owner state. Call Step and Snapshot on one serialized
@@ -340,13 +397,25 @@ func NewCore(initial Binding) (*Core, error) {
 	if err := initial.validate(); err != nil {
 		return nil, err
 	}
+	return newCore(initial, true), nil
+}
+
+// NewUnconfiguredCore creates a usable core with no adopted voice binding.
+// Physical presses can still be observed, but voice presses cannot start
+// sessions or request key/audio effects until Configure adopts a binding.
+func NewUnconfiguredCore() *Core {
+	return newCore(Binding{}, false)
+}
+
+func newCore(initial Binding, configured bool) *Core {
 	return &Core{initialized: true, state: coreState{
 		nextSessionID: 1,
+		configured:    configured,
 		adopted:       initial.clone(),
 		active:        make(map[buttonSlot]activePress),
 		leases:        make(map[Key]map[leaseOwner]struct{}),
 		uncertain:     make(map[Key]struct{}),
-	}}, nil
+	}}
 }
 
 // Step applies one event and returns new effects. Invalid/unknown events do
@@ -357,7 +426,7 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 		return nil, fmt.Errorf("%w: nil core", ErrInvalidInput)
 	}
 	if !c.initialized {
-		return nil, fmt.Errorf("%w: core was not constructed with NewCore", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: zero-value core must be constructed with NewCore or NewUnconfiguredCore", ErrInvalidInput)
 	}
 	effects := make([]Effect, 0, 4)
 	switch e := event.(type) {
@@ -381,6 +450,24 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 			return nil, fmt.Errorf("%w: invalid voice release", ErrInvalidInput)
 		}
 		c.pressEnded(e.press, &effects)
+	case observedBeganEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid observed press", ErrInvalidInput)
+		}
+		c.beginPress(e.press, ownerObserved, nil)
+	case targetActionBeganEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid action press", ErrInvalidInput)
+		}
+		if err := e.plan.validate(); err != nil {
+			return nil, err
+		}
+		c.targetActionBegan(e.press, e.plan, &effects)
+	case cancelToolActionsEvent:
+		if !validKey(Key(e.toolID)) {
+			return nil, fmt.Errorf("%w: invalid tool ID", ErrInvalidInput)
+		}
+		c.cancelToolActions(e.toolID, &effects)
 	case sourcePreparedEvent:
 		if !e.token.valid() || strings.TrimSpace(e.resourceID) == "" || strings.ContainsRune(e.resourceID, '\x00') || !utf8.ValidString(e.resourceID) {
 			return nil, fmt.Errorf("%w: invalid prepared source", ErrInvalidInput)
@@ -435,6 +522,22 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 			c.state.pending = binding
 			c.state.hasPending = true
 		}
+		c.state.configured = true
+	case outputFailedEvent:
+		if e.failureID == 0 {
+			return nil, fmt.Errorf("%w: output failure ID is required", ErrInvalidInput)
+		}
+		if len(e.uncertainToggleKeys) != 0 {
+			if err := validateKeys(e.uncertainToggleKeys, ErrInvalidInput); err != nil {
+				return nil, err
+			}
+		}
+		c.outputFailed(e.failureID, e.uncertainToggleKeys, &effects)
+	case outputRecoveredEvent:
+		if e.failureID == 0 {
+			return nil, fmt.Errorf("%w: output recovery ID is required", ErrInvalidInput)
+		}
+		c.outputRecovered(e.failureID)
 	case ordinaryBeganEvent:
 		if !e.press.valid() {
 			return nil, fmt.Errorf("%w: invalid ordinary press", ErrInvalidInput)
@@ -493,18 +596,23 @@ func (c *Core) teardownDevice(effects *[]Effect) {
 	c.releaseOrdinary(effects)
 	c.releaseOrphanLeases(effects)
 	c.state.active = make(map[buttonSlot]activePress)
+	c.finishOutputRecovery()
 }
 
 func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
-	if !c.matchesCurrentDevice(press) || press.pressID <= c.state.lastPressID {
+	if !c.beginPress(press, ownerVoice, nil) {
 		return
 	}
-	c.state.lastPressID = press.pressID
-	slot := buttonSlot{device: press.device, button: press.buttonID}
-	if _, exists := c.state.active[slot]; exists {
+	if c.state.outputFailureID != 0 {
 		return
 	}
-	c.state.active[slot] = activePress{token: press, kind: ownerVoice}
+	if !c.state.configured {
+		return
+	}
+	if c.hasActionLease() {
+		*effects = append(*effects, BlockedEffect{Reason: BlockActionConflictsWithHeldKey})
+		return
+	}
 	if !c.state.routeAvailable || !c.state.scopeAvailable || c.state.session != nil {
 		return
 	}
@@ -531,17 +639,19 @@ func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
 }
 
 func (c *Core) ordinaryBegan(press PressToken, keys []Key, effects *[]Effect) {
-	if !c.matchesCurrentDevice(press) || press.pressID <= c.state.lastPressID {
+	if !c.beginPress(press, ownerOrdinary, keys) {
 		return
 	}
-	c.state.lastPressID = press.pressID
 	slot := buttonSlot{device: press.device, button: press.buttonID}
-	if _, exists := c.state.active[slot]; exists {
+	active := c.state.active[slot]
+	if c.state.outputFailureID != 0 {
 		return
 	}
-	active := activePress{token: press, kind: ownerOrdinary, keys: cloneKeys(keys)}
-	c.state.active[slot] = active
 	if !c.state.scopeAvailable {
+		return
+	}
+	if c.hasActionLease() {
+		*effects = append(*effects, BlockedEffect{Reason: BlockActionConflictsWithHeldKey})
 		return
 	}
 	if c.hasUncertain(keys) {
@@ -556,6 +666,106 @@ func (c *Core) ordinaryBegan(press PressToken, keys []Key, effects *[]Effect) {
 	c.acquire(keys, owner, effects)
 	active.owned = true
 	c.state.active[slot] = active
+}
+
+func (c *Core) targetActionBegan(press PressToken, plan ActionPlan, effects *[]Effect) {
+	if !c.beginPress(press, ownerAction, plan.keys) {
+		return
+	}
+	slot := buttonSlot{device: press.device, button: press.buttonID}
+	active := c.state.active[slot]
+	active.plan = plan.clone()
+	c.state.active[slot] = active
+
+	if plan.spec.Scope == ActionApp {
+		c.recordAction(press, plan, actionStatusInterrupted, RequestNone)
+		*effects = append(*effects, BlockedEffect{Reason: BlockActionScopeUnsupported})
+		return
+	}
+	if c.state.outputFailureID != 0 || !c.state.scopeAvailable {
+		c.recordAction(press, plan, actionStatusInterrupted, RequestNone)
+		return
+	}
+	if c.hasUncertain(plan.keys) {
+		c.recordAction(press, plan, actionStatusInterrupted, RequestNone)
+		*effects = append(*effects, BlockedEffect{Reason: BlockToggleRecoveryRequired})
+		return
+	}
+	if session := c.state.session; session != nil && session.binding.policy == PolicyToggle && intersects(plan.keys, session.binding.keys) {
+		c.recordAction(press, plan, actionStatusInterrupted, RequestNone)
+		*effects = append(*effects, BlockedEffect{Reason: BlockActionConflictsWithToggle})
+		return
+	}
+
+	if len(c.state.leases) != 0 {
+		c.recordAction(press, plan, actionStatusInterrupted, RequestNone)
+		*effects = append(*effects, BlockedEffect{Reason: BlockActionConflictsWithHeldKey})
+		return
+	}
+
+	if plan.spec.Trigger == ActionTap {
+		c.recordAction(press, plan, actionStatusActive, plan.spec.Request)
+		*effects = append(*effects, TargetTapEffect{keys: plan.Keys()})
+		return
+	}
+
+	c.acquire(plan.keys, leaseOwner{kind: ownerAction, press: press}, effects)
+	active.owned = true
+	c.state.active[slot] = active
+	c.recordAction(press, plan, actionStatusActive, plan.spec.Request)
+}
+
+func (c *Core) cancelToolActions(toolID string, effects *[]Effect) {
+	presses := make([]activePress, 0)
+	for _, active := range c.state.active {
+		if active.kind == ownerAction && active.plan.spec.ToolID == toolID {
+			presses = append(presses, active)
+		}
+	}
+	sort.Slice(presses, func(i, j int) bool { return presses[i].token.pressID < presses[j].token.pressID })
+	for _, active := range presses {
+		if active.owned {
+			c.releaseKeys(active.keys, leaseOwner{kind: ownerAction, press: active.token}, effects)
+		}
+		c.interruptAction(active.token)
+		active.owned = false
+		slot := buttonSlot{device: active.token.device, button: active.token.buttonID}
+		c.state.active[slot] = active
+	}
+}
+
+func (c *Core) recordAction(press PressToken, plan ActionPlan, status string, request TargetRequest) {
+	c.state.lastAction = &ActionSnapshot{
+		Press:         press,
+		Plan:          plan.clone(),
+		Status:        status,
+		Request:       request,
+		TargetOutcome: actionOutcomeUnknown,
+	}
+}
+
+func (c *Core) interruptAction(press PressToken) {
+	last := c.state.lastAction
+	if last == nil || last.Press != press || last.Status != actionStatusActive {
+		return
+	}
+	last.Status = actionStatusInterrupted
+	last.Request = RequestNone
+}
+
+// beginPress applies the per-connection replay gate shared by every kind of
+// physical press, then records the token in the active button slot.
+func (c *Core) beginPress(press PressToken, kind ownerKind, keys []Key) bool {
+	if !c.matchesCurrentDevice(press) || press.pressID <= c.state.lastPressID {
+		return false
+	}
+	c.state.lastPressID = press.pressID
+	slot := buttonSlot{device: press.device, button: press.buttonID}
+	if _, exists := c.state.active[slot]; exists {
+		return false
+	}
+	c.state.active[slot] = activePress{token: press, kind: kind, keys: cloneKeys(keys)}
+	return true
 }
 
 func (c *Core) pressEnded(press PressToken, effects *[]Effect) {
@@ -573,6 +783,22 @@ func (c *Core) pressEnded(press PressToken, effects *[]Effect) {
 		return
 	}
 	delete(c.state.active, slot)
+	c.finishOutputRecovery()
+	if active.kind == ownerObserved {
+		return
+	}
+	if active.kind == ownerAction {
+		if active.owned {
+			c.releaseKeys(active.keys, leaseOwner{kind: ownerAction, press: press}, effects)
+		}
+		if last := c.state.lastAction; last != nil && last.Press == press && last.Status == actionStatusActive {
+			if active.plan.spec.Trigger == ActionHold {
+				last.Request = active.plan.spec.ReleaseRequest
+			}
+			last.Status = actionStatusReleased
+		}
+		return
+	}
 	if active.kind == ownerOrdinary {
 		if active.owned {
 			c.releaseKeys(active.keys, leaseOwner{kind: ownerOrdinary, press: press}, effects)
@@ -661,6 +887,37 @@ func (c *Core) finishSession() {
 	}
 }
 
+func (c *Core) outputFailed(failureID uint64, uncertainToggleKeys []Key, effects *[]Effect) {
+	if failureID <= c.state.lastOutputFailureID {
+		return
+	}
+	c.state.lastOutputFailureID = failureID
+	c.state.outputFailureID = failureID
+	c.state.outputRecovered = false
+	for _, key := range uncertainToggleKeys {
+		c.state.uncertain[key] = struct{}{}
+	}
+	c.cancelSession(effects)
+	c.releaseOrdinary(effects)
+	c.releaseOrphanLeases(effects)
+}
+
+func (c *Core) outputRecovered(failureID uint64) {
+	if c.state.outputFailureID != failureID {
+		return
+	}
+	c.state.outputRecovered = true
+	c.finishOutputRecovery()
+}
+
+func (c *Core) finishOutputRecovery() {
+	if c.state.outputFailureID == 0 || !c.state.outputRecovered || len(c.state.active) != 0 {
+		return
+	}
+	c.state.outputFailureID = 0
+	c.state.outputRecovered = false
+}
+
 func (c *Core) acquire(keys []Key, owner leaseOwner, effects *[]Effect) {
 	for _, key := range keys {
 		owners := c.state.leases[key]
@@ -693,13 +950,22 @@ func (c *Core) releaseKeys(keys []Key, owner leaseOwner, effects *[]Effect) {
 func (c *Core) releaseOrdinary(effects *[]Effect) {
 	presses := make([]activePress, 0)
 	for _, active := range c.state.active {
-		if active.kind == ownerOrdinary && active.owned {
+		if (active.kind == ownerOrdinary && active.owned) || active.kind == ownerAction {
 			presses = append(presses, active)
 		}
 	}
 	sort.Slice(presses, func(i, j int) bool { return presses[i].token.pressID < presses[j].token.pressID })
 	for _, active := range presses {
-		c.releaseKeys(active.keys, leaseOwner{kind: ownerOrdinary, press: active.token}, effects)
+		if active.owned {
+			kind := ownerOrdinary
+			if active.kind == ownerAction {
+				kind = ownerAction
+			}
+			c.releaseKeys(active.keys, leaseOwner{kind: kind, press: active.token}, effects)
+		}
+		if active.kind == ownerAction {
+			c.interruptAction(active.token)
+		}
 		active.owned = false
 		slot := buttonSlot{device: active.token.device, button: active.token.buttonID}
 		c.state.active[slot] = active
@@ -731,6 +997,17 @@ func (c *Core) hasUncertain(keys []Key) bool {
 	for _, key := range keys {
 		if _, exists := c.state.uncertain[key]; exists {
 			return true
+		}
+	}
+	return false
+}
+
+func (c *Core) hasActionLease() bool {
+	for _, owners := range c.state.leases {
+		for owner := range owners {
+			if owner.kind == ownerAction {
+				return true
+			}
 		}
 	}
 	return false
@@ -770,11 +1047,21 @@ type Snapshot struct {
 	RouteAvailable bool
 	ScopeKnown     bool
 	ScopeAvailable bool
-	Adopted        Binding
-	HasPending     bool
-	Pending        Binding
-	HasSession     bool
-	Session        SessionSnapshot
+	// Configured reports whether an adopted voice binding exists. It does not
+	// describe mappings for ordinary physical buttons.
+	Configured bool
+	// OutputFailureID is nonzero while system key output is faulted or waiting
+	// for the sink to confirm cleanup and all physical presses to end.
+	OutputFailureID uint64
+	Adopted         Binding
+	HasPending      bool
+	Pending         Binding
+	HasSession      bool
+	Session         SessionSnapshot
+	LastAction      *ActionSnapshot
+	// PressedButtons lists every physical press still active, regardless of
+	// whether it owns a voice session or an ordinary key lease.
+	PressedButtons []PressToken
 	HeldKeys       []Key
 	RecoveryKeys   []Key
 }
@@ -784,16 +1071,18 @@ func (c *Core) Snapshot() Snapshot {
 		return Snapshot{}
 	}
 	s := Snapshot{
-		HasDevice:      c.state.hasDevice,
-		Connected:      c.state.connected,
-		RouteKnown:     c.state.routeKnown,
-		RouteAvailable: c.state.routeAvailable,
-		ScopeKnown:     c.state.scopeKnown,
-		ScopeAvailable: c.state.scopeAvailable,
-		Adopted:        c.state.adopted.clone(),
-		HasPending:     c.state.hasPending,
-		Pending:        c.state.pending.clone(),
-		HasSession:     c.state.session != nil,
+		HasDevice:       c.state.hasDevice,
+		Connected:       c.state.connected,
+		RouteKnown:      c.state.routeKnown,
+		RouteAvailable:  c.state.routeAvailable,
+		ScopeKnown:      c.state.scopeKnown,
+		ScopeAvailable:  c.state.scopeAvailable,
+		Configured:      c.state.configured,
+		OutputFailureID: c.state.outputFailureID,
+		Adopted:         c.state.adopted.clone(),
+		HasPending:      c.state.hasPending,
+		Pending:         c.state.pending.clone(),
+		HasSession:      c.state.session != nil,
 	}
 	if c.state.hasDevice {
 		s.DeviceID = c.state.device.id
@@ -810,6 +1099,13 @@ func (c *Core) Snapshot() Snapshot {
 			Phase:   current.phase,
 		}
 	}
+	if last := c.state.lastAction; last != nil {
+		action := last.clone()
+		s.LastAction = &action
+	}
+	for _, active := range c.state.active {
+		s.PressedButtons = append(s.PressedButtons, active.token)
+	}
 	for key := range c.state.leases {
 		s.HeldKeys = append(s.HeldKeys, key)
 	}
@@ -818,5 +1114,18 @@ func (c *Core) Snapshot() Snapshot {
 	}
 	sort.Slice(s.HeldKeys, func(i, j int) bool { return s.HeldKeys[i] < s.HeldKeys[j] })
 	sort.Slice(s.RecoveryKeys, func(i, j int) bool { return s.RecoveryKeys[i] < s.RecoveryKeys[j] })
+	sort.Slice(s.PressedButtons, func(i, j int) bool {
+		left, right := s.PressedButtons[i], s.PressedButtons[j]
+		if left.pressID != right.pressID {
+			return left.pressID < right.pressID
+		}
+		if left.device.id != right.device.id {
+			return left.device.id < right.device.id
+		}
+		if left.device.generation != right.device.generation {
+			return left.device.generation < right.device.generation
+		}
+		return left.buttonID < right.buttonID
+	})
 	return s
 }
