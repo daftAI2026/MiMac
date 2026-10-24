@@ -334,3 +334,36 @@ func TestNewUnsupportedPlatformStub(t *testing.T) {
 		t.Fatalf("New() error = %v, want ErrUnsupportedPlatform", err)
 	}
 }
+
+func TestDefaultOutputUIDIsIndependentOfInput(t *testing.T) {
+	fake := newFakePropertyAPI()
+	input := propertyAddress{selector: selectorDefaultInput, scope: scopeGlobal}
+	output := propertyAddress{selector: selectorDefaultOutput, scope: scopeGlobal}
+	putFakeProperty(fake, systemObjectID, input, nil, u32(12))
+	putFakeProperty(fake, systemObjectID, output, nil, u32(24))
+	fake.uids[12], fake.uids[24] = "tap-input", "playback-output"
+	inspector := newInspector(fake)
+	got, err := inspector.DefaultOutputDeviceUID()
+	if err != nil || got != "playback-output" {
+		t.Fatalf("output = %q, %v", got, err)
+	}
+	if len(fake.propertyReads) != 1 || fake.propertyReads[0].address != output {
+		t.Fatalf("unexpected reads: %#v", fake.propertyReads)
+	}
+	// A later route change is reread, never served from a stale cached UID.
+	putFakeProperty(fake, systemObjectID, output, nil, u32(25))
+	fake.uids[25] = "new-output"
+	if got, err := inspector.DefaultOutputDeviceUID(); err != nil || got != "new-output" {
+		t.Fatalf("updated output = %q, %v", got, err)
+	}
+	// Missing output must not silently select the still-valid input.
+	putFakeProperty(fake, systemObjectID, output, nil, u32(0))
+	if _, err := inspector.DefaultOutputDeviceUID(); !errors.Is(err, ErrNoDefaultOutput) {
+		t.Fatalf("missing output = %v", err)
+	}
+	failure := errors.New("output query failed")
+	fake.dataErr[makeFakeKey(systemObjectID, output, nil)] = failure
+	if _, err := inspector.DefaultOutputDeviceUID(); !errors.Is(err, failure) {
+		t.Fatalf("output error = %v", err)
+	}
+}

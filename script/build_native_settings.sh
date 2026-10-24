@@ -48,6 +48,18 @@ for arch in arm64 amd64; do
 			exit 1
 		}
 	done
+	xcrun --sdk macosx clang -fobjc-arc -O2 -mmacosx-version-min=14.2 \
+		-arch "$target_arch" -dynamiclib \
+		-install_name @rpath/libMiMacProcessTap.dylib \
+		"$ROOT_DIR/internal/adapters/processtap/native/Endpoint.m" \
+		-framework Foundation -framework CoreAudio \
+		-o "$output_dir/libMiMacProcessTap.dylib"
+	for symbol in MiMacProcessTapCreate MiMacProcessTapCopyUID MiMacProcessTapClose; do
+		/usr/bin/nm -gU "$output_dir/libMiMacProcessTap.dylib" | /usr/bin/grep -q " _$symbol$" || {
+			echo "missing process tap export: $symbol" >&2
+			exit 1
+		}
+	done
 done
 
-echo "Built native settings and ATVV libraries for darwin-arm64 and darwin-amd64."
+echo "Built native settings, ATVV and process tap libraries for darwin-arm64 and darwin-amd64."

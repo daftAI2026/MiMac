@@ -11,6 +11,7 @@ import (
 var (
 	ErrUnsupportedPlatform = errors.New("audioroute: Core Audio is available only on macOS")
 	ErrNoDefaultInput      = errors.New("audioroute: no default input device")
+	ErrNoDefaultOutput     = errors.New("audioroute: no default output device")
 	ErrInvalidPID          = errors.New("audioroute: PID must be positive")
 	ErrMalformedData       = errors.New("audioroute: malformed Core Audio property data")
 )
@@ -23,6 +24,7 @@ const (
 	unknownObject  uint32 = 0
 
 	selectorDefaultInput    uint32 = 0x64496e20 // 'dIn '
+	selectorDefaultOutput   uint32 = 0x644f7574 // 'dOut'
 	selectorTranslateUID    uint32 = 0x75696464 // 'uidd'
 	selectorTranslatePID    uint32 = 0x69643270 // 'id2p'
 	selectorProcessList     uint32 = 0x70727323 // 'prs#'
@@ -93,23 +95,34 @@ type ProcessInput struct {
 // DefaultInputDeviceUID returns the current default input device's persistent
 // UID. Errors are not replaced with a search result or another default.
 func (i *Inspector) DefaultInputDeviceUID() (string, error) {
-	data, err := i.readProperty(systemObjectID, propertyAddress{selector: selectorDefaultInput, scope: scopeGlobal}, nil)
+	return i.defaultDeviceUID(selectorDefaultInput, "input", ErrNoDefaultInput)
+}
+
+// DefaultOutputDeviceUID snapshots the system output UID without changing it.
+// Native process-tap publishers can freeze this UID as their explicit playback
+// destination; the tap's input-only aggregate is a separate device.
+func (i *Inspector) DefaultOutputDeviceUID() (string, error) {
+	return i.defaultDeviceUID(selectorDefaultOutput, "output", ErrNoDefaultOutput)
+}
+
+func (i *Inspector) defaultDeviceUID(selector uint32, direction string, absent error) (string, error) {
+	data, err := i.readProperty(systemObjectID, propertyAddress{selector: selector, scope: scopeGlobal}, nil)
 	if err != nil {
-		return "", fmt.Errorf("audioroute: read default input device: %w", err)
+		return "", fmt.Errorf("audioroute: read default %s device: %w", direction, err)
 	}
-	deviceID, err := scalar(data, "default input device")
+	deviceID, err := scalar(data, "default "+direction+" device")
 	if err != nil {
 		return "", err
 	}
 	if deviceID == unknownObject {
-		return "", ErrNoDefaultInput
+		return "", absent
 	}
 	uid, err := i.api.DeviceUID(deviceID)
 	if err != nil {
-		return "", fmt.Errorf("audioroute: read default input UID: %w", err)
+		return "", fmt.Errorf("audioroute: read default %s UID: %w", direction, err)
 	}
 	if uid == "" {
-		return "", fmt.Errorf("%w: empty default input UID", ErrMalformedData)
+		return "", fmt.Errorf("%w: empty default %s UID", ErrMalformedData, direction)
 	}
 	return uid, nil
 }

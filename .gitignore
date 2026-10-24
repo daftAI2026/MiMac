@@ -8,6 +8,8 @@ resources/darwin-arm64/libMiMacSettings.dylib
 resources/darwin-amd64/libMiMacSettings.dylib
 resources/darwin-arm64/libMiMacATVV.dylib
 resources/darwin-amd64/libMiMacATVV.dylib
+resources/darwin-arm64/libMiMacProcessTap.dylib
+resources/darwin-amd64/libMiMacProcessTap.dylib
 
 __pycache__/
 *.py[cod]
