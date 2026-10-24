@@ -21,6 +21,8 @@ type deviceCoordinator struct {
 	resolveAction      func(voicetools.ActionRef) (bridge.ActionPlan, error)
 	voiceButton        string
 	resolveVoiceAction func() (bridge.ActionPlan, error)
+	preflightAction    func(bridge.ActionPlan) error
+	voiceAudioBinding  func(bridge.ActionPlan) (bridge.Binding, error)
 	failureID          uint64
 	submitted          uint64
 	steps              uint64
@@ -98,15 +100,27 @@ func (d *deviceCoordinator) acceptWithRecorderIsolation(event devices.InputEvent
 			input = bridge.ObservedBegan(edge.Press)
 		} else if d.voiceButton != "" && edge.Press.PhysicalButtonID() == d.voiceButton {
 			input = bridge.ObservedBegan(edge.Press)
-			if d.sink != nil && d.resolveVoiceAction != nil {
-				if plan, err := d.resolveVoiceAction(); err == nil {
+			if d.voiceAudioBinding != nil {
+				if d.sink != nil && d.audio != nil && d.resolveVoiceAction != nil {
+					if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
+						if binding, err := d.voiceAudioBinding(plan); err == nil {
+							if err := d.step(bridge.Configure(binding)); err == nil {
+								input = bridge.VoiceBegan(edge.Press)
+							} else {
+								eventErr = errors.Join(eventErr, err)
+							}
+						}
+					}
+				}
+			} else if d.sink != nil && d.resolveVoiceAction != nil {
+				if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
 					input = bridge.TargetActionBegan(edge.Press, plan)
 				}
 			}
 		} else if ref, bound := d.actions[edge.Press.PhysicalButtonID()]; bound {
 			input = bridge.ObservedBegan(edge.Press)
 			if d.sink != nil && d.resolveAction != nil {
-				if plan, err := d.resolveAction(ref); err == nil {
+				if plan, err := d.resolveAction(ref); err == nil && d.actionMayStart(plan) {
 					input = bridge.TargetActionBegan(edge.Press, plan)
 				}
 			}
@@ -145,4 +159,30 @@ func (d *deviceCoordinator) report() coreReport {
 		UnexpectedEffects: d.unexpected,
 		SubmittedEffects:  d.submitted, OutputFailureID: s.OutputFailureID,
 	}
+}
+
+// Preconditions govern new target requests only. Releases always use Core's
+// frozen plan, even when the external input source changes during a press.
+func (d *deviceCoordinator) actionMayStart(plan bridge.ActionPlan) bool {
+	return d.preflightAction == nil || d.preflightAction(plan) == nil
+}
+
+// voiceAudioBindingForAction maps a verified target action onto Core's audio
+// session lifetime. Physical press/release remains owned by the device event;
+// this does not classify or delay the user's gesture.
+func voiceAudioBindingForAction(plan bridge.ActionPlan) (bridge.Binding, error) {
+	spec := plan.Spec()
+	if spec.Scope != bridge.ActionGlobal {
+		return bridge.Binding{}, errors.New("voice action is not global")
+	}
+	var policy bridge.EndPolicy
+	switch {
+	case spec.Trigger == bridge.ActionHold && spec.Request == bridge.RequestStart && spec.ReleaseRequest == bridge.RequestFinish:
+		policy = bridge.PolicyAfterDrain
+	case spec.Trigger == bridge.ActionTap && spec.Request == bridge.RequestToggle && spec.ReleaseRequest == bridge.RequestNone:
+		policy = bridge.PolicyToggle
+	default:
+		return bridge.Binding{}, errors.New("voice action has no verified audio binding policy")
+	}
+	return bridge.NewBinding(policy, plan.Keys()...)
 }

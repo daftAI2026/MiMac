@@ -16,11 +16,13 @@ import (
 const bufferCount = 4
 
 var (
-	ErrBackpressure  = errors.New("audiooutput: buffers are full")
-	ErrBlockTooLarge = errors.New("audiooutput: block exceeds 80 ms")
-	ErrClosed        = errors.New("audiooutput: sink is closed")
-	ErrDraining      = errors.New("audiooutput: sink is draining")
-	ErrFaulted       = errors.New("audiooutput: sink is faulted")
+	ErrBackpressure       = errors.New("audiooutput: buffers are full")
+	ErrBlockTooLarge      = errors.New("audiooutput: block exceeds 80 ms")
+	ErrClosed             = errors.New("audiooutput: sink is closed")
+	ErrDraining           = errors.New("audiooutput: sink is draining")
+	ErrFaulted            = errors.New("audiooutput: sink is faulted")
+	ErrPrepareUnsupported = errors.New("audiooutput: native queue does not support preparation")
+	ErrAlreadyUsed        = errors.New("audiooutput: preparation requires a fresh queue")
 )
 
 // Config freezes an explicit route and the source's mono signed 16-bit format.
@@ -41,6 +43,13 @@ type nativeQueue interface {
 	Dispose() error
 }
 
+// nativeQueuePreparation is available only on queues that can prime and park
+// their native output without changing the ordinary Open/TryWrite path.
+type nativeQueuePreparation interface {
+	Prime() error
+	Pause() error
+}
+
 // Sink permits concurrent calls but serializes native operations. Open/Drain/
 // Close belong on a session worker, not the UI thread. No worker or timer exists
 // while idle; Drain alone polls for at most two seconds. Native calls themselves
@@ -55,6 +64,7 @@ type Sink struct {
 	retired                            atomic.Bool
 	started, draining, drained, closed bool
 	observedRunning                    bool
+	prepared, paused, wrotePCM         bool
 	fault                              error
 }
 
@@ -118,6 +128,122 @@ func (s *Sink) writable() error {
 	return nil
 }
 
+// Prepare primes a fresh queue with four 20 ms zero-PCM buffers, briefly starts
+// it until the native queue reports running, then pauses that same queue. It
+// keeps ownership of the queue and does not create a worker or refill silence.
+// Native calls are synchronous and cannot be interrupted; callers should pass
+// a bounded context, and Close remains responsible for cleanup after errors.
+func (s *Sink) Prepare(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("audiooutput: nil prepare context")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	if err := s.writable(); err != nil {
+		return err
+	}
+	if s.prepared {
+		return nil
+	}
+	if s.started || s.wrotePCM || len(s.free) != bufferCount {
+		return ErrAlreadyUsed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	preparer, ok := s.queue.(nativeQueuePreparation)
+	if !ok {
+		return ErrPrepareUnsupported
+	}
+
+	silence := make([]int16, s.frames)
+	for range bufferCount {
+		if err := ctx.Err(); err != nil {
+			return s.failPrepare(preparer, err, false)
+		}
+		slot := <-s.free
+		s.busy[slot].Store(true)
+		if err := s.queue.Enqueue(slot, silence); err != nil {
+			return s.failPrepare(preparer, err, false)
+		}
+	}
+	if running, err := s.queue.Check(); err != nil {
+		return s.failPrepare(preparer, err, false)
+	} else if running {
+		return s.failPrepare(preparer, errors.New("audiooutput: fresh queue unexpectedly running"), false)
+	}
+	if err := ctx.Err(); err != nil {
+		return s.failPrepare(preparer, err, false)
+	}
+	if err := preparer.Prime(); err != nil {
+		return s.failPrepare(preparer, err, false)
+	}
+	if err := ctx.Err(); err != nil {
+		return s.failPrepare(preparer, err, false)
+	}
+	if running, err := s.queue.Check(); err != nil {
+		return s.failPrepare(preparer, err, false)
+	} else if running {
+		return s.failPrepare(preparer, errors.New("audiooutput: queue started while priming"), false)
+	}
+
+	// Start can include a cold native initialization and cannot be interrupted.
+	// Mark the queue owned as started before the call so a partial native failure
+	// still takes the cleanup path and is never retried through TryWrite.
+	s.started = true
+	if err := s.queue.Start(); err != nil {
+		return s.failPrepare(preparer, err, true)
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return s.failPrepare(preparer, err, true)
+		}
+		running, err := s.queue.Check()
+		if err != nil {
+			return s.failPrepare(preparer, err, true)
+		}
+		if running {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return s.failPrepare(preparer, ctx.Err(), true)
+		case <-ticker.C:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return s.failPrepare(preparer, err, true)
+	}
+	if err := preparer.Pause(); err != nil {
+		s.fault = errors.Join(s.fault, err)
+		return err
+	}
+	s.started = false
+	s.paused = true
+	s.observedRunning = false
+	s.prepared = true
+	return nil
+}
+
+func (s *Sink) failPrepare(preparer nativeQueuePreparation, cause error, pause bool) error {
+	if pause {
+		if err := preparer.Pause(); err != nil {
+			cause = errors.Join(cause, err)
+		} else {
+			s.started = false
+			s.paused = true
+			s.observedRunning = false
+		}
+	}
+	s.fault = errors.Join(s.fault, cause)
+	return cause
+}
+
 // TryWrite copies the entire block before returning. Backpressure never submits
 // a partial block. A native failure after enqueue may have submitted a prefix;
 // it fault-locks this sink and the caller must end the session and Close it.
@@ -134,8 +260,17 @@ func (s *Sink) TryWrite(pcm []int16) error {
 		return ErrBlockTooLarge
 	}
 	needed := (len(pcm) + s.frames - 1) / s.frames
-	if len(s.free) < needed {
-		return ErrBackpressure
+	// Resume the parked queue on the first real write attempt, even when its
+	// primed silence still owns all buffers. Runtime backpressure retries then
+	// wait for those bounded buffers to return before submitting PCM.
+	if s.paused {
+		if err := s.queue.Start(); err != nil {
+			s.fault = err
+			return err
+		}
+		s.paused = false
+		s.started = true
+		s.observedRunning = false
 	}
 	running, err := s.queue.Check()
 	if err != nil {
@@ -145,11 +280,24 @@ func (s *Sink) TryWrite(pcm []int16) error {
 	// AudioQueueStart acknowledges the request before IsRunning changes.
 	// Only a later falling edge proves an unexpected stop. A start that never
 	// completes stays bounded by four buffers and the Drain deadline.
-	if s.observedRunning && !running {
+	if !running && !s.wrotePCM {
+		// The finite preparation buffers may finish before the first real PCM
+		// block gets a free slot. A falling edge during silence is recoverable;
+		// the next write will enqueue data and start the queue again.
+		s.started = false
+		s.observedRunning = false
+	} else if s.observedRunning && !running {
 		s.fault = errors.New("audiooutput: queue stopped unexpectedly")
 		return s.fault
+	} else {
+		s.observedRunning = s.observedRunning || running
+		if running {
+			s.started = true
+		}
 	}
-	s.observedRunning = s.observedRunning || running
+	if len(s.free) < needed {
+		return ErrBackpressure
+	}
 	var slots [bufferCount]int
 	for i := range needed {
 		slots[i] = <-s.free
@@ -162,6 +310,7 @@ func (s *Sink) TryWrite(pcm []int16) error {
 			return err
 		}
 	}
+	s.wrotePCM = true
 	if !s.started {
 		if err := s.queue.Start(); err != nil {
 			s.fault = err

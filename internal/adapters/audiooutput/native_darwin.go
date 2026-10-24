@@ -51,7 +51,9 @@ type audioQueueAPI struct {
 	newOutput      func(*audioStreamBasicDescription, uintptr, uintptr, uintptr, uintptr, uint32, *uintptr) int32
 	allocateBuffer func(uintptr, uint32, **audioQueueBuffer) int32
 	enqueueBuffer  func(uintptr, *audioQueueBuffer, uint32, uintptr) int32
+	prime          func(uintptr, uint32, *uint32) int32
 	start          func(uintptr, uintptr) int32
+	pause          func(uintptr) int32
 	stop           func(uintptr, bool) int32
 	dispose        func(uintptr, bool) int32
 	setProperty    func(uintptr, uint32, unsafe.Pointer, uint32) int32
@@ -90,7 +92,9 @@ func loadAudioQueueAPI() (*audioQueueAPI, error) {
 			{audioToolbox, &a.newOutput, "AudioQueueNewOutput"},
 			{audioToolbox, &a.allocateBuffer, "AudioQueueAllocateBuffer"},
 			{audioToolbox, &a.enqueueBuffer, "AudioQueueEnqueueBuffer"},
+			{audioToolbox, &a.prime, "AudioQueuePrime"},
 			{audioToolbox, &a.start, "AudioQueueStart"},
+			{audioToolbox, &a.pause, "AudioQueuePause"},
 			{audioToolbox, &a.stop, "AudioQueueStop"},
 			{audioToolbox, &a.dispose, "AudioQueueDispose"},
 			{audioToolbox, &a.setProperty, "AudioQueueSetProperty"},
@@ -200,6 +204,8 @@ type darwinNativeQueue struct {
 	buffers         [bufferCount]*audioQueueBuffer
 	queued          [bufferCount]atomic.Bool
 	returnBuffer    func(slot int)
+	primeAttempted  bool
+	startAttempted  bool
 	stopRequested   bool
 	disposing       atomic.Bool
 	disposed        atomic.Bool
@@ -354,9 +360,55 @@ func (d *darwinNativeQueue) Start() error {
 	if d.stopRequested {
 		return errors.New("audiooutput: queue is stopping")
 	}
+	d.startAttempted = true
 	status := d.api.start(d.queue, 0)
 	if status != 0 {
 		return fmt.Errorf("audiooutput: AudioQueueStart status=%d", status)
+	}
+	return nil
+}
+
+// Prime asks AudioQueue to decode all currently enqueued buffers before first
+// start. This must happen on a fresh queue and is intentionally one-shot.
+func (d *darwinNativeQueue) Prime() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disposed.Load() || d.disposing.Load() || d.queue == 0 {
+		return errors.New("audiooutput: queue is disposed")
+	}
+	if d.stopRequested {
+		return errors.New("audiooutput: queue is stopping")
+	}
+	if d.primeAttempted || d.startAttempted {
+		return errors.New("audiooutput: AudioQueuePrime requires a fresh queue")
+	}
+	d.primeAttempted = true
+	var preparedFrames uint32
+	status := d.api.prime(d.queue, 0, &preparedFrames)
+	runtime.KeepAlive(&preparedFrames)
+	if status != 0 {
+		return fmt.Errorf("audiooutput: AudioQueuePrime status=%d", status)
+	}
+	if preparedFrames == 0 {
+		return errors.New("audiooutput: AudioQueuePrime prepared no frames")
+	}
+	return nil
+}
+
+// Pause preserves queued buffers and converter state so a later Start resumes
+// the same AudioQueue. IsRunning is not used as an indication of PCM playout.
+func (d *darwinNativeQueue) Pause() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disposed.Load() || d.disposing.Load() || d.queue == 0 {
+		return errors.New("audiooutput: queue is disposed")
+	}
+	if !d.startAttempted {
+		return errors.New("audiooutput: AudioQueuePause requires a started queue")
+	}
+	status := d.api.pause(d.queue)
+	if status != 0 {
+		return fmt.Errorf("audiooutput: AudioQueuePause status=%d", status)
 	}
 	return nil
 }

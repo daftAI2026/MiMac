@@ -96,6 +96,39 @@ func TestDiscoverPreservesOnlyWhitelistedShortcutValues(t *testing.T) {
 	}
 }
 
+func TestDiscoverNormalizesVerifiedRawShortcutTuples(t *testing.T) {
+	requireDarwin(t)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
+		key: []byte("d"),
+		value: keyedArchiveFixture(t, map[string]interface{}{
+			"asrShortcutKeyCode":                uint64(61),
+			"asrShortcutModifierFlags":          uint64(0),
+			"asrShortcutKeyDisplay":             "rightoption",
+			"asrLongPressShortcutKeyCode":       uint64(54),
+			"asrLongPressShortcutModifierFlags": uint64(1048592),
+			"asrLongPressShortcutKeyDisplay":    "RightCommand",
+		}),
+	}})
+
+	got := Discover(context.Background(), locator)
+	if got.State != voicetools.Ready || len(got.Actions) != 2 || !strings.Contains(got.Source, "TIS preflight required") {
+		t.Fatalf("verified tuple discovery = %#v", got)
+	}
+	option := got.Actions[0]
+	if option.Scope != "global" || option.Gesture != "toggle" || option.Control == nil ||
+		option.Control.Trigger != "tap" || option.Control.Request != "toggle" || option.Control.ReleaseRequest != "none" ||
+		len(option.Candidates) != 1 || !option.Candidates[0].Supported || option.Candidates[0].Shortcut != "RightOption" {
+		t.Fatalf("RightOption contract = %#v", option)
+	}
+	command := got.Actions[1]
+	if command.Scope != "global" || command.Gesture != "hold" || command.Control == nil ||
+		command.Control.Trigger != "hold" || command.Control.Request != "start" || command.Control.ReleaseRequest != "finish" ||
+		len(command.Candidates) != 1 || !command.Candidates[0].Supported || command.Candidates[0].Shortcut != "RightCommand" {
+		t.Fatalf("RightCommand contract = %#v", command)
+	}
+}
+
 func TestDiscoverIgnoresObsoletePlistLocations(t *testing.T) {
 	requireDarwin(t)
 	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
@@ -140,6 +173,15 @@ func TestDiscoverRejectsUnverifiedBundleVersion(t *testing.T) {
 	got := Discover(context.Background(), locator)
 	if got.State != voicetools.Unsupported || len(got.Actions) != 0 || got.SettingsPath != "" {
 		t.Fatalf("unverified bundle version = %#v", got)
+	}
+}
+
+func TestDiscoverRejectsUnverifiedBundleBuild(t *testing.T) {
+	requireDarwin(t)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, "2")
+	got := Discover(context.Background(), locator)
+	if got.State != voicetools.Unsupported || len(got.Actions) != 0 || got.SettingsPath != "" {
+		t.Fatalf("unverified bundle build = %#v", got)
 	}
 }
 

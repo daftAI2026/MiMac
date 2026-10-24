@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	brand "mimac.local/mimac/Assets/Brand"
 	"mimac.local/mimac/internal/adapters/xiaomi"
+	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/platform/navigation"
 	nativeprefs "mimac.local/mimac/internal/platform/preferences"
 	"mimac.local/mimac/internal/platform/typography"
@@ -61,6 +62,8 @@ type shell struct {
 	audioOutput                      *audioOutputOwner
 	audioSession                     *audioSessionHost
 	audioSource                      audioSourceFactory
+	audioResources                   audiosession.Prepare
+	audioResourcesClose              func(context.Context) error
 	audioPost                        func(func())
 	audioQuitPending, audioQuitReady bool
 	deviceProfiles                   []devicePlugin

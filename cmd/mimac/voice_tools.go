@@ -18,13 +18,14 @@ import (
 )
 
 type voiceTool struct {
-	id, name     string
-	kind         voiceToolKind
-	discover     func(context.Context, voicetools.Locator) voicetools.Snapshot
-	active, busy bool
-	sequence     uint64
-	cancel       context.CancelFunc
-	snapshot     voicetools.Snapshot
+	id, name            string
+	kind                voiceToolKind
+	discover            func(context.Context, voicetools.Locator) voicetools.Snapshot
+	requiredInputSource func(string) (string, bool)
+	active, busy        bool
+	sequence            uint64
+	cancel              context.CancelFunc
+	snapshot            voicetools.Snapshot
 }
 
 // Kind describes the user-facing capability, independent of how the adapter
@@ -44,11 +45,12 @@ type voiceToolsState struct {
 	toolPreferencesPath string
 	toolLoadFailed      bool
 	toolError           string
+	voiceStartBlocked   string
 }
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover},
+		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, requiredInputSource: doubao.RequiredInputSourceID},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover},
 	}
@@ -126,6 +128,7 @@ func (s *shell) refreshVoiceTool(tool *voiceTool) {
 func (s *shell) loadVoiceTools() {
 	if s.coordinator != nil {
 		s.coordinator.resolveAction = s.resolveToolAction
+		s.coordinator.preflightAction = s.preflightToolAction
 	}
 	locator, err := voicetools.DefaultLocator()
 	if err != nil {

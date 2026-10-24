@@ -15,11 +15,16 @@ type fakeAudioQueueAPI struct {
 	buffers                                [bufferCount]*audioQueueBuffer
 	allocations, failAllocation, disposals int
 	disposeStatus                          int32
+	primeStatus, pauseStatus, startStatus  int32
+	primeFrames                            uint32
+	primeCalls, pauseCalls, startCalls     int
+	events                                 []string
 	returnedRefs                           []uintptr
 	format                                 audioStreamBasicDescription
 	boundUID                               uintptr
 	routeSame                              bool
 	converter                              uint32
+	running                                uint32
 }
 
 func newFakeAudioQueueAPI(t *testing.T) *fakeAudioQueueAPI {
@@ -42,10 +47,34 @@ func newFakeAudioQueueAPI(t *testing.T) *fakeAudioQueueAPI {
 			*out = f.buffers[i]
 			return 0
 		},
-		enqueueBuffer: func(uintptr, *audioQueueBuffer, uint32, uintptr) int32 { return 0 },
-		start:         func(uintptr, uintptr) int32 { return 0 },
-		stop:          func(uintptr, bool) int32 { return 0 },
-		dispose:       func(uintptr, bool) int32 { f.disposals++; return f.disposeStatus },
+		enqueueBuffer: func(uintptr, *audioQueueBuffer, uint32, uintptr) int32 {
+			f.events = append(f.events, "enqueue")
+			return 0
+		},
+		prime: func(_ uintptr, frames uint32, prepared *uint32) int32 {
+			f.events = append(f.events, "prime")
+			f.primeCalls++
+			if frames != 0 {
+				t.Fatalf("prime frames=%d", frames)
+			}
+			*prepared = f.primeFrames
+			return f.primeStatus
+		},
+		start: func(uintptr, uintptr) int32 {
+			f.events = append(f.events, "start")
+			f.startCalls++
+			if f.startStatus == 0 {
+				f.running = 1
+			}
+			return f.startStatus
+		},
+		pause: func(uintptr) int32 {
+			f.events = append(f.events, "pause")
+			f.pauseCalls++
+			return f.pauseStatus
+		},
+		stop:    func(uintptr, bool) int32 { return 0 },
+		dispose: func(uintptr, bool) int32 { f.disposals++; return f.disposeStatus },
 		setProperty: func(q uintptr, property uint32, value unsafe.Pointer, size uint32) int32 {
 			if property != audioQueuePropertyCurrentDevice || size != 8 {
 				t.Fatalf("set property=%x size=%d", property, size)
@@ -62,7 +91,7 @@ func newFakeAudioQueueAPI(t *testing.T) *fakeAudioQueueAPI {
 				*(*uint32)(value) = f.converter
 				*size = 4
 			case audioQueuePropertyIsRunning:
-				*(*uint32)(value) = 0
+				*(*uint32)(value) = f.running
 				*size = 4
 			default:
 				t.Fatalf("unexpected property=%x", property)
@@ -122,6 +151,78 @@ func TestNativeFormatCopiesShortBuffersAndRetiresCallbackToken(t *testing.T) {
 	}
 	if f.returnedRefs[len(f.returnedRefs)-1] != 1 {
 		t.Fatal("owned UID not released")
+	}
+}
+
+func TestNativePrimePausePreserveSameQueue(t *testing.T) {
+	f := newFakeAudioQueueAPI(t)
+	f.primeFrames = 1280
+	q, err := openNativeWithAPI(Config{DeviceUID: "fake", SampleRate: 16000}, func(int) {}, f.api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := q.(*darwinNativeQueue)
+	defer d.Dispose()
+	if err = d.Prime(); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Prime(); err == nil {
+		t.Fatal("second prime accepted")
+	}
+	if err = d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Start(); err != nil {
+		t.Fatal("resume same queue:", err)
+	}
+	if err = d.Prime(); err == nil {
+		t.Fatal("prime after start accepted")
+	}
+	if f.primeCalls != 1 || f.startCalls != 2 || f.pauseCalls != 1 ||
+		!reflect.DeepEqual(f.events, []string{"prime", "start", "pause", "start"}) {
+		t.Fatalf("calls prime=%d start=%d pause=%d events=%v", f.primeCalls, f.startCalls, f.pauseCalls, f.events)
+	}
+}
+
+func TestNativePrimeAndPauseFailures(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		primeFrames  uint32
+		primeStatus  int32
+		pauseStatus  int32
+		startBefore  bool
+		wantPrimeErr bool
+		wantPauseErr bool
+	}{
+		{name: "no frames", wantPrimeErr: true},
+		{name: "prime status", primeFrames: 1280, primeStatus: -7, wantPrimeErr: true},
+		{name: "pause status", primeFrames: 1280, startBefore: true, pauseStatus: -9, wantPauseErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFakeAudioQueueAPI(t)
+			f.primeFrames, f.primeStatus, f.pauseStatus = test.primeFrames, test.primeStatus, test.pauseStatus
+			q, err := openNativeWithAPI(Config{DeviceUID: "fake", SampleRate: 16000}, func(int) {}, f.api)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer q.Dispose()
+			d := q.(*darwinNativeQueue)
+			if test.startBefore {
+				if err = d.Start(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err = d.Prime(); (err != nil) != test.wantPrimeErr {
+				t.Fatalf("Prime err=%v", err)
+			}
+			if test.startBefore {
+				if err = d.Pause(); (err != nil) != test.wantPauseErr {
+					t.Fatalf("Pause err=%v", err)
+				}
+			}
+		})
 	}
 }
 

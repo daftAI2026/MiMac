@@ -8,6 +8,7 @@ import (
 )
 
 func (s *shell) syncVoiceBinding() {
+	s.voiceStartBlocked = ""
 	if s.coordinator == nil {
 		return
 	}

@@ -286,6 +286,10 @@ func makeKeyedArchiveFixture(t *testing.T, fields map[string]interface{}, uidArr
 		objects = append(objects, name)
 		keys = append(keys, plist.UID(keyIndex))
 		value := fields[name]
+		if value == nil {
+			values = append(values, plist.UID(0))
+			continue
+		}
 		if _, invalid := value.(invalidArchiveUID); invalid {
 			values = append(values, plist.UID(len(objects)+10))
 			continue

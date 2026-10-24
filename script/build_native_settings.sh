@@ -32,6 +32,22 @@ for arch in arm64 amd64; do
 			exit 1
 		}
 	done
+	"$SWIFTC" \
+		-sdk "$SDK_PATH" \
+		-swift-version 5 \
+		-target "$target_arch-apple-macos14.2" \
+		-module-name MiMacATVV \
+		-O -emit-library \
+		-Xlinker -install_name -Xlinker @rpath/libMiMacATVV.dylib \
+		-framework CoreBluetooth -framework Foundation \
+		"$ROOT_DIR/internal/adapters/xiaomi/atvv/native/Transport.swift" \
+		-o "$output_dir/libMiMacATVV.dylib"
+	for symbol in MiMacATVVTransportCreate MiMacATVVTransportRequestStop MiMacATVVTransportClose; do
+		/usr/bin/nm -gU "$output_dir/libMiMacATVV.dylib" | /usr/bin/grep -q " _$symbol$" || {
+			echo "missing ATVV transport export: $symbol" >&2
+			exit 1
+		}
+	done
 done
 
-echo "Built native SwiftUI settings libraries for darwin-arm64 and darwin-amd64."
+echo "Built native settings and ATVV libraries for darwin-arm64 and darwin-amd64."

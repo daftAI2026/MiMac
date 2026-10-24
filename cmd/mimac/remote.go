@@ -164,7 +164,7 @@ func (s *shell) stopRemotePlugin() error {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		err := s.audioSession.runtime.Close(ctx)
+		err := s.audioSession.close(ctx)
 		if err != nil {
 			s.remoteState.err = errors.Join(errRemoteCleanupPending, err)
 			return s.remoteState.err
@@ -256,6 +256,9 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	}
 	if !s.plugins.Active(outputPlugin) || s.coordinator.sink == nil {
 		return "输出未就绪", toneWarning
+	}
+	if s.voiceStartBlocked != "" {
+		return s.voiceStartBlocked, toneNeutral
 	}
 	return "已启用", toneActive
 }
@@ -433,7 +436,7 @@ func (s *shell) closeRemoteAudio(host *audioSessionHost, done func(error)) {
 		if closeAudio != nil {
 			err = closeAudio(ctx, host)
 		} else if host.runtime != nil {
-			err = host.runtime.Close(ctx)
+			err = host.close(ctx)
 		}
 		cancel()
 		postRemoteMainWith(post, func() { done(err) })

@@ -8,7 +8,8 @@
     "minimumSystemVersion": "14.2",
     "signingIdentity": "-",
     "infoPlist": {
-      "LSUIElement": true
+      "LSUIElement": true,
+      "NSBluetoothAlwaysUsageDescription": "连接已配对的小米遥控器，并在使用语音功能时接收遥控器音频。"
     },
     "icon": "Assets/Brand/MiMac.icon"
   },

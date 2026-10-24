@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -21,8 +23,42 @@ const audioSessionPlugin = "audio-session"
 type audioSourceFactory func(context.Context, bridge.SessionToken) (audiosession.Source, audiooutput.Config, error)
 
 type audioSessionHost struct {
-	runtime *audiosession.Runtime
-	cancel  context.CancelFunc
+	runtime          *audiosession.Runtime
+	cancel           context.CancelFunc
+	closeResources   func(context.Context) error
+	resourcesClosed  atomic.Bool
+	resourcesCloseMu sync.Mutex
+}
+
+// Session resources close before their connection-level owner. A cancelled
+// main-thread unload only checks completed cleanup; native work stays off-main.
+func (h *audioSessionHost) close(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if h.runtime != nil {
+		if err := h.runtime.Close(ctx); err != nil {
+			return err
+		}
+	}
+	if h.closeResources == nil || h.resourcesClosed.Load() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(audiosession.ErrCleanupPending, err)
+	}
+	if !h.resourcesCloseMu.TryLock() {
+		return audiosession.ErrCleanupPending
+	}
+	defer h.resourcesCloseMu.Unlock()
+	if h.resourcesClosed.Load() {
+		return nil
+	}
+	if err := h.closeResources(ctx); err != nil {
+		return err
+	}
+	h.resourcesClosed.Store(true)
+	return nil
 }
 
 // Only the session runtime owns this facade, and it closes the previous
@@ -37,25 +73,32 @@ func (s sessionOutput) Close() error                    { return s.owner.close()
 func (s *shell) audioSessionManifest() pluginrt.Manifest {
 	return pluginrt.Manifest{ID: audioSessionPlugin, Requires: []string{corePlugin, audioOutputPlugin}, Start: func() (pluginrt.StopFunc, error) {
 		prepareSource := s.audioSource
-		if prepareSource == nil {
+		prepare := s.audioResources
+		if prepareSource == nil && prepare == nil {
 			return func() error { return nil }, errors.New("audio source has not been verified")
 		}
 		owner := s.audioOutput
-		runner, err := audiosession.New(func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
-			source, config, err := prepareSource(ctx, token)
-			resources := audiosession.Resources{Source: source, SampleRate: config.SampleRate}
-			if err != nil || ctx.Err() != nil {
-				return resources, errors.Join(err, ctx.Err())
+		// A device may transfer already-prepared resources. Runtime remains
+		// their sole session owner, including partial preparation failures.
+		// The source-only path retains lazy output for other device adapters.
+		if prepare == nil {
+			prepare = func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
+				source, config, err := prepareSource(ctx, token)
+				resources := audiosession.Resources{Source: source, SampleRate: config.SampleRate}
+				if err != nil || ctx.Err() != nil {
+					return resources, errors.Join(err, ctx.Err())
+				}
+				err = owner.open(config)
+				resources.Sink = sessionOutput{owner}
+				return resources, err
 			}
-			err = owner.open(config)
-			resources.Sink = sessionOutput{owner}
-			return resources, err
-		})
+		}
+		runner, err := audiosession.New(prepare)
 		if err != nil {
 			return func() error { return nil }, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		host := &audioSessionHost{runtime: runner, cancel: cancel}
+		host := &audioSessionHost{runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose}
 		s.audioSession = host
 		s.coordinator.audio = runner
 		post := s.audioPost
@@ -72,7 +115,7 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			// never wait on a worker's native Open/Close while holding the UI.
 			stoppedCtx, stop := context.WithCancel(context.Background())
 			stop()
-			closeErr := runner.Close(stoppedCtx)
+			closeErr := host.close(stoppedCtx)
 			if closeErr == nil {
 				s.coordinator.audio = nil
 				s.audioSession = nil
@@ -126,7 +169,7 @@ func (s *shell) deferAudioQuit(prevent func(), post func(func()), quit func()) b
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := host.runtime.Close(ctx)
+		err := host.close(ctx)
 		cancel()
 		post(func() {
 			s.audioQuitReady = true

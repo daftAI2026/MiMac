@@ -26,7 +26,7 @@ const (
 
 // readDoubaoMMKV reads a stable metadata/data/metadata snapshot and extracts
 // only the allowlisted fields from the final non-empty MMKV key "d" value.
-func readDoubaoMMKV(ctx context.Context, dataPath string) (settingsCandidate, error) {
+func readDoubaoMMKV(ctx context.Context, dataPath string, additionalFields ...fieldSpec) (settingsCandidate, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -59,21 +59,26 @@ func readDoubaoMMKV(ctx context.Context, dataPath string) (settingsCandidate, er
 		return settingsCandidate{}, err
 	}
 	candidate := settingsCandidate{
-		values:  make(map[string]json.RawMessage, len(shortcutFields)),
-		strings: make(map[string]string, 2),
+		values:  make(map[string]json.RawMessage, len(shortcutFields)+len(additionalFields)),
+		strings: make(map[string]string, 2+len(additionalFields)),
 	}
 	if !found || len(dValue) == 0 { // Empty MMKV values are tombstones.
 		return candidate, nil
 	}
 
-	values, strings, err := parseDoubaoShortcutArchive(dValue)
+	values, strings, err := parseDoubaoShortcutArchive(dValue, additionalFields...)
 	if err != nil {
 		return settingsCandidate{}, err
 	}
 	candidate.valuePresent = true
 	candidate.values = values
 	candidate.strings = strings
-	candidate.hasShortcutField = len(values) != 0
+	for _, field := range shortcutFields {
+		if _, exists := values[field.name]; exists {
+			candidate.hasShortcutField = true
+			break
+		}
+	}
 	return candidate, nil
 }
 
@@ -169,7 +174,7 @@ func readMMKVVarint(data []byte, offset int) (uint32, int, bool) {
 	return 0, offset, false
 }
 
-func parseDoubaoShortcutArchive(data []byte) (map[string]json.RawMessage, map[string]string, error) {
+func parseDoubaoShortcutArchive(data []byte, additionalFields ...fieldSpec) (map[string]json.RawMessage, map[string]string, error) {
 	if len(data) < len("bplist00") || !bytes.HasPrefix(data, []byte("bplist00")) {
 		return nil, nil, voicetools.ErrUnsupportedFile
 	}
@@ -213,11 +218,20 @@ func parseDoubaoShortcutArchive(data []byte) (map[string]json.RawMessage, map[st
 		return nil, nil, voicetools.ErrUnsupportedFile
 	}
 
-	allowed := make(map[string]fieldSpec, len(shortcutFields))
+	allowed := make(map[string]fieldSpec, len(shortcutFields)+len(additionalFields))
 	for _, field := range shortcutFields {
 		allowed[field.name] = field
 	}
-	result := make(map[string]json.RawMessage, len(shortcutFields))
+	for _, field := range additionalFields {
+		if field.name == "" || (field.plistType != "string" && field.plistType != "integer") {
+			return nil, nil, voicetools.ErrUnsupportedFile
+		}
+		if _, duplicate := allowed[field.name]; duplicate {
+			return nil, nil, voicetools.ErrUnsupportedFile
+		}
+		allowed[field.name] = field
+	}
+	result := make(map[string]json.RawMessage, len(shortcutFields)+len(additionalFields))
 	displays := make(map[string]string, 2)
 	for i, rawKey := range keys {
 		keyObject, _, err := resolveArchiveUID(objects, rawKey)
@@ -249,7 +263,7 @@ func parseDoubaoShortcutArchive(data []byte) (map[string]json.RawMessage, map[st
 		} else if field.plistType == "string" {
 			display, ok := value.(string)
 			if !ok {
-				return nil, nil, errShortcutFieldType
+				return nil, nil, fieldTypeError(field)
 			}
 			raw, err = json.Marshal(display)
 			if err != nil {
@@ -258,7 +272,7 @@ func parseDoubaoShortcutArchive(data []byte) (map[string]json.RawMessage, map[st
 			displays[key] = display
 		} else {
 			if !isArchiveInteger(value) {
-				return nil, nil, errShortcutFieldType
+				return nil, nil, fieldTypeError(field)
 			}
 			encoded, err := json.Marshal(value)
 			if err != nil {
@@ -269,6 +283,13 @@ func parseDoubaoShortcutArchive(data []byte) (map[string]json.RawMessage, map[st
 		result[key] = raw
 	}
 	return result, displays, nil
+}
+
+func fieldTypeError(field fieldSpec) error {
+	if field.name == microphoneSelectionField.name {
+		return errMicrophoneFieldType
+	}
+	return errShortcutFieldType
 }
 
 func requireNSDictionary(objects []interface{}, classRef interface{}) error {

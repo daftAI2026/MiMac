@@ -1,5 +1,5 @@
-// Package doubao reads only the six allowlisted shortcut fields from the
-// verified Doubao MMKV configuration.
+// Package doubao reads narrowly allowlisted fields from the verified Doubao
+// MMKV configuration.
 package doubao
 
 import (
@@ -35,7 +35,10 @@ var shortcutFields = []fieldSpec{
 	{name: "asrLongPressShortcutKeyDisplay", plistType: "string"},
 }
 
+var microphoneSelectionField = fieldSpec{name: "selectedMicrophoneId", plistType: "string"}
+
 var errShortcutFieldType = errors.New("doubao config: shortcut field type unsupported")
+var errMicrophoneFieldType = errors.New("doubao config: selectedMicrophoneId must be a string or null")
 
 // Discover requires the exact verified Doubao bundle and its one observed
 // MMKV path. It never consults plist fallbacks or bundled defaults.
@@ -118,7 +121,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	}
 
 	result.State = voicetools.Ready
-	result.Source = "Doubao MMKV key d; six shortcut fields only; key interpretation unverified"
+	result.Source = "Doubao MMKV key d; exact 1.0.2 (1) shortcut tuples; host TIS preflight required"
 	result.Actions = []voicetools.Action{
 		candidate.action("asrShortcut", "听写快捷键", "asrShortcut"),
 		candidate.action("asrLongPressShortcut", "听写长按快捷键", "asrLongPressShortcut"),
@@ -135,34 +138,6 @@ type settingsCandidate struct {
 
 func doubaoMMKVPath(home string) string {
 	return filepath.Join(home, mmkvDirectorySuffix, mmkvDataName)
-}
-
-func (candidate settingsCandidate) action(id, name, prefix string) voicetools.Action {
-	values := make(map[string]json.RawMessage, 3)
-	for _, suffix := range []string{"KeyCode", "ModifierFlags", "KeyDisplay"} {
-		field := prefix + suffix
-		if raw, exists := candidate.values[field]; exists {
-			values[field] = raw
-		}
-	}
-	if len(values) == 0 {
-		return voicetools.Action{ID: id, Name: name, Scope: "unknown", Gesture: "unverified"}
-	}
-	raw, err := json.Marshal(values)
-	if err != nil {
-		raw = []byte("{}")
-	}
-	return voicetools.Action{
-		ID:      id,
-		Name:    name,
-		Scope:   "unknown",
-		Gesture: "unverified",
-		Candidates: []voicetools.Candidate{{
-			Raw:       string(raw),
-			Shortcut:  candidate.strings[prefix+"KeyDisplay"],
-			Supported: false,
-		}},
-	}
 }
 
 func settingsErrorState(err error) voicetools.State {
