@@ -13,56 +13,54 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	if s.selectedButton == "" {
 		s.selectedButton = profile.Model.DefaultSelectedButtonID
 	}
-	ui.Row(c).Fill().MinWidth(0).Gap(windowInset).Children(func() {
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).FillHeight().MinHeight(0).Role(ui.RoleGroup).Label("遥控器预览").Children(func() {
-			ui.Scroll(c).Fill().Children(func() {
-				// Both columns start at the pane's top edge. The device block keeps
-				// its position on resize and scrolls only if its content needs room.
-				ui.Column(c).FillWidth().Gap(sectionGap).AlignItems(ui.Center).Role(ui.RoleGroup).Label("遥控器操作").Children(func() {
-					if len(s.deviceProfiles) > 1 {
-						appButton(c, a, profile.Name+" ⌄", false).Menu(func(menu *ui.Menu) {
-							for _, plugin := range s.deviceProfiles {
-								if menu.Item(plugin.Profile.Name).Checked(plugin.Profile.ID == profile.ID).Chosen() {
-									if err := s.selectDeviceProfile(plugin.Profile.ID); err != nil {
-										s.mappingError = "请先松开按键并停用当前设备"
-									}
-								}
+	headerHeight := mappingHeaderHeight(a.fonts.caption)
+	frameHeight := mappingReferenceFrameHeight(a.fonts.caption)
+	ui.Row(c).Fill().MinWidth(0).AlignItems(ui.Start).Gap(windowInset).Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Height(frameHeight).MaxHeightPercent(100).MinHeight(0).Role(ui.RoleGroup).Label("遥控器预览").Gap(sectionGap).AlignItems(ui.Center).Children(func() {
+			if len(s.deviceProfiles) > 1 {
+				appButton(c, a, profile.Name+" ⌄", false).Menu(func(menu *ui.Menu) {
+					for _, plugin := range s.deviceProfiles {
+						if menu.Item(plugin.Profile.Name).Checked(plugin.Profile.ID == profile.ID).Chosen() {
+							if err := s.selectDeviceProfile(plugin.Profile.ID); err != nil {
+								s.mappingError = "请先松开按键并停用当前设备"
 							}
-						})
-					} else {
-						ui.Text(c, profile.Name).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.body).FontWeight(600)
+						}
 					}
-					s.remoteModel(c, a, profile)
-					ui.Column(c).FillWidth().Gap(spaceSM).AlignItems(ui.Center).Children(func() {
-						mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled())
-						disabled := s.remoteBusy()
-						if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
-							s.toggleRemote()
-						}
-						if s.deviceNeedsPermission || s.outputNeedsPermission {
-							if appButton(c, a, "打开系统设置", false).Clicked() {
-								if s.deviceNeedsPermission {
-									s.openInputPermissionSettings()
-								} else {
-									_ = mygo.Shell.OpenExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-								}
-							}
-						}
-						if s.mappingError != "" && s.editButton == "" {
-							ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
-						}
-					})
 				})
+			} else {
+				ui.Text(c, profile.Name).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.body).FontWeight(600)
+			}
+			ui.Column(c).Grow(1).Basis(0).FillWidth().MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Role(ui.RoleGroup).Label("遥控器展示区").Children(func() {
+				s.remoteModel(c, a, profile)
+			})
+			ui.Column(c).FillWidth().Gap(spaceSM).Padding(0, 0, mappingFooterInset, 0).AlignItems(ui.Center).Children(func() {
+				if s.deviceNeedsPermission || s.outputNeedsPermission {
+					if appButton(c, a, "打开系统设置", false).Clicked() {
+						if s.deviceNeedsPermission {
+							s.openInputPermissionSettings()
+						} else {
+							_ = mygo.Shell.OpenExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+						}
+					}
+				}
+				if s.mappingError != "" && s.editButton == "" {
+					ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+				}
+				mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled())
+				disabled := s.remoteBusy()
+				if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
+					s.toggleRemote()
+				}
 			})
 		})
-		ui.Column(c).Grow(2).Basis(0).MinWidth(0).FillHeight().Role(ui.RoleGroup).Label("按键设置").Gap(spaceSM).Children(func() {
-			ui.Row(c).FillWidth().Padding(0, settingsRowInset).Gap(spaceSM).Children(func() {
+		ui.Column(c).Grow(mappingListRatio).Basis(0).MinWidth(0).Height(frameHeight).MaxHeightPercent(100).MinHeight(0).Role(ui.RoleGroup).Label("按键设置").Gap(spaceSM).Children(func() {
+			ui.Row(c).FillWidth().Height(headerHeight).Padding(0, settingsRowInset).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
 				ui.Text(c, "按键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Grow(1).MinWidth(0)
 				ui.Text(c, "设备键值").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingDefaultWidth)
 				ui.Text(c, "自定义").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingChoiceWidth + mappingMenuWidth + spaceSM)
 			})
 			ui.Scroll(c).Grow(1).Basis(0).FillWidth().MinHeight(0).Children(func() {
-				rows := ui.Column(c).Key("mapping-list/" + profile.ID).Gap(2).FillWidth().MinWidth(0)
+				rows := ui.Column(c).Key("mapping-list/" + profile.ID).Gap(mappingRowGap).FillWidth().MinWidth(0)
 				var selectedBounds ui.Rect
 				rows.Children(func() {
 					for _, button := range profile.Buttons {

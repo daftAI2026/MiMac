@@ -7,47 +7,61 @@ import (
 )
 
 const (
-	textCaption         float32 = 12
-	textBody            float32 = 13
-	textTitle           float32 = 16
-	lineWidth           float32 = 0.5
-	modelSelectionLine  float32 = 1
-	windowInset         float32 = 24
-	settingsPaneInset   float32 = 20
-	settingsPaneTop     float32 = 20
-	settingsRowInset    float32 = 10
-	settingsRowHeight   float32 = 38
-	settingsRowPadding  float32 = 7
-	settingsGroupRadius float32 = 12
-	settingsIconSize    float32 = 20
-	accessoryIconSize   float32 = 12
-	toolbarInset        float32 = 8
-	scrollGutter        float32 = 12
-	spaceXS             float32 = 4
-	spaceSM             float32 = 8
-	spaceMD             float32 = 12
-	spaceLG             float32 = 16
-	sectionGap          float32 = 20
-	controlInset        float32 = 3
-	controlHeight       float32 = 24
-	controlRadius       float32 = 5
-	sidebarWidth        float32 = 184
-	sidebarHeaderHeight float32 = 64
-	contentHeaderHeight float32 = 52
-	navigationHeight    float32 = 36
-	navigationWidth     float32 = 76
-	labelColumnWidth    float32 = 104
-	mappingChoiceWidth  float32 = 128
-	mappingDefaultWidth float32 = 64
-	mappingMenuWidth    float32 = 24
-	modelMaxWidth       float32 = 120
-	modelMaxHeight      float32 = 400
-	windowWidth                 = 900
-	windowHeight                = 660
-	windowMinWidth              = 820
-	windowMinHeight             = 600
-	trafficLightInset           = 20
+	textCaption          float32 = 12
+	textBody             float32 = 13
+	textTitle            float32 = 16
+	lineWidth            float32 = 0.5
+	modelSelectionLine   float32 = 1
+	windowInset          float32 = 24
+	settingsPaneInset    float32 = 20
+	settingsPaneTop      float32 = 20
+	settingsRowInset     float32 = 10
+	settingsRowHeight    float32 = 38
+	settingsRowPadding   float32 = 7
+	settingsGroupRadius  float32 = 12
+	settingsIconSize     float32 = 20
+	accessoryIconSize    float32 = 12
+	toolbarInset         float32 = 8
+	scrollGutter         float32 = 12
+	spaceXS              float32 = 4
+	spaceSM              float32 = 8
+	spaceMD              float32 = 12
+	spaceLG              float32 = 16
+	sectionGap           float32 = 20
+	controlInset         float32 = 3
+	controlHeight        float32 = 24
+	controlRadius        float32 = 5
+	sidebarWidth         float32 = 184
+	sidebarHeaderHeight  float32 = 64
+	contentHeaderHeight  float32 = 52
+	navigationHeight     float32 = 36
+	navigationWidth      float32 = 76
+	labelColumnWidth     float32 = 104
+	mappingChoiceWidth   float32 = 128
+	mappingDefaultWidth  float32 = 80
+	mappingMenuWidth     float32 = 24
+	mappingListRatio     float32 = 1.6
+	mappingRowGap        float32 = 2
+	mappingReferenceRows         = 13
+	modelMaxWidth        float32 = 120
+	modelMaxHeight       float32 = 400
+	windowWidth                  = 900
+	windowHeight                 = 660
+	windowMinWidth               = windowWidth
+	windowMinHeight              = windowHeight
+	trafficLightInset            = 20
+	mappingFooterInset   float32 = (settingsRowHeight - controlHeight) / 2
 )
+
+func mappingReferenceFrameHeight(captionSize float32) float32 {
+	headerHeight := mappingHeaderHeight(captionSize)
+	rowsHeight := float32(mappingReferenceRows)*settingsRowHeight + float32(mappingReferenceRows-1)*mappingRowGap
+	return headerHeight + spaceSM + rowsHeight
+}
+
+func mappingHeaderHeight(captionSize float32) float32 {
+	return captionSize + spaceXS
+}
 
 // Selection feedback is visual only. MyGo retargets interrupted transitions,
 // stops requesting frames when settled, and honors macOS Reduce Motion.
