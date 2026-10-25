@@ -85,17 +85,22 @@ type Candidate struct {
 // discovery also checks registered application paths. It never launches the
 // bundle or inspects other user files.
 func ReadInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, error) {
+	candidate, _, _, err := readInstalled(ctx, locator)
+	return candidate, err
+}
+
+func readInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, voicetools.Bundle, voicetools.State, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return Candidate{}, err
+		return Candidate{}, voicetools.Bundle{}, voicetools.ReadError, err
 	}
 	if runtime.GOOS != "darwin" {
-		return Candidate{}, ErrUnsupportedPlatform
+		return Candidate{}, voicetools.Bundle{}, voicetools.Unsupported, ErrUnsupportedPlatform
 	}
 	if locator.Home == "" {
-		return Candidate{}, ErrBundleUnavailable
+		return Candidate{}, voicetools.Bundle{}, voicetools.ReadError, ErrBundleUnavailable
 	}
 
 	bundle, state, err := voicetools.FindBundleInLocator(
@@ -105,27 +110,31 @@ func ReadInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, 
 		bundleIdentifier,
 	)
 	if err != nil {
-		return Candidate{}, ErrBundleUnavailable
+		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}
 	if !isVerifiedBundle(bundle) {
 		if state == voicetools.Ambiguous {
-			return Candidate{}, ErrAmbiguousBundle
+			return Candidate{}, bundle, state, ErrAmbiguousBundle
 		}
 		if state != voicetools.Ready {
-			return Candidate{}, ErrBundleUnavailable
+			return Candidate{}, bundle, state, ErrBundleUnavailable
 		}
-		return Candidate{}, ErrUnverifiedBundle
+		return Candidate{}, bundle, state, ErrUnverifiedBundle
 	}
 
-	dataPath := filepath.Join(locator.Home, "Library", "Application Support", storeDirectory, storeName)
+	dataPath := settingsPath(locator)
 	candidate, err := readStore(ctx, dataPath)
 	if err != nil {
-		return Candidate{}, err
+		return Candidate{}, bundle, state, err
 	}
 	candidate.BundleIdentifier = bundle.Identifier
 	candidate.BundleVersion = bundle.Version
 	candidate.BundleBuild = bundle.Build
-	return candidate, nil
+	return candidate, bundle, state, nil
+}
+
+func settingsPath(locator voicetools.Locator) string {
+	return filepath.Join(locator.Home, "Library", "Application Support", storeDirectory, storeName)
 }
 
 func isVerifiedBundle(bundle voicetools.Bundle) bool {

@@ -11,7 +11,9 @@ import (
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/chatgpt"
 	"mimac.local/mimac/internal/adapters/doubao"
+	"mimac.local/mimac/internal/adapters/shandian"
 	"mimac.local/mimac/internal/adapters/typeless"
+	"mimac.local/mimac/internal/adapters/wetype"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/pluginrt"
 	"mimac.local/mimac/internal/voicetools"
@@ -52,6 +54,8 @@ func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
 		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, requiredInputSource: doubao.RequiredInputSourceID},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover},
+		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover},
+		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover},
 	}
 }
