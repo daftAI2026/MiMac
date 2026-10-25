@@ -466,3 +466,38 @@ func TestPreparedAudioOwnerCloseWaitsForRuntimeLeaseWithoutClosingIt(t *testing.
 		t.Fatal("owner rearmed after Close began")
 	}
 }
+
+func TestPreparedAudioTakePreservesReceiverReadiness(t *testing.T) {
+	var calls atomic.Int32
+	fault := errors.New("receiver not selected")
+	owner, err := newPreparedAudioOwner(func(context.Context) (audiosession.Resources, error) {
+		return audiosession.Resources{Source: &preparedAudioTestSource{}, Sink: &preparedAudioTestSink{}, SampleRate: 16000, WaitReceiver: func(context.Context) error { calls.Add(1); return fault }}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePreparedAudio(t, owner) })
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitPreparedAudio(t, owner.Ready)
+	if calls.Load() != 0 {
+		t.Fatal("background preparation waited for target before session")
+	}
+	resources, err := owner.Take(preparedAudioToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.WaitReceiver == nil {
+		t.Fatal("resource transfer dropped receiver gate")
+	}
+	if err := resources.WaitReceiver(context.Background()); !errors.Is(err, fault) || calls.Load() != 1 {
+		t.Fatalf("receiver gate changed: %v", err)
+	}
+	if err := resources.Source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.Sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -34,6 +34,12 @@ type Resources struct {
 	Source     Source
 	Sink       Sink
 	SampleRate int
+	// WaitReceiver is supplied by an external-consumer adapter. It must verify
+	// the session's exact input route and active consumer, not merely that a
+	// shortcut was sent. Nil is for routes requiring no external readiness.
+	// It runs before SourcePrepared/Read and must honor cancellation. A late
+	// return after cancellation never opens the gate; resources remain owned.
+	WaitReceiver func(context.Context) error
 }
 
 // Prepare may return partial resources with an error. Their ownership always
@@ -225,6 +231,14 @@ func (r *Runtime) run(s *resource) {
 	close(s.ready)
 	if err == nil && (resources.Source == nil || resources.Sink == nil || (resources.SampleRate != 8000 && resources.SampleRate != 16000)) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
+	}
+	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
+		// This is a failure deadline, not a startup delay. Keep Core preparing
+		// so a release cancels the wait instead of starting a drain behind it.
+		readyCtx, cancelReady := context.WithTimeout(s.ctx, 2*time.Second)
+		err = resources.WaitReceiver(readyCtx)
+		err = errors.Join(err, readyCtx.Err())
+		cancelReady()
 	}
 	if s.ctx.Err() == nil && err == nil {
 		r.emit(Completion{Event: bridge.SourcePrepared(s.token, resourceID)})
