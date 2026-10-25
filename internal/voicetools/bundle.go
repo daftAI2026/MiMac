@@ -22,6 +22,35 @@ type Bundle struct {
 	Build      string
 }
 
+// FindBundleInLocator checks exact paths and, for a DefaultLocator, also asks
+// macOS for applications registered or running with the expected bundle ID.
+// Every candidate is still inspected on disk before it can be selected.
+func FindBundleInLocator(ctx context.Context, locator Locator, candidates []string, expectedIdentifier string) (Bundle, State, error) {
+	return findBundleInLocator(ctx, locator, candidates, expectedIdentifier, registeredApplicationCandidates)
+}
+
+type applicationCandidateDiscoverer func(context.Context, string) ([]string, error)
+
+func findBundleInLocator(ctx context.Context, locator Locator, candidates []string, expectedIdentifier string, discover applicationCandidateDiscoverer) (Bundle, State, error) {
+	if !locator.discoverSystemApplications || expectedIdentifier == "" {
+		return FindBundle(ctx, candidates, expectedIdentifier)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Bundle{}, ReadError, err
+	}
+	extra, err := discover(ctx, expectedIdentifier)
+	if err != nil {
+		return Bundle{}, ReadError, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Bundle{}, ReadError, err
+	}
+	return FindBundle(ctx, append(candidates, extra...), expectedIdentifier)
+}
+
 // InspectBundle extracts only the bundle identity and version fields from
 // Contents/Info.plist. It does not return or log the rest of the plist.
 func InspectBundle(ctx context.Context, appPath string) (Bundle, error) {
@@ -135,10 +164,11 @@ func FindBundle(ctx context.Context, candidates []string, expectedIdentifier str
 			continue
 		}
 		path = filepath.Clean(path)
-		if _, exists := seen[path]; exists {
+		key := bundleCandidateKey(path)
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[path] = struct{}{}
+		seen[key] = struct{}{}
 		if err := ctx.Err(); err != nil {
 			return Bundle{}, ReadError, err
 		}
@@ -184,4 +214,15 @@ func FindBundle(ctx context.Context, candidates []string, expectedIdentifier str
 		return Bundle{Path: firstExisting}, Unsupported, nil
 	}
 	return Bundle{}, NotFound, nil
+}
+
+func bundleCandidateKey(path string) string {
+	key, err := filepath.Abs(path)
+	if err != nil {
+		key = filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(key); err == nil {
+		key = resolved
+	}
+	return filepath.Clean(key)
 }

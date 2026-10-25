@@ -30,6 +30,9 @@ func TestDefaultLocatorOrdersUserPathsBeforeSystemPaths(t *testing.T) {
 	if got, want := locator.InputMethodDirs, []string{filepath.Join(home, "Library", "Input Methods"), "/Library/Input Methods"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("input method dirs = %#v, want %#v", got, want)
 	}
+	if !locator.discoverSystemApplications {
+		t.Fatal("DefaultLocator must enable system application discovery")
+	}
 }
 
 func TestApplicationCandidatesAreExactShallowPaths(t *testing.T) {

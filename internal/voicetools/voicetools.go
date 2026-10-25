@@ -49,6 +49,10 @@ type Locator struct {
 	Home            string
 	ApplicationDirs []string
 	InputMethodDirs []string
+
+	// discoverSystemApplications is enabled only by DefaultLocator. Tests and
+	// adapters using a constructed Locator remain isolated from host installs.
+	discoverSystemApplications bool
 }
 
 func DefaultLocator() (Locator, error) {
@@ -58,9 +62,10 @@ func DefaultLocator() (Locator, error) {
 	}
 
 	return Locator{
-		Home:            home,
-		ApplicationDirs: []string{filepath.Join(home, "Applications"), "/Applications"},
-		InputMethodDirs: []string{filepath.Join(home, "Library", "Input Methods"), "/Library/Input Methods"},
+		Home:                       home,
+		ApplicationDirs:            []string{filepath.Join(home, "Applications"), "/Applications"},
+		InputMethodDirs:            []string{filepath.Join(home, "Library", "Input Methods"), "/Library/Input Methods"},
+		discoverSystemApplications: true,
 	}, nil
 }
 

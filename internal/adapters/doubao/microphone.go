@@ -40,7 +40,7 @@ func ReadMicrophoneSelection(ctx context.Context, locator voicetools.Locator) (M
 	}
 
 	bundlePaths := voicetools.ApplicationCandidates(locator.InputMethodDirs, bundleName)
-	bundle, state, err := voicetools.FindBundle(ctx, bundlePaths, bundleIdentifier)
+	bundle, state, err := voicetools.FindBundleInLocator(ctx, locator, bundlePaths, bundleIdentifier)
 	if err != nil {
 		return MicrophoneSelection{}, fmt.Errorf("doubao microphone selection: verify bundle: %w", err)
 	}
