@@ -49,6 +49,7 @@ type shell struct {
 	preferencesState
 	voiceToolsState
 	remoteState
+	powerState                       powerState
 	liveAudio                        liveAudioState
 	window                           *mygo.Window
 	navigation                       *navigation.Control
@@ -127,6 +128,7 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 		mygo.App.Quit()
 		return
 	}
+	s.watchPower()
 	s.loadMappings()
 	s.loadVoiceTools()
 	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: "MiMac"})
@@ -230,6 +232,7 @@ func main() {
 	// A settings window is disposable; closing it must leave the menu bar host running.
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
+		s.cancelPowerResume()
 		if s.deferAudioQuit(event.PreventDefault, mygo.RunOnMain, func() {
 			if s.audioQuitReady && !s.report.AudioCleanupFailed && s.audioSession != nil {
 				s.remoteState.cleanedAudio = s.audioSession.runtime
@@ -239,6 +242,7 @@ func main() {
 			return
 		}
 		s.closing = true
+		s.unwatchPower()
 		s.closeGeneralControls()
 		if s.navigation != nil {
 			s.navigation.Close()

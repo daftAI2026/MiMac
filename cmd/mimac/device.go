@@ -13,7 +13,7 @@ import (
 // The host owns the monitor lifetime, independently of disposable settings
 // windows. Monitor callbacks and all methods here run on the MyGo main thread.
 func (s *shell) toggleDeviceMonitor() {
-	if s.deviceNeedsRestart {
+	if s.closing || s.deviceNeedsRestart || s.powerInputBlocked() {
 		return
 	}
 	s.deviceReadSequence++ // A discovery result must not overwrite live monitor state.
@@ -57,7 +57,7 @@ func (s *shell) toggleDeviceMonitor() {
 }
 
 func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
-	if s.closing {
+	if s.closing || s.powerInputBlocked() || s.remoteState.stopPending {
 		return
 	}
 	var accepted bool

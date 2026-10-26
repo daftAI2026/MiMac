@@ -28,7 +28,11 @@ type startHIDMonitor func(func(xiaomi.MonitorEvent)) (hidMonitor, error)
 func (s *shell) setupPlugins() error {
 	s.remoteState.postMain = mygo.RunOnMain
 	return s.setupPluginsWith(func(onEvent func(xiaomi.MonitorEvent)) (hidMonitor, error) {
-		monitor, err := xiaomi.StartMonitor(onEvent)
+		start := xiaomi.StartMonitor
+		if s.powerState.resuming {
+			start = xiaomi.StartMonitorWithoutPrompt
+		}
+		monitor, err := start(onEvent)
 		if err != nil {
 			return nil, err
 		}

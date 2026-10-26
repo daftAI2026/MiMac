@@ -321,6 +321,10 @@ func nextConnectionGeneration() (uint64, error) {
 }
 
 func ensureListenAccess(api *monitorAPI) error {
+	return ensureListenAccessWithRequest(api, true)
+}
+
+func ensureListenAccessWithRequest(api *monitorAPI, requestPermission bool) error {
 	access := api.checkAccess(listenEventRequestType)
 	if access == accessGranted {
 		return nil
@@ -330,6 +334,9 @@ func ensureListenAccess(api *monitorAPI) error {
 	}
 	if access != accessUnknown {
 		return fmt.Errorf("%w: unrecognized access result %d", ErrInputMonitoringRequired, access)
+	}
+	if !requestPermission {
+		return fmt.Errorf("%w: access is unknown", ErrInputMonitoringRequired)
 	}
 
 	listenAccessRequest.Lock()
@@ -355,6 +362,17 @@ func ensureListenAccess(api *monitorAPI) error {
 // schedule such work after that callback returns. This does not create a
 // microphone, map button meanings, or synthesize keyboard input.
 func StartMonitor(onEvent func(MonitorEvent)) (*Monitor, error) {
+	return startMonitor(onEvent, true)
+}
+
+// StartMonitorWithoutPrompt begins the same HID subscription without ever
+// asking macOS to display an Input Monitoring permission prompt. It succeeds
+// only when access has already been granted.
+func StartMonitorWithoutPrompt(onEvent func(MonitorEvent)) (*Monitor, error) {
+	return startMonitor(onEvent, false)
+}
+
+func startMonitor(onEvent func(MonitorEvent), requestPermission bool) (*Monitor, error) {
 	if onEvent == nil {
 		return nil, errors.New("xiaomi HID: event callback is required")
 	}
@@ -372,7 +390,7 @@ func StartMonitor(onEvent func(MonitorEvent)) (*Monitor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrMonitorUnavailable, err)
 	}
-	if err := ensureListenAccess(api); err != nil {
+	if err := ensureListenAccessWithRequest(api, requestPermission); err != nil {
 		return nil, err
 	}
 

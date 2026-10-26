@@ -52,7 +52,7 @@ func (s *shell) desiredLiveAudioTool() *voiceTool {
 // while device, target selection and output stay in their respective adapters.
 func (s *shell) refreshLiveAudio() {
 	s.blockUnpreparedLiveAudio()
-	if s.closing || s.liveAudio.retiring || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
+	if s.closing || s.powerInputBlocked() || s.liveAudio.retiring || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return
 	}
 	tool := s.desiredLiveAudioTool()
@@ -182,6 +182,7 @@ func (s *shell) retireLiveAudio() {
 			return
 		}
 		s.refreshLiveAudio()
+		s.stopForPowerWhenReady()
 		s.invalidateDeviceView()
 	})
 }

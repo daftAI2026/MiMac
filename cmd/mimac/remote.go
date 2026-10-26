@@ -93,7 +93,7 @@ func (s *shell) configureRemoteReservation() error {
 }
 
 func (s *shell) acquireRemoteReservation(generation uint64, starting bool) error {
-	if s.closing || generation == 0 || s.coordinator == nil || s.remoteState.reserve == nil {
+	if s.closing || s.powerInputBlocked() || generation == 0 || s.coordinator == nil || s.remoteState.reserve == nil {
 		return nil
 	}
 	if s.remoteState.cleanupInFlight || s.remoteState.stopPending {
@@ -185,7 +185,7 @@ func (s *shell) stopRemotePlugin() error {
 }
 
 func (s *shell) remoteHasReservation() bool {
-	if s.remoteState.reservation == nil || s.remoteState.err != nil ||
+	if s.powerInputBlocked() || s.remoteState.reservation == nil || s.remoteState.err != nil ||
 		s.remoteState.cleanupInFlight || s.remoteState.stopPending ||
 		!s.remoteEnabled() || s.plugins.Failure(remotePlugin) != nil || s.coordinator == nil {
 		return false
@@ -199,16 +199,36 @@ func (s *shell) remoteEnabled() bool {
 }
 
 func (s *shell) remoteBusy() bool {
-	if s.remoteState.reserveInFlight || s.remoteState.cleanupInFlight ||
+	if s.liveAudio.retiring || s.remoteState.reserveInFlight || s.remoteState.cleanupInFlight ||
 		s.remoteState.stopPending || s.remoteState.reserveQueued != 0 {
 		return true
 	}
-	return s.plugins != nil && s.plugins.Failure(remotePlugin) != nil
+	return s.remoteNeedsRestart()
+}
+
+func (s *shell) remoteNeedsRestart() bool {
+	if s.deviceNeedsRestart || s.outputNeedsRestart {
+		return true
+	}
+	if s.plugins != nil {
+		for _, id := range []string{remotePlugin, xiaomiPlugin, outputPlugin, audioSessionPlugin} {
+			if s.plugins.Failure(id) != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *shell) remoteButtonLabel() string {
-	if s.plugins != nil && s.plugins.Failure(remotePlugin) != nil {
+	if s.remoteNeedsRestart() {
 		return "恢复失败"
+	}
+	if s.powerState.stopping && !s.remoteBusy() {
+		return "重试清理"
+	}
+	if s.powerState.resumeRemote && !s.remoteBusy() {
+		return "停用遥控器"
 	}
 	if s.remoteBusy() {
 		return "准备中"
@@ -222,11 +242,17 @@ func (s *shell) remoteButtonLabel() string {
 // remoteStatus projects existing owners into one UI result. A connected HID
 // lease alone does not mean the selected voice action is executable.
 func (s *shell) remoteStatus() (string, statusTone) {
+	if s.remoteNeedsRestart() {
+		return "恢复失败", toneError
+	}
+	if s.powerState.stopping && !s.remoteBusy() {
+		return "请重试清理", toneWarning
+	}
+	if s.powerPaused() {
+		return "已暂停", toneNeutral
+	}
 	if !s.audioQuitPending && s.report.AudioCleanupFailed && strings.HasPrefix(s.report.Error, "audio shutdown: ") {
 		return "清理未完成，请再次退出", toneError
-	}
-	if (s.plugins != nil && s.plugins.Failure(remotePlugin) != nil) || s.deviceNeedsRestart || s.outputNeedsRestart {
-		return "恢复失败", toneError
 	}
 	if s.deviceNeedsPermission {
 		return "需要输入监控权限", toneWarning
@@ -298,13 +324,26 @@ func (s *shell) remoteLabel() string    { label, _ := s.remoteStatus(); return l
 func (s *shell) remoteTone() statusTone { _, tone := s.remoteStatus(); return tone }
 
 func (s *shell) toggleRemote() {
-	if s.closing || s.remoteBusy() || s.plugins == nil {
+	if s.closing || s.plugins == nil {
+		return
+	}
+	if s.powerState.resumeRemote || s.powerState.resumeMonitor || s.powerState.stopping {
+		s.cancelPowerResume()
+		s.stopForPowerWhenReady()
+		s.invalidateDeviceView()
+		return
+	}
+	if s.powerPaused() || s.remoteBusy() {
 		return
 	}
 	if s.remoteEnabled() {
 		s.beginRemoteStop()
 		return
 	}
+	s.enableRemote(true)
+}
+
+func (s *shell) enableRemote(requestPermission bool) {
 	s.remoteState.err = nil
 	s.deviceNeedsPermission = false
 	if err := s.plugins.Enable(remotePlugin); err != nil {
@@ -323,7 +362,7 @@ func (s *shell) toggleRemote() {
 		return
 	}
 	s.syncVoiceBinding()
-	s.refreshRemoteOutput(true)
+	s.refreshRemoteOutput(requestPermission)
 	s.invalidateDeviceView()
 }
 
@@ -383,7 +422,7 @@ func (s *shell) beginRemoteStop() {
 }
 
 func (s *shell) remoteDeviceEvent(event xiaomi.MonitorEvent) {
-	if s.closing {
+	if s.closing || s.powerInputBlocked() {
 		return
 	}
 	if event.State == xiaomi.MonitorStateConnected {
@@ -402,7 +441,7 @@ func (s *shell) remoteDeviceEvent(event xiaomi.MonitorEvent) {
 }
 
 func (s *shell) queueRemoteReserve(generation uint64) {
-	if generation == 0 || s.remoteState.reserveQueued == generation ||
+	if s.powerInputBlocked() || generation == 0 || s.remoteState.reserveQueued == generation ||
 		s.remoteState.reservation != nil || s.remoteState.cleanupInFlight ||
 		s.remoteState.stopPending || !s.remoteEnabled() {
 		return
@@ -412,7 +451,7 @@ func (s *shell) queueRemoteReserve(generation uint64) {
 		if s.remoteState.reserveQueued == generation {
 			s.remoteState.reserveQueued = 0
 		}
-		if s.closing || !s.remoteEnabled() || s.remoteState.cleanupInFlight || s.remoteState.stopPending {
+		if s.closing || s.powerInputBlocked() || !s.remoteEnabled() || s.remoteState.cleanupInFlight || s.remoteState.stopPending {
 			return
 		}
 		if err := s.acquireRemoteReservation(generation, false); err != nil {
@@ -522,6 +561,11 @@ func (s *shell) finishRemoteStop(sequence uint64, host *audioSessionHost, discon
 	s.deviceNeedsPermission = false
 	s.outputNeedsPermission = false
 	s.outputStatus = ""
+	if s.remoteState.err == nil {
+		s.report.AudioCleanupFailed = false
+		s.report.AudioError = ""
+		s.finishPowerStop()
+	}
 	s.syncVoiceBinding()
 	s.invalidateDeviceView()
 }
@@ -576,7 +620,7 @@ func (s *shell) finishRemoteDisconnect(sequence uint64, generation uint64, host 
 	}
 	s.remoteState.err = nil
 	s.syncVoiceBinding()
-	if s.remoteEnabled() && s.plugins.Failure(remotePlugin) == nil && s.coordinator != nil {
+	if !s.powerInputBlocked() && s.remoteEnabled() && s.plugins.Failure(remotePlugin) == nil && s.coordinator != nil {
 		snapshot := s.coordinator.core.Snapshot()
 		if snapshot.Connected {
 			if err := s.acquireRemoteReservation(snapshot.Generation, false); err != nil {
@@ -585,6 +629,7 @@ func (s *shell) finishRemoteDisconnect(sequence uint64, generation uint64, host 
 		}
 	}
 	s.refreshRemoteOutput(false)
+	s.stopForPowerWhenReady()
 	s.invalidateDeviceView()
 }
 
