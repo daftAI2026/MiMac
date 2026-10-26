@@ -103,12 +103,7 @@ func readInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, 
 		return Candidate{}, voicetools.Bundle{}, voicetools.ReadError, ErrBundleUnavailable
 	}
 
-	bundle, state, err := voicetools.FindBundleInLocator(
-		ctx,
-		locator,
-		voicetools.ApplicationCandidates(locator.InputMethodDirs, bundleName),
-		bundleIdentifier,
-	)
+	bundle, state, err := LocateApplication(ctx, locator)
 	if err != nil {
 		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}

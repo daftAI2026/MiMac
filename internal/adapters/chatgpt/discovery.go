@@ -63,7 +63,7 @@ func discover(ctx context.Context, locator voicetools.Locator, resolveHome confi
 		return result
 	}
 
-	bundle, state, err := voicetools.FindBundleInLocator(ctx, locator, appCandidatePaths(locator), bundleIdentifier)
+	bundle, state, err := LocateApplication(ctx, locator)
 	if err != nil {
 		result.State = state
 		result.AppPath = bundle.Path

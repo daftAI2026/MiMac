@@ -150,8 +150,27 @@ func (a appearance) statusColor(tone statusTone) ui.Color {
 // ButtonBase keeps keyboard/AX behavior without the framework's wider focus
 // stroke. Focus, hover and press use immediate color changes, with no motion.
 func appButton(c *ui.Context, a appearance, label string, disabled bool) ui.Element {
+	b := styleAppButton(ui.ButtonBase(c), a, disabled)
+	b.Children(func() { ui.Text(c, label).SingleLine().FontSize(a.fonts.body) })
+	return b
+}
+
+func appMenuButton(c *ui.Context, a appearance, label string, disabled bool, indicator *ui.Bitmap, build func(*ui.Menu)) ui.Element {
+	b := appButton(c, a, label, disabled).Justify(ui.Center)
+	if indicator != nil {
+		b.Children(func() {
+			ui.Box(c).Absolute().Right(spaceSM).Top(0).Bottom(0).Width(accessoryIconSize).
+				AlignItems(ui.Center).Justify(ui.Center).PassThrough().Children(func() {
+				ui.Image(c, indicator).Width(accessoryIconSize).Height(accessoryIconSize).Fit(ui.Contain)
+			})
+		})
+	}
+	return b.Menu(build)
+}
+
+func styleAppButton(b ui.Element, a appearance, disabled bool) ui.Element {
 	t := a.theme
-	b := ui.ButtonBase(c).Disabled(disabled).FocusRing(false).
+	b.Disabled(disabled).FocusRing(false).
 		Padding(controlInset, spaceMD).MinHeight(controlHeight).Radius(t.Radius).
 		Background(t.Surface).Border(lineWidth, t.Border)
 	if !disabled {
@@ -168,8 +187,7 @@ func appButton(c *ui.Context, a appearance, label string, disabled bool) ui.Elem
 	if disabled {
 		textColor = a.disabled
 	}
-	b.Children(func() { ui.Text(c, label).SingleLine().FontSize(a.fonts.body).TextColor(textColor) })
-	return b
+	return b.TextColor(textColor)
 }
 
 func sectionLine(c *ui.Context, a appearance) {

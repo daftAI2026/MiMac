@@ -22,7 +22,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	ui.Row(c).Fill().MinWidth(0).AlignItems(ui.Start).Gap(windowInset).Children(func() {
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Height(frameHeight).MaxHeightPercent(100).MinHeight(0).Role(ui.RoleGroup).Label("遥控器预览").Gap(sectionGap).AlignItems(ui.Center).Children(func() {
 			if len(s.deviceProfiles) > 1 {
-				appButton(c, a, profile.Name+" ⌄", false).Menu(func(menu *ui.Menu) {
+				appMenuButton(c, a, profile.Name, false, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark), func(menu *ui.Menu) {
 					for _, plugin := range s.deviceProfiles {
 						if menu.Item(plugin.Profile.Name).Checked(plugin.Profile.ID == profile.ID).Chosen() {
 							if err := s.selectDeviceProfile(plugin.Profile.ID); err != nil {
@@ -146,16 +146,14 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 			s.chooseMappingVoiceTool(c, tool)
 		}
 	default:
-		button := appButton(c, a, s.voiceSelectionLabel()+" ⌄", s.toolLoadFailed).
-			Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
-		button.Menu(func(menu *ui.Menu) {
+		appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark), func(menu *ui.Menu) {
 			for _, tool := range active {
 				item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
 				if item.Chosen() && tool.id != s.currentVoiceTool && !s.toolLoadFailed {
 					s.chooseMappingVoiceTool(c, tool)
 				}
 			}
-		})
+		}).Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
 	}
 }
 
@@ -243,10 +241,15 @@ func (s *shell) mappingMenu(id string) *mygo.Menu {
 }
 
 func (s *shell) pluginSettings(c *ui.Context, a appearance) {
-	pluginRow := func(name, status, action string, disabled bool, run func()) {
+	pluginRow := func(name, status, action string, disabled bool, tool *voiceTool, run func()) {
 		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Gap(spaceLG).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(spaceXS).Children(func() {
-				ui.Text(c, name).FontSize(a.fonts.body).FontWeight(600)
+				ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+					if tool != nil {
+						s.voiceToolArtwork(c, a, tool)
+					}
+					ui.Text(c, name).FontSize(a.fonts.body).FontWeight(600)
+				})
 				ui.Text(c, status).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 			})
 			if action != "" {
@@ -259,11 +262,11 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 		})
 	}
 
-	pluginCard := func(name, status, action string, disabled bool, run func()) func() {
+	pluginCard := func(name, status, action string, disabled bool, tool *voiceTool, run func()) func() {
 		return func() {
 			settingsGroup(c, a, func() {
 				ui.Column(c).FillWidth().MinWidth(0).Padding(settingsRowInset, 0).Children(func() {
-					pluginRow(name, status, action, disabled, run)
+					pluginRow(name, status, action, disabled, tool, run)
 				})
 			}).Role(ui.RoleGroup).Label(name + "插件")
 		}
@@ -284,12 +287,12 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 		coreStatus = "运行中"
 	}
 	pluginSection("系统插件",
-		pluginCard("按键核心", coreStatus, "按键映射", false, func() { s.navigate(pageMappings) }),
+		pluginCard("按键核心", coreStatus, "按键映射", false, nil, func() { s.navigate(pageMappings) }),
 	)
 
 	device := s.activeDevicePlugin()
 	if device.ModuleID != "" {
-		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), s.remoteButtonLabel(), s.remoteBusy(), func() { s.toggleRemote() }))
+		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), s.remoteButtonLabel(), s.remoteBusy(), nil, func() { s.toggleRemote() }))
 	}
 	if s.toolError != "" {
 		ui.Text(c, s.toolError).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
@@ -304,7 +307,7 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 			if tool.active {
 				action = "停用"
 			}
-			cards = append(cards, pluginCard(tool.name, voiceToolStatus(tool), action, s.toolLoadFailed, func() { _ = s.setVoiceToolEnabled(tool, !tool.active) }))
+			cards = append(cards, pluginCard(tool.name, voiceToolStatus(tool), action, s.toolLoadFailed, tool, func() { _ = s.setVoiceToolEnabled(tool, !tool.active) }))
 		}
 		pluginSection(string(kind), cards...)
 	}

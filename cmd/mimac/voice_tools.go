@@ -23,6 +23,7 @@ type voiceTool struct {
 	id, name            string
 	kind                voiceToolKind
 	discover            func(context.Context, voicetools.Locator) voicetools.Snapshot
+	locateApplication   func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
 	requiredInputSource func(string) (string, bool)
 	active, busy        bool
 	sequence            uint64
@@ -52,11 +53,11 @@ type voiceToolsState struct {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, requiredInputSource: doubao.RequiredInputSourceID},
-		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover},
-		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover},
-		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover},
-		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover},
+		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, requiredInputSource: doubao.RequiredInputSourceID},
+		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication},
+		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication},
+		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
+		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}
 }
 

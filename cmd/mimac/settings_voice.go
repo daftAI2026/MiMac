@@ -59,6 +59,7 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 	settingsGroup(c, a, func() {
 		ui.Column(c).FillWidth().MinWidth(0).Padding(settingsRowInset, 0).Gap(spaceSM).Children(func() {
 			ui.Row(c).FillWidth().MinWidth(0).MinHeight(controlHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+				s.voiceToolArtwork(c, a, tool)
 				ui.Text(c, tool.name).FontSize(a.fonts.body).FontWeight(600).Grow(1).MinWidth(0)
 				label := "使用"
 				if selected {

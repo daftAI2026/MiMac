@@ -13,6 +13,7 @@ import (
 
 const (
 	bundleIdentifier         = "now.typeless.desktop"
+	bundleName               = "Typeless.app"
 	verifiedShortVersion     = "2.8.3"
 	verifiedBuildVersion     = "2.8.3.132"
 	typelessSettingsRelative = "Library/Application Support/Typeless/app-settings.json"
@@ -39,8 +40,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		return result
 	}
 
-	appPaths := voicetools.ApplicationCandidates(locator.ApplicationDirs, "Typeless.app")
-	bundle, state, err := voicetools.FindBundleInLocator(ctx, locator, appPaths, bundleIdentifier)
+	bundle, state, err := LocateApplication(ctx, locator)
 	if err != nil {
 		result.State = state
 		result.AppPath = bundle.Path

@@ -42,6 +42,7 @@ type settingsState struct {
 	navigationSymbols     map[string]*ui.Bitmap
 	appIcon               *ui.Bitmap
 	socialIcons           map[string]*ui.SVG
+	voiceToolIcons        map[string]*voiceToolIcon
 	aboutError            string
 }
 

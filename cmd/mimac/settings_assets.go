@@ -8,5 +8,11 @@ func (s *shell) releaseSettingsAssets() {
 	s.navigationSymbols = nil
 	s.appIcon = nil
 	s.socialIcons = nil
+	for _, icon := range s.voiceToolIcons {
+		if icon.cancel != nil {
+			icon.cancel()
+		}
+	}
+	s.voiceToolIcons = nil
 	clear(controlSymbols)
 }

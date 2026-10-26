@@ -61,8 +61,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		return result
 	}
 
-	bundlePaths := voicetools.ApplicationCandidates(locator.InputMethodDirs, bundleName)
-	bundle, state, err := voicetools.FindBundleInLocator(ctx, locator, bundlePaths, bundleIdentifier)
+	bundle, state, err := LocateApplication(ctx, locator)
 	if err != nil {
 		result.State = state
 		result.AppPath = bundle.Path
