@@ -222,6 +222,7 @@ func TestDeviceByUIDUnknownAndTranslationErrorsStayExplicit(t *testing.T) {
 func TestProcessInputForPIDUsesExactPIDQualifier(t *testing.T) {
 	fake := newFakePropertyAPI()
 	pid := int32(0x01020304)
+	putFakeProperty(fake, 90, propertyAddress{selector: selectorProcessPID, scope: scopeGlobal}, nil, u32(uint32(pid)))
 	qualifier := []byte{4, 3, 2, 1}
 	putFakeProperty(fake, systemObjectID, propertyAddress{selector: selectorTranslatePID, scope: scopeGlobal}, qualifier, u32(90))
 	putFakeProperty(fake, 90, propertyAddress{selector: selectorProcessRunning, scope: scopeGlobal}, nil, u32(1))

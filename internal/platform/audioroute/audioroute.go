@@ -221,6 +221,9 @@ func (i *Inspector) processInputForPID(pid int32) (ProcessInput, error) {
 }
 
 func (i *Inspector) processInputForObject(objectID uint32, pid int32) (ProcessInput, error) {
+	if err := i.verifyProcessPID(objectID, pid); err != nil {
+		return ProcessInput{}, err
+	}
 	runningData, err := i.readProperty(objectID, propertyAddress{selector: selectorProcessRunning, scope: scopeGlobal}, nil)
 	if err != nil {
 		return ProcessInput{}, fmt.Errorf("audioroute: read process input state: %w", err)
@@ -248,7 +251,28 @@ func (i *Inspector) processInputForObject(objectID uint32, pid int32) (ProcessIn
 		}
 		uids = append(uids, uid)
 	}
+	if err := i.verifyProcessPID(objectID, pid); err != nil {
+		return ProcessInput{}, err
+	}
 	return ProcessInput{Found: true, PID: pid, RunningInput: runningValue == 1, InputDeviceUIDs: uids}, nil
+}
+
+// Core Audio object IDs can be reused during a multi-property snapshot. Check
+// the actual owner before and after reading the route; never label a foreign
+// process with the requested PID. This does not pin the OS process lifetime.
+func (i *Inspector) verifyProcessPID(objectID uint32, expected int32) error {
+	data, err := i.readProperty(objectID, propertyAddress{selector: selectorProcessPID, scope: scopeGlobal}, nil)
+	if err != nil {
+		return fmt.Errorf("audioroute: verify process PID: %w", err)
+	}
+	actual, err := scalar(data, "process PID")
+	if err != nil {
+		return err
+	}
+	if actual != uint32(expected) || expected <= 0 {
+		return fmt.Errorf("%w: process object identity changed", ErrMalformedData)
+	}
+	return nil
 }
 
 func (i *Inspector) channelCount(deviceID, scope uint32) (uint32, error) {
