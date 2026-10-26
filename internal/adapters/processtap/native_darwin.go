@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ebitengine/purego"
+	"mimac.local/mimac/internal/platform/audioroute"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,9 +55,10 @@ func loadEndpointAPI(path string) (*endpointAPI, error) {
 }
 
 type darwinHandle struct {
-	api *endpointAPI
-	raw uintptr
-	uid string
+	api      *endpointAPI
+	raw      uintptr
+	uid      string
+	activity func(string) (audioroute.DeviceActivity, error)
 }
 
 func openNativeHandle(path string) (nativeHandle, error) {
@@ -64,30 +66,54 @@ func openNativeHandle(path string) (nativeHandle, error) {
 	if err != nil {
 		return nil, err
 	}
+	return createEndpointHandle(api)
+}
+
+func createEndpointHandle(api *endpointAPI) (*darwinHandle, error) {
 	var status int32
 	raw := api.create(&status)
 	if raw == 0 {
 		return nil, fmt.Errorf("process tap: create status %d, no handle", status)
 	}
 	handle := &darwinHandle{api: api, raw: raw}
+	var createErr error
 	if status != 0 {
-		return handle, fmt.Errorf("process tap: create status %d", status)
+		createErr = fmt.Errorf("process tap: create status %d", status)
 	}
+	// A failed create can still own a public aggregate. Recover its UID before
+	// returning the partial handle so teardown cannot bypass the activity veto.
 	var buffer [256]byte
 	if status = api.copyUID(raw, &buffer[0], int32(len(buffer))); status != 0 {
-		return handle, fmt.Errorf("process tap: UID status %d", status)
+		return handle, errors.Join(createErr, fmt.Errorf("process tap: UID status %d", status))
 	}
 	end := bytes.IndexByte(buffer[:], 0)
 	if end <= 0 {
-		return handle, errors.New("process tap: missing input UID")
+		return handle, errors.Join(createErr, errors.New("process tap: missing input UID"))
 	}
 	handle.uid = string(buffer[:end])
-	return handle, nil
+	return handle, createErr
 }
 func (h *darwinHandle) InputUID() string { return h.uid }
 func (h *darwinHandle) Close() error {
 	if h.raw == 0 {
 		return nil
+	}
+	if h.uid != "" {
+		inspect := h.activity
+		if inspect == nil {
+			reader, err := audioroute.New()
+			if err != nil {
+				return fmt.Errorf("process tap: inspect before close: %w", err)
+			}
+			inspect = reader.DeviceActivityByUID
+		}
+		activity, err := inspect(h.uid)
+		if err != nil {
+			return fmt.Errorf("process tap: inspect before close: %w", err)
+		}
+		if activity.Running {
+			return ErrEndpointInUse
+		}
 	}
 	if status := h.api.close(h.raw); status != 0 {
 		return fmt.Errorf("process tap: close status %d", status)

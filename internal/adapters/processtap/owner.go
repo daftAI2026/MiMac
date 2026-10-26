@@ -13,6 +13,7 @@ import (
 var (
 	ErrFactoryRequired     = errors.New("processtap: native handle factory is required")
 	ErrNativeHandleMissing = errors.New("processtap: native factory returned no handle")
+	ErrEndpointInUse       = errors.New("processtap: input endpoint is still running")
 	ErrInputUIDMissing     = errors.New("processtap: native handle returned no input UID")
 )
 
@@ -95,6 +96,9 @@ func (o *Owner) InputUID() string {
 
 // Close requires the host to stop its PCM producer and confirm that consumers
 // have stopped using this endpoint. This owner cannot stop another process.
+// The native handle also refuses teardown while device IO is observed active
+// or its state cannot be read. This snapshot is a veto, not a substitute for
+// stopping/joining consumers: another process could start after the query.
 // Close destroys the aggregate and tap through the native handle. On failure
 // the handle remains owned for a later retry. Native teardown must run on a
 // worker, never on the UI thread.
