@@ -42,6 +42,11 @@ type Resources struct {
 	// It runs before SourcePrepared/Read and must honor cancellation. A late
 	// return after cancellation never opens the gate; resources remain owned.
 	WaitReceiver func(context.Context) error
+	// WatchReceiver runs for the rest of the session after WaitReceiver succeeds.
+	// It should return a non-nil error when the verified receiver stops matching
+	// this session. Returning nil before ctx is canceled is an error. Runtime
+	// cancels and joins the watcher before closing Source or Sink.
+	WatchReceiver func(context.Context) error
 }
 
 // Prepare may return partial resources with an error. Their ownership always
@@ -55,9 +60,10 @@ type Completion struct {
 }
 
 var (
-	ErrClosed         = errors.New("audiosession: runtime is closed")
-	ErrResourceBusy   = errors.New("audiosession: previous resources are still owned")
-	ErrCleanupPending = errors.New("audiosession: cleanup has not completed")
+	ErrClosed                = errors.New("audiosession: runtime is closed")
+	ErrResourceBusy          = errors.New("audiosession: previous resources are still owned")
+	ErrCleanupPending        = errors.New("audiosession: cleanup has not completed")
+	errReceiverWatchReturned = errors.New("audiosession: receiver watcher returned before cancellation")
 )
 
 const resourceID = "audio-stream"
@@ -94,6 +100,19 @@ type resource struct {
 	cause       error
 	finished    bool
 	cleanupErr  error
+}
+
+type receiverWatch struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (w *receiverWatch) cancelAndWait() {
+	if w == nil {
+		return
+	}
+	w.cancel()
+	<-w.done
 }
 
 func New(prepare Prepare) (*Runtime, error) {
@@ -199,10 +218,32 @@ func (r *Runtime) cancelPendingLocked() *resource {
 func (r *Runtime) fail(s *resource, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !s.finished && s.cause == nil {
+	if !s.finished && s.ctx.Err() == nil && s.cause == nil {
 		s.cause = err
 		s.cancel()
 	}
+}
+
+func (r *Runtime) startReceiverWatch(s *resource, watch func(context.Context) error) *receiverWatch {
+	if watch == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	watcher := &receiverWatch{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(watcher.done)
+		err := watch(ctx)
+		// Native metadata calls can return after the session has already been
+		// canceled. Such a late result belongs to this retired session only.
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = errReceiverWatchReturned
+		}
+		r.fail(s, err)
+	}()
+	return watcher
 }
 
 func (r *Runtime) emit(c Completion) {
@@ -251,12 +292,16 @@ func (r *Runtime) run(s *resource) {
 		// Do not publish readiness for a source already known to have failed.
 		err = sourceHealth(resources.Source)
 	}
+	var watcher *receiverWatch
+	if s.ctx.Err() == nil && err == nil {
+		watcher = r.startReceiverWatch(s, resources.WatchReceiver)
+	}
 	if s.ctx.Err() == nil && err == nil {
 		r.emit(Completion{Event: bridge.SourcePrepared(s.token, resourceID)})
 		select {
 		case <-s.gate:
 			if s.ctx.Err() == nil {
-				err = r.copyPCM(s)
+				err = r.copyPCM(s, watcher)
 			}
 		case <-s.ctx.Done():
 		}
@@ -271,6 +316,7 @@ func (r *Runtime) run(s *resource) {
 		r.emit(Completion{Event: bridge.SourceFailed(s.token), Err: cause})
 	}
 	s.cancel()
+	watcher.cancelAndWait()
 	r.mu.Lock()
 	stopDone := s.stopDone
 	r.mu.Unlock()
@@ -282,7 +328,7 @@ func (r *Runtime) run(s *resource) {
 	r.cleanup(s)
 }
 
-func (r *Runtime) copyPCM(s *resource) error {
+func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 	var storage [320]int16
 	pcm := storage[:s.resources.SampleRate/50]
 	for {
@@ -324,6 +370,16 @@ func (r *Runtime) copyPCM(s *resource) error {
 			r.mu.Unlock()
 			if deadlineErr != nil {
 				return deadlineErr
+			}
+			watcher.cancelAndWait()
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
+			r.mu.Lock()
+			cause := s.cause
+			r.mu.Unlock()
+			if cause != nil {
+				return cause
 			}
 			r.emit(Completion{Event: bridge.SourceDrained(s.token)})
 			<-s.ctx.Done() // Core decides when to close its gate and resource.

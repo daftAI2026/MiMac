@@ -695,35 +695,3 @@ func (r *compatLiveAudioRoute) verifyRestoreTargetIdle(ctx context.Context) erro
 	}
 	return nil
 }
-
-type compatAudioReceiverSink struct {
-	xiaomiPreparedSink
-	inspector compatAudioInspector
-	identity  compatProcessIdentity
-	pid       int32
-	deviceUID string
-}
-
-func (s *compatAudioReceiverSink) WaitReceiver(ctx context.Context) error {
-	if s == nil || s.inspector == nil || s.identity == nil || s.pid <= 0 || s.deviceUID != compatAudioDeviceUID {
-		return errors.New("mimac-compat route: receiver guard is incomplete")
-	}
-	if ctx == nil {
-		return audioroute.ErrReadinessDeadlineRequired
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.identity.Check(); err != nil {
-		return fmt.Errorf("mimac-compat route: verify target before receiver wait: %w", err)
-	}
-	if err := s.inspector.WaitForInput(ctx, s.pid, s.deviceUID); err != nil {
-		return err
-	}
-	if err := s.identity.Check(); err != nil {
-		return fmt.Errorf("mimac-compat route: verify target after receiver wait: %w", err)
-	}
-	return ctx.Err()
-}
-
-var _ interface{ WaitReceiver(context.Context) error } = (*compatAudioReceiverSink)(nil)

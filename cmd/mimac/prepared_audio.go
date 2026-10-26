@@ -184,10 +184,11 @@ func (o *preparedAudioOwner) Take(token bridge.SessionToken) (audiosession.Resou
 	o.signalChangeLocked()
 	o.leaseDone = make(chan struct{})
 	return audiosession.Resources{
-		Source:       preparedAudioSource{owner: o, generation: o.generation, inner: o.current.Source},
-		Sink:         preparedAudioSink{owner: o, generation: o.generation, inner: o.current.Sink},
-		SampleRate:   o.current.SampleRate,
-		WaitReceiver: o.current.WaitReceiver,
+		Source:        preparedAudioSource{owner: o, generation: o.generation, inner: o.current.Source},
+		Sink:          preparedAudioSink{owner: o, generation: o.generation, inner: o.current.Sink},
+		SampleRate:    o.current.SampleRate,
+		WaitReceiver:  o.current.WaitReceiver,
+		WatchReceiver: o.current.WatchReceiver,
 	}, nil
 }
 

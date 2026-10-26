@@ -380,6 +380,9 @@ func TestOpenLiveXiaomiRouteDefersMiMacSelectionUntilBeforeStart(t *testing.T) {
 	if resources.WaitReceiver == nil {
 		t.Fatal("WaitReceiver was not transferred to audiosession resources")
 	}
+	if resources.WatchReceiver == nil {
+		t.Fatal("WatchReceiver was not transferred through prepared resources")
+	}
 	if err := resources.WaitReceiver(ctx); err != nil {
 		t.Fatalf("WaitReceiver() error = %v", err)
 	}

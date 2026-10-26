@@ -537,9 +537,23 @@ func TestPreparedAudioOwnerCloseWaitsForRuntimeLeaseWithoutClosingIt(t *testing.
 
 func TestPreparedAudioTakePreservesReceiverReadiness(t *testing.T) {
 	var calls atomic.Int32
+	var watchCalls atomic.Int32
 	fault := errors.New("receiver not selected")
+	watchFault := errors.New("receiver stopped matching")
 	owner, err := newPreparedAudioOwner(func(context.Context) (audiosession.Resources, error) {
-		return audiosession.Resources{Source: &preparedAudioTestSource{}, Sink: &preparedAudioTestSink{}, SampleRate: 16000, WaitReceiver: func(context.Context) error { calls.Add(1); return fault }}, nil
+		return audiosession.Resources{
+			Source:     &preparedAudioTestSource{},
+			Sink:       &preparedAudioTestSink{},
+			SampleRate: 16000,
+			WaitReceiver: func(context.Context) error {
+				calls.Add(1)
+				return fault
+			},
+			WatchReceiver: func(context.Context) error {
+				watchCalls.Add(1)
+				return watchFault
+			},
+		}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +566,7 @@ func TestPreparedAudioTakePreservesReceiverReadiness(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("background preparation waited for target before session")
 	}
-	resources, err := owner.Take(preparedAudioToken(t))
+	resources, err := owner.Prepare(context.Background(), preparedAudioToken(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,6 +575,12 @@ func TestPreparedAudioTakePreservesReceiverReadiness(t *testing.T) {
 	}
 	if err := resources.WaitReceiver(context.Background()); !errors.Is(err, fault) || calls.Load() != 1 {
 		t.Fatalf("receiver gate changed: %v", err)
+	}
+	if resources.WatchReceiver == nil {
+		t.Fatal("resource preparation dropped receiver watcher")
+	}
+	if err := resources.WatchReceiver(context.Background()); !errors.Is(err, watchFault) || watchCalls.Load() != 1 {
+		t.Fatalf("receiver watcher changed: %v", err)
 	}
 	if err := resources.Source.Close(); err != nil {
 		t.Fatal(err)
