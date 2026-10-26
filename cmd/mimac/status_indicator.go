@@ -9,7 +9,7 @@ import (
 
 const (
 	readyHaloDuration = 1800 * time.Millisecond
-	readyHaloRest     = 900 * time.Millisecond
+	readyHaloRest     = 250 * time.Millisecond
 )
 
 type readyHaloState struct {
@@ -55,9 +55,13 @@ func readyHalo(dot ui.Element, color ui.Color, window *mygo.Window, reduceMotion
 			p.After(readyHaloRest)
 			return
 		}
-		progress := ui.EaseInOut(float32(elapsed) / float32(readyHaloDuration))
-		radius := float32(4) + 3.5*progress
-		alpha := 0.20 * (1 - progress)
+		progress := float32(elapsed) / float32(readyHaloDuration)
+		radius := float32(4.75) + 3.25*ui.EaseInOut(progress)
+		alpha := float32(0.40)
+		if progress > 0.60 {
+			fade := (progress - 0.60) / 0.40
+			alpha *= 1 - ui.EaseInOut(fade)
+		}
 		centerX, centerY := bounds.X+bounds.W/2, bounds.Y+bounds.H/2
 		p.Stroke(ui.Rect{X: centerX - radius, Y: centerY - radius, W: 2 * radius, H: 2 * radius}, color.Alpha(alpha), radius, 0.5)
 		p.AnimationFrame()
