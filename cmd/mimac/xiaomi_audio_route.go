@@ -179,6 +179,9 @@ func (r *xiaomiAudioRoute) prepareResources(ctx context.Context) (audiosession.R
 	sink, err := r.openSink(r.config)
 	if sink != nil {
 		resources.Sink = sink
+		if receiver, ok := sink.(interface{ WaitReceiver(context.Context) error }); ok {
+			resources.WaitReceiver = receiver.WaitReceiver
+		}
 	}
 	if err != nil {
 		return resources, err

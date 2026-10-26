@@ -503,3 +503,50 @@ func (s *xiaomiWaitingReadySource) Ready(ctx context.Context) (int, error) {
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
+
+type xiaomiReceiverTestSink struct {
+	xiaomiRouteTestSink
+	wait func(context.Context) error
+}
+
+func (s *xiaomiReceiverTestSink) WaitReceiver(ctx context.Context) error { return s.wait(ctx) }
+
+func TestXiaomiAudioRoutePreservesReceiverGateWithoutCallingItDuringPrewarm(t *testing.T) {
+	calls := make(chan context.Context, 2)
+	expected := errors.New("receiver not ready")
+	route := newXiaomiRouteTest(t, 81, audiooutput.Config{DeviceUID: "test-route", SampleRate: 16000},
+		func(context.Context, atvv.StreamKey) (audiosession.Source, error) {
+			return &xiaomiRouteTestSource{rate: 16000}, nil
+		},
+		func() error { return nil },
+		func(audiooutput.Config) (xiaomiPreparedSink, error) {
+			return &xiaomiReceiverTestSink{wait: func(ctx context.Context) error { calls <- ctx; return expected }}, nil
+		})
+	defer func() {
+		if err := route.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	waitXiaomiRoute(t, route.Ready)
+	select {
+	case <-calls:
+		t.Fatal("prewarm invoked receiver")
+	default:
+	}
+	resources, err := route.Prepare(context.Background(), xiaomiRouteSessionToken(t, 81))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeXiaomiResources(t, resources)
+	if resources.WaitReceiver == nil {
+		t.Fatal("receiver gate lost during prepare/take")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := resources.WaitReceiver(ctx); !errors.Is(err, expected) {
+		t.Fatalf("receiver error=%v", err)
+	}
+	if got := <-calls; got != ctx {
+		t.Fatal("receiver context changed")
+	}
+}
