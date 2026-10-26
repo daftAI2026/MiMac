@@ -13,14 +13,9 @@ func (s *shell) voiceSettings(c *ui.Context, a appearance) {
 	}
 
 	enabled := make([]*voiceTool, 0, len(s.tools))
-	var current *voiceTool
 	for _, tool := range s.tools {
-		if !tool.active {
-			continue
-		}
-		enabled = append(enabled, tool)
-		if tool.id == s.currentVoiceTool {
-			current = tool
+		if tool.active {
+			enabled = append(enabled, tool)
 		}
 	}
 
@@ -38,21 +33,26 @@ func (s *shell) voiceSettings(c *ui.Context, a appearance) {
 		return
 	}
 
-	settingsColumns(c, func() {
+	for _, kind := range []voiceToolKind{voiceInputMethod, voiceApplication} {
+		cards := make([]func(), 0, len(enabled))
 		for _, tool := range enabled {
-			s.voiceToolChoice(c, a, tool, tool == current)
+			if tool.kind != kind {
+				continue
+			}
+			tool := tool
+			selected := tool.id == s.currentVoiceTool
+			cards = append(cards, func() { s.voiceToolChoice(c, a, tool, selected) })
 		}
-	}, func() {
-		if current == nil {
-			settingsGroup(c, a, func() {
-				ui.Column(c).FillWidth().Padding(settingsRowInset, 0).Children(func() {
-					ui.Text(c, "选择语音工具").FontSize(a.fonts.body).Role(ui.RoleStatus)
-				})
-			})
-			return
+		if len(cards) == 0 {
+			continue
 		}
-		s.voiceToolDetails(c, a, current)
-	})
+
+		ui.Column(c).FillWidth().MinWidth(0).Gap(spaceSM).Children(func() {
+			ui.Text(c, string(kind)).FontSize(a.fonts.body).FontWeight(600).
+				Padding(0, settingsRowInset).Role(ui.RoleHeading).Level(2)
+			settingsColumns(c, cards...).Role(ui.RoleGroup).Label(string(kind) + "列表")
+		})
+	}
 }
 
 func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, selected bool) {
@@ -79,28 +79,26 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 					s.refreshVoiceTool(tool)
 				}
 			})
+			if selected {
+				s.voiceToolDetails(c, a, tool)
+			}
 		})
 	}).Role(ui.RoleGroup).Label(tool.name + "选项")
 }
 
 func (s *shell) voiceToolDetails(c *ui.Context, a appearance, tool *voiceTool) {
-	settingsGroup(c, a, func() {
-		ui.Column(c).FillWidth().MinWidth(0).Padding(settingsRowInset, 0).Children(func() {
-			ui.Text(c, tool.name).FontSize(a.fonts.body).FontWeight(600).Role(ui.RoleHeading).Level(2)
-			if tool.busy || tool.snapshot.State != voicetools.Ready {
-				ui.Text(c, voiceToolStatus(tool)).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus).Padding(spaceSM, 0, 0, 0)
-				return
-			}
-			if len(tool.snapshot.Actions) == 0 {
-				ui.Text(c, "未发现可显示的快捷键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus).Padding(spaceSM, 0, 0, 0)
-				return
-			}
-			for _, action := range tool.snapshot.Actions {
-				sectionLine(c, a)
-				settingsActionRow(c, &a.theme, a.fonts.body, action.Name, toolActionLabel(action))
-			}
-		})
-	}).Role(ui.RoleGroup).Label("当前工具配置")
+	if tool.busy || tool.snapshot.State != voicetools.Ready {
+		return
+	}
+	if len(tool.snapshot.Actions) == 0 {
+		sectionLine(c, a)
+		ui.Text(c, "未发现可显示的快捷键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+		return
+	}
+	for _, action := range tool.snapshot.Actions {
+		sectionLine(c, a)
+		settingsActionRow(c, &a.theme, a.fonts.body, action.Name, toolActionLabel(action))
+	}
 }
 
 func toolActionLabel(action voicetools.Action) string {

@@ -8,6 +8,12 @@ import (
 
 func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	profile := s.activeProfile()
+	activeVoiceTools := make([]*voiceTool, 0, len(s.tools))
+	for _, tool := range s.tools {
+		if tool.active {
+			activeVoiceTools = append(activeVoiceTools, tool)
+		}
+	}
 	if s.selectedButton == "" {
 		s.selectedButton = profile.Model.DefaultSelectedButtonID
 	}
@@ -87,10 +93,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 								}
 								ui.Text(c, button.DefaultLabel).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingDefaultWidth)
 								if voiceButton {
-									if appButton(c, a, s.voiceSelectionLabel(), false).Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM).Clicked() {
-										s.endShortcutRecording()
-										s.showPage(pageVoice)
-									}
+									s.mappingVoiceSelection(c, a, activeVoiceTools)
 								} else if s.editButton == id {
 									s.shortcutRecorder(c, a)
 								} else {
@@ -121,6 +124,47 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 			})
 		})
 	})
+}
+
+func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voiceTool) {
+	switch len(active) {
+	case 0:
+		button := appButton(c, a, "选择语音工具", false).Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+		if button.Clicked() {
+			s.endShortcutRecording()
+			s.showPage(pageVoice)
+		}
+	case 1:
+		tool := active[0]
+		if tool.id == s.currentVoiceTool {
+			ui.Text(c, tool.name).FontSize(a.fonts.body).Width(mappingChoiceWidth).MinHeight(controlHeight)
+			return
+		}
+		button := appButton(c, a, "使用", s.toolLoadFailed).Label("使用："+tool.name).
+			Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+		if button.Clicked() && !s.toolLoadFailed {
+			s.chooseMappingVoiceTool(c, tool)
+		}
+	default:
+		button := appButton(c, a, s.voiceSelectionLabel()+" ⌄", s.toolLoadFailed).
+			Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+		button.Menu(func(menu *ui.Menu) {
+			for _, tool := range active {
+				item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
+				if item.Chosen() && tool.id != s.currentVoiceTool && !s.toolLoadFailed {
+					s.chooseMappingVoiceTool(c, tool)
+				}
+			}
+		})
+	}
+}
+
+func (s *shell) chooseMappingVoiceTool(c *ui.Context, tool *voiceTool) {
+	s.endShortcutRecording()
+	if err := s.selectVoiceTool(tool); err != nil && s.toolError == "" {
+		s.toolError = "无法切换语音工具"
+	}
+	c.Invalidate()
 }
 
 func mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone, enabled bool, window *mygo.Window) {
