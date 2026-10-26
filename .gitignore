@@ -10,6 +10,8 @@ resources/darwin-arm64/libMiMacATVV.dylib
 resources/darwin-amd64/libMiMacATVV.dylib
 resources/darwin-arm64/libMiMacProcessTap.dylib
 resources/darwin-amd64/libMiMacProcessTap.dylib
+resources/darwin-arm64/libMiMacSpeech.dylib
+resources/darwin-amd64/libMiMacSpeech.dylib
 
 __pycache__/
 *.py[cod]

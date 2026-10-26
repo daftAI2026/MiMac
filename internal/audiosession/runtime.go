@@ -32,6 +32,19 @@ type Sink interface {
 	Close() error
 }
 
+// SessionSink defers expensive consumer preparation until a physical session.
+// The source can already be armed without retaining a recognizer while idle.
+type SessionSink interface{ StartSession(context.Context) error }
+
+// TranscriptSink reports only completed output. Delivery belongs to the host,
+// which must reject a result for a cancelled or retired SessionToken.
+type TranscriptSink interface{ Transcript() (string, bool, error) }
+
+type Transcript struct {
+	Token bridge.SessionToken
+	Text  string
+}
+
 type Resources struct {
 	Source     Source
 	Sink       Sink
@@ -55,6 +68,7 @@ type Prepare func(context.Context, bridge.SessionToken) (Resources, error)
 
 type Completion struct {
 	Event         bridge.Event
+	Transcript    *Transcript
 	Err           error
 	CleanupFailed bool
 }
@@ -276,6 +290,11 @@ func (r *Runtime) run(s *resource) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
 	}
 	if s.ctx.Err() == nil && err == nil {
+		if sink, ok := resources.Sink.(SessionSink); ok {
+			err = sink.StartSession(s.ctx)
+		}
+	}
+	if s.ctx.Err() == nil && err == nil {
 		err = sourceHealth(resources.Source)
 	}
 	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
@@ -381,7 +400,20 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 			if cause != nil {
 				return cause
 			}
-			r.emit(Completion{Event: bridge.SourceDrained(s.token)})
+			completion := Completion{Event: bridge.SourceDrained(s.token)}
+			if sink, ok := s.resources.Sink.(TranscriptSink); ok {
+				text, present, err := sink.Transcript()
+				if err != nil {
+					return err
+				}
+				if present {
+					completion.Transcript = &Transcript{Token: s.token, Text: text}
+				}
+			}
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
+			r.emit(completion)
 			<-s.ctx.Done() // Core decides when to close its gate and resource.
 			return nil
 		}

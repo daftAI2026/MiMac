@@ -15,7 +15,12 @@ type voiceToolIcon struct {
 }
 
 func (s *shell) voiceToolArtwork(c *ui.Context, a appearance, tool *voiceTool) {
-	icon := s.voiceToolIcon(tool)
+	var icon *ui.Bitmap
+	if tool.systemArtwork != "" {
+		icon = s.systemSymbol(tool.systemArtwork, a.theme.Dark)
+	} else {
+		icon = s.voiceToolIcon(tool)
+	}
 	if icon == nil {
 		icon = s.systemSymbol("app", a.theme.Dark)
 	}

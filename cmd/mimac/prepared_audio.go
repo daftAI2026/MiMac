@@ -509,6 +509,20 @@ type preparedAudioSink struct {
 	inner      audiosession.Sink
 }
 
+func (s preparedAudioSink) StartSession(ctx context.Context) error {
+	if sink, ok := s.inner.(audiosession.SessionSink); ok {
+		return sink.StartSession(ctx)
+	}
+	return nil
+}
+
+func (s preparedAudioSink) Transcript() (string, bool, error) {
+	if sink, ok := s.inner.(audiosession.TranscriptSink); ok {
+		return sink.Transcript()
+	}
+	return "", false, nil
+}
+
 func (s preparedAudioSink) TryWrite(pcm []int16) error { return s.inner.TryWrite(pcm) }
 
 func (s preparedAudioSink) Drain(ctx context.Context) error { return s.inner.Drain(ctx) }

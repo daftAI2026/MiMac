@@ -60,6 +60,22 @@ for arch in arm64 amd64; do
 			exit 1
 		}
 	done
+	"$SWIFTC" \
+		-sdk "$SDK_PATH" \
+		-swift-version 5 \
+		-target "$target_arch-apple-macos14.2" \
+		-module-name MiMacSpeech \
+		-O -emit-library \
+		-Xlinker -install_name -Xlinker @rpath/libMiMacSpeech.dylib \
+		-framework Speech -framework AVFoundation \
+		"$ROOT_DIR/internal/adapters/applespeech/native/AppleSpeechBridge.swift" \
+		-o "$output_dir/libMiMacSpeech.dylib"
+	for symbol in MiMacAppleSpeechIsAvailable MiMacAppleSpeechCreate MiMacAppleSpeechWaitReady MiMacAppleSpeechTryWrite MiMacAppleSpeechBeginDrain MiMacAppleSpeechWaitDone MiMacAppleSpeechRequestCancel MiMacAppleSpeechWaitTerminated MiMacAppleSpeechCopyFinalText MiMacAppleSpeechCopyErrorMessage MiMacAppleSpeechRelease; do
+		/usr/bin/nm -gU "$output_dir/libMiMacSpeech.dylib" | /usr/bin/grep -q " _$symbol$" || {
+			echo "missing Apple Speech export: $symbol" >&2
+			exit 1
+		}
+	done
 done
 
-echo "Built native settings, ATVV and process tap libraries for darwin-arm64 and darwin-amd64."
+echo "Built native settings, ATVV, process tap and Apple Speech libraries for darwin-arm64 and darwin-amd64."

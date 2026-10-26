@@ -14,6 +14,15 @@ func (s *shell) syncVoiceBinding() {
 	}
 	s.blockUnpreparedLiveAudio()
 	s.coordinator.voiceButton = s.voiceButtonID()
+	s.coordinator.resolveLocalVoice = func() (bridge.Binding, bool, error) {
+		if !s.appleVoiceSelected() {
+			return bridge.Binding{}, false, nil
+		}
+		if !s.remoteHasReservation() || s.audioSession == nil || s.audioResourcesReady == nil || !s.audioResourcesReady() || s.closing {
+			return bridge.Binding{}, true, errors.New("local speech audio is not ready")
+		}
+		return bridge.NewAudioBinding(), true, nil
+	}
 	s.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) {
 		if !s.remoteHasReservation() {
 			return bridge.ActionPlan{}, errors.New("voice key is not reserved")

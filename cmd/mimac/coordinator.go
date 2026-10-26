@@ -23,6 +23,7 @@ type deviceCoordinator struct {
 	resolveVoiceAction func() (bridge.ActionPlan, error)
 	preflightAction    func(bridge.ActionPlan) error
 	voiceAudioBinding  func(bridge.ActionPlan) (bridge.Binding, error)
+	resolveLocalVoice  func() (bridge.Binding, bool, error)
 	beforeAudioStart   func() error
 	failureID          uint64
 	submitted          uint64
@@ -100,30 +101,9 @@ func (d *deviceCoordinator) acceptWithRecorderIsolation(event devices.InputEvent
 		} else if recording {
 			input = bridge.ObservedBegan(edge.Press)
 		} else if d.voiceButton != "" && edge.Press.PhysicalButtonID() == d.voiceButton {
-			input = bridge.ObservedBegan(edge.Press)
-			if d.voiceAudioBinding != nil {
-				if d.sink != nil && d.audio != nil && d.resolveVoiceAction != nil {
-					if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
-						if binding, err := d.voiceAudioBinding(plan); err == nil {
-							if err := d.step(bridge.Configure(binding)); err == nil {
-								input = bridge.VoiceBegan(edge.Press)
-								if d.beforeAudioStart != nil && d.core.CanBeginVoice(edge.Press) {
-									if err := d.beforeAudioStart(); err != nil {
-										input = bridge.ObservedBegan(edge.Press)
-										eventErr = errors.Join(eventErr, err)
-									}
-								}
-							} else {
-								eventErr = errors.Join(eventErr, err)
-							}
-						}
-					}
-				}
-			} else if d.sink != nil && d.resolveVoiceAction != nil {
-				if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
-					input = bridge.TargetActionBegan(edge.Press, plan)
-				}
-			}
+			var err error
+			input, err = d.voiceInput(edge.Press)
+			eventErr = errors.Join(eventErr, err)
 		} else if ref, bound := d.actions[edge.Press.PhysicalButtonID()]; bound {
 			input = bridge.ObservedBegan(edge.Press)
 			if d.sink != nil && d.resolveAction != nil {
@@ -192,4 +172,48 @@ func voiceAudioBindingForAction(plan bridge.ActionPlan) (bridge.Binding, error) 
 		return bridge.Binding{}, errors.New("voice action has no verified audio binding policy")
 	}
 	return bridge.NewBinding(policy, plan.Keys()...)
+}
+
+// Local PCM consumers enter the same voice session without manufacturing a
+// keyboard ActionPlan. External tools keep their verified shortcut contract.
+func (d *deviceCoordinator) voiceInput(press bridge.PressToken) (bridge.Event, error) {
+	observed := bridge.ObservedBegan(press)
+	if d.resolveLocalVoice != nil {
+		binding, selected, err := d.resolveLocalVoice()
+		if selected {
+			if err != nil {
+				return observed, err
+			}
+			if d.audio == nil {
+				return observed, nil
+			}
+			return d.audioInput(press, binding)
+		}
+	}
+	if d.voiceAudioBinding != nil {
+		if d.sink != nil && d.audio != nil && d.resolveVoiceAction != nil {
+			if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
+				if binding, err := d.voiceAudioBinding(plan); err == nil {
+					return d.audioInput(press, binding)
+				}
+			}
+		}
+	} else if d.sink != nil && d.resolveVoiceAction != nil {
+		if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
+			return bridge.TargetActionBegan(press, plan), nil
+		}
+	}
+	return observed, nil
+}
+
+func (d *deviceCoordinator) audioInput(press bridge.PressToken, binding bridge.Binding) (bridge.Event, error) {
+	if err := d.step(bridge.Configure(binding)); err != nil {
+		return bridge.ObservedBegan(press), err
+	}
+	if d.beforeAudioStart != nil && d.core.CanBeginVoice(press) {
+		if err := d.beforeAudioStart(); err != nil {
+			return bridge.ObservedBegan(press), err
+		}
+	}
+	return bridge.VoiceBegan(press), nil
 }

@@ -297,7 +297,7 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 	if s.toolError != "" {
 		ui.Text(c, s.toolError).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 	}
-	for _, kind := range []voiceToolKind{voiceInputMethod, voiceApplication} {
+	for _, kind := range []voiceToolKind{voiceInputMethod, voiceRecognition, voiceApplication} {
 		cards := make([]func(), 0, len(s.tools))
 		for _, tool := range s.tools {
 			if tool.kind != kind {

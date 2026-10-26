@@ -25,6 +25,8 @@ type voiceTool struct {
 	discover            func(context.Context, voicetools.Locator) voicetools.Snapshot
 	locateApplication   func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
 	fallbackIconPNG     []byte
+	systemArtwork       string
+	prepareAssets       func(context.Context, voicetools.Locator) voicetools.Snapshot
 	requiredInputSource func(string) (string, bool)
 	active, busy        bool
 	sequence            uint64
@@ -39,6 +41,7 @@ type voiceToolKind string
 const (
 	voiceInputMethod voiceToolKind = "语音输入法"
 	voiceApplication voiceToolKind = "应用语音"
+	voiceRecognition voiceToolKind = "语音识别"
 )
 
 type voiceToolsState struct {
@@ -54,6 +57,7 @@ type voiceToolsState struct {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
+		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, systemArtwork: "apple.logo"},
 		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, requiredInputSource: doubao.RequiredInputSourceID},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
 		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, fallbackIconPNG: wetype.IconPNG},
@@ -65,6 +69,10 @@ func builtInVoiceTools() []*voiceTool {
 // Discovery is one cancellable read per activation or explicit refresh. MyGo
 // serializes completions; there is no watcher, polling loop, or target process.
 func (t *voiceTool) refresh(locator voicetools.Locator, dispatch func(func()), changed func()) {
+	t.refreshUsing(locator, dispatch, changed, t.discover)
+}
+
+func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func()), changed func(), discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
 	if !t.active {
 		return
 	}
@@ -77,7 +85,7 @@ func (t *voiceTool) refresh(locator voicetools.Locator, dispatch func(func()), c
 	t.cancel, t.busy = cancel, true
 	t.snapshot = voicetools.Snapshot{}
 	go func() {
-		result := t.discover(ctx, locator)
+		result := discover(ctx, locator)
 		cancel()
 		dispatch(func() {
 			if !t.active || t.sequence != sequence {
@@ -119,16 +127,18 @@ func (s *shell) voiceToolManifests() []pluginrt.Manifest {
 	return manifests
 }
 
-func (s *shell) refreshVoiceTool(tool *voiceTool) {
+func (s *shell) refreshVoiceTool(tool *voiceTool) { s.refreshVoiceToolUsing(tool, tool.discover) }
+
+func (s *shell) refreshVoiceToolUsing(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
 	if s.closing {
 		return
 	}
-	tool.refresh(s.toolLocator, mygo.RunOnMain, func() {
+	tool.refreshUsing(s.toolLocator, mygo.RunOnMain, func() {
 		if !s.closing {
 			s.refreshRemoteOutput(false)
 			s.invalidateDeviceView()
 		}
-	})
+	}, discover)
 }
 
 func (s *shell) loadVoiceTools() {
@@ -228,6 +238,24 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 }
 
 func voiceToolStatus(tool *voiceTool) string {
+	if tool.id == appleSpeechToolID {
+		if !tool.active {
+			return "未启用"
+		}
+		if tool.busy {
+			return "正在准备"
+		}
+		switch tool.snapshot.State {
+		case voicetools.Ready:
+			return "已就绪"
+		case voicetools.ConfigMissing:
+			return "请下载中文模型"
+		case voicetools.Unsupported:
+			return "此 Mac 暂不支持"
+		default:
+			return "准备失败，请重试"
+		}
+	}
 	if !tool.active {
 		return "未启用"
 	}

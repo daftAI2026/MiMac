@@ -35,21 +35,21 @@ func validKey(key Key) bool {
 	return strings.TrimSpace(name) != "" && !strings.ContainsRune(name, '\x00') && utf8.ValidString(name)
 }
 
-// EndPolicy determines how a key-based target request ends. ExactEdge
-// releases its held key lease on the physical release edge; AfterDrain keeps
-// the lease until the adapter reports local source drain; Toggle emits a
-// target tap at begin and after drain. Cancellation never guesses a toggle's
-// external state.
+// EndPolicy determines how a voice session interacts with a target. The
+// key-based policies release their held key lease at the physical edge or
+// source-drain boundary, or use a toggle tap. Audio has no target key output.
+// Cancellation never guesses a toggle's external state.
 type EndPolicy uint8
 
 const (
 	PolicyExactEdge EndPolicy = iota + 1
 	PolicyAfterDrain
 	PolicyToggle
+	PolicyAudio
 )
 
 func (p EndPolicy) valid() bool {
-	return p == PolicyExactEdge || p == PolicyAfterDrain || p == PolicyToggle
+	return p == PolicyExactEdge || p == PolicyAfterDrain || p == PolicyToggle || p == PolicyAudio
 }
 
 // Binding is immutable outside this package. Keys preserves the caller's
@@ -67,6 +67,10 @@ func NewBinding(policy EndPolicy, keys ...Key) (Binding, error) {
 	return b, nil
 }
 
+// NewAudioBinding creates an immutable voice binding that manages an audio
+// source without requesting any keyboard output.
+func NewAudioBinding() Binding { return Binding{policy: PolicyAudio} }
+
 func (b Binding) Policy() EndPolicy { return b.policy }
 
 func (b Binding) Keys() []Key { return cloneKeys(b.keys) }
@@ -78,6 +82,12 @@ func (b Binding) clone() Binding {
 func (b Binding) validate() error {
 	if !b.policy.valid() {
 		return fmt.Errorf("%w: unknown end policy", ErrInvalidBinding)
+	}
+	if b.policy == PolicyAudio {
+		if len(b.keys) != 0 {
+			return fmt.Errorf("%w: audio binding cannot contain keys", ErrInvalidBinding)
+		}
+		return nil
 	}
 	return validateKeys(b.keys, ErrInvalidBinding)
 }
@@ -505,7 +515,9 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 			c.state.scopeKnown = true
 			c.state.scopeAvailable = e.available
 			if !e.available {
-				c.cancelSession(&effects)
+				if c.state.session != nil && c.state.session.binding.policy != PolicyAudio {
+					c.cancelSession(&effects)
+				}
 				c.releaseOrdinary(&effects)
 			}
 		}
@@ -632,10 +644,13 @@ func (c *Core) voiceStartAdmission() (allowed bool, reason BlockReason) {
 	if c.hasActionLease() {
 		return false, BlockActionConflictsWithHeldKey
 	}
-	if !c.state.routeAvailable || !c.state.scopeAvailable || c.state.session != nil {
+	if !c.state.routeAvailable || c.state.session != nil {
 		return false, 0
 	}
 	binding := c.state.adopted
+	if binding.policy != PolicyAudio && !c.state.scopeAvailable {
+		return false, 0
+	}
 	if c.hasUncertain(binding.keys) {
 		return false, BlockToggleRecoveryRequired
 	}
@@ -832,7 +847,7 @@ func (c *Core) pressEnded(press PressToken, effects *[]Effect) {
 	if s == nil || s.press != press {
 		return
 	}
-	canDrainBeforePrepared := s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle
+	canDrainBeforePrepared := s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle || s.binding.policy == PolicyAudio
 	if s.resourceID == "" && !canDrainBeforePrepared {
 		// Exact-edge releases its target keys with the physical edge. If source
 		// readiness has not arrived yet, cancel preparation so a late callback
@@ -862,7 +877,7 @@ func (c *Core) sourcePrepared(token SessionToken, resourceID string, effects *[]
 	}
 	wasPreparing := s.phase == PhasePreparing
 	drainingBeforePrepared := s.phase == PhaseDraining && s.resourceID == "" &&
-		(s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle)
+		(s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle || s.binding.policy == PolicyAudio)
 	if !wasPreparing && !drainingBeforePrepared {
 		*effects = append(*effects, DisposeResourceEffect{Token: token, ResourceID: resourceID})
 		return

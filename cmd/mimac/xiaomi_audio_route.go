@@ -42,9 +42,9 @@ type xiaomiAudioCloseAttempt struct {
 // UID, request MIC_OPEN, or start a target action.
 type xiaomiAudioRoute struct {
 	generation  uint64
-	config      audiooutput.Config
+	sampleRate  int
 	newSource   xiaomiAudioSourceFactory
-	openSink    xiaomiAudioSinkFactory
+	newSink     func(context.Context) (audiosession.Sink, error)
 	closeDevice func() error
 	sequence    atomic.Uint64
 	resources   *preparedAudioOwner
@@ -89,14 +89,32 @@ func newXiaomiAudioRouteWithFactories(
 	if strings.TrimSpace(config.DeviceUID) == "" || strings.ContainsRune(config.DeviceUID, '\x00') || !utf8.ValidString(config.DeviceUID) {
 		return nil, errors.New("xiaomi audio route: explicit output device UID is required")
 	}
-	if config.SampleRate != 8000 && config.SampleRate != 16000 {
-		return nil, fmt.Errorf("xiaomi audio route: unsupported output sample rate %d", config.SampleRate)
+	return newXiaomiPCMRoute(generation, newSource, closeDevice, config.SampleRate, func(ctx context.Context) (audiosession.Sink, error) {
+		sink, err := openSink(config)
+		if err == nil && sink != nil {
+			err = sink.Prepare(ctx)
+		}
+		return sink, err
+	})
+}
+
+// PCM consumers need no output-device UID. Physical device arming and resource
+// ownership are shared with the external audio-output route.
+func newXiaomiPCMRoute(generation uint64, newSource xiaomiAudioSourceFactory, closeDevice func() error, sampleRate int, newSink func(context.Context) (audiosession.Sink, error)) (*xiaomiAudioRoute, error) {
+	if generation == 0 {
+		return nil, errXiaomiAudioGeneration
+	}
+	if newSource == nil || closeDevice == nil || newSink == nil {
+		return nil, errors.New("xiaomi PCM route: incomplete factories")
+	}
+	if sampleRate != 8000 && sampleRate != 16000 {
+		return nil, fmt.Errorf("xiaomi audio route: unsupported output sample rate %d", sampleRate)
 	}
 	route := &xiaomiAudioRoute{
 		generation:  generation,
-		config:      config,
+		sampleRate:  sampleRate,
 		newSource:   newSource,
-		openSink:    openSink,
+		newSink:     newSink,
 		closeDevice: closeDevice,
 	}
 	resources, err := newPreparedAudioOwner(route.prepareResources)
@@ -165,9 +183,9 @@ func (r *xiaomiAudioRoute) prepareResources(ctx context.Context) (audiosession.R
 	key := atvv.StreamKey{Generation: r.generation, Session: sequence}
 
 	source, err := r.newSource(ctx, key)
-	resources := audiosession.Resources{SampleRate: r.config.SampleRate}
+	resources := audiosession.Resources{SampleRate: r.sampleRate}
 	if source != nil {
-		resources.Source = &xiaomiRateCheckedSource{inner: source, expectedRate: r.config.SampleRate}
+		resources.Source = &xiaomiRateCheckedSource{inner: source, expectedRate: r.sampleRate}
 	}
 	if err != nil {
 		return resources, err
@@ -176,7 +194,7 @@ func (r *xiaomiAudioRoute) prepareResources(ctx context.Context) (audiosession.R
 		return resources, errXiaomiAudioSourceNil
 	}
 
-	sink, err := r.openSink(r.config)
+	sink, err := r.newSink(ctx)
 	if sink != nil {
 		resources.Sink = sink
 		if receiver, ok := sink.(interface{ WaitReceiver(context.Context) error }); ok {
@@ -191,9 +209,6 @@ func (r *xiaomiAudioRoute) prepareResources(ctx context.Context) (audiosession.R
 	}
 	if sink == nil {
 		return resources, errXiaomiAudioSinkNil
-	}
-	if err := sink.Prepare(ctx); err != nil {
-		return resources, err
 	}
 	return resources, nil
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/keyoutput"
+	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/audiosession"
 )
@@ -251,14 +252,17 @@ func (s *shell) remoteStatus() (string, statusTone) {
 		}
 		return "正在连接", toneNeutral
 	}
-	if _, err := s.selectedVoiceAction(); err != nil {
+	if _, err := s.selectedVoiceAction(); err != nil && !s.appleVoiceSelected() {
 		label := s.remoteSetupPrompt()
 		return label, toneNeutral
 	}
 	if s.outputFaulted() {
 		return "输出已暂停", toneWarning
 	}
-	if !s.plugins.Active(outputPlugin) || s.coordinator.sink == nil {
+	if s.appleVoiceSelected() && s.outputNeedsPermission {
+		return "请允许辅助功能权限", toneNeutral
+	}
+	if !s.appleVoiceSelected() && (!s.plugins.Active(outputPlugin) || s.coordinator.sink == nil) {
 		return "输出未就绪", toneWarning
 	}
 	if s.voiceStartBlocked != "" {
@@ -327,8 +331,19 @@ func (s *shell) toggleRemote() {
 // changes. It never opens a target or starts microphone capture.
 func (s *shell) refreshRemoteOutput(requestPermission bool) {
 	defer s.refreshLiveAudio()
-	if s.plugins == nil || s.coordinator == nil || !s.remoteHasReservation() ||
-		!s.coordinator.hasExecutableMapping() || s.plugins.Active(outputPlugin) {
+	if s.plugins == nil || s.coordinator == nil || !s.remoteHasReservation() {
+		return
+	}
+	if s.appleVoiceSelected() {
+		s.outputNeedsPermission = !textoutput.HasAccess()
+		if s.outputNeedsPermission {
+			if requestPermission {
+				textoutput.RequestAccess()
+			}
+			return
+		}
+	}
+	if !s.coordinator.hasExecutableMapping() || s.plugins.Active(outputPlugin) {
 		return
 	}
 	if !keyoutput.HasAccess() {

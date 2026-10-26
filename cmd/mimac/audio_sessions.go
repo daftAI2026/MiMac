@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/audiooutput"
+	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/pluginrt"
@@ -27,6 +28,7 @@ type audioSourceFactory func(context.Context, bridge.SessionToken) (audiosession
 
 type audioSessionHost struct {
 	runtime          *audiosession.Runtime
+	deliver          func(bridge.SessionToken, string) error
 	cancel           context.CancelFunc
 	closeResources   func(context.Context) error
 	resourcesClosed  atomic.Bool
@@ -101,7 +103,7 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			return func() error { return nil }, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		host := &audioSessionHost{runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose}
+		host := &audioSessionHost{runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose, deliver: s.audioResourcesDeliver}
 		s.audioSession = host
 		s.coordinator.audio = runner
 		// Activating a verified audio factory must also select Core's audio
@@ -126,8 +128,19 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			started := time.Now()
-			err := beforeStart(ctx)
+			err := errors.Join(beforeStart(ctx), ctx.Err())
 			log.Printf("audio route: before_start elapsed=%s error=%v", time.Since(started), err)
+			if s.appleVoiceSelected() {
+				// A text target problem is local to this press, not a failed
+				// audio connection that requires reconnecting the remote.
+				s.report.AudioError = ""
+				s.voiceStartBlocked = appleTextTargetPrompt(err)
+				s.outputNeedsPermission = errors.Is(err, textoutput.ErrPermissionDenied)
+				if s.outputNeedsPermission {
+					textoutput.RequestAccess()
+				}
+				return err
+			}
 			if err != nil {
 				s.report.AudioError = err.Error()
 				s.voiceStartBlocked = "语音输入未就绪，请重试"
@@ -159,6 +172,23 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 	}}
 }
 
+func appleTextTargetPrompt(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, textoutput.ErrPermissionDenied):
+		return "请允许辅助功能权限"
+	case errors.Is(err, textoutput.ErrSecureInput):
+		return "请退出密码输入后重试"
+	case errors.Is(err, textoutput.ErrTargetChanged):
+		return "输入位置已变化，请重试"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "输入框响应超时，请重试"
+	default:
+		return "请将光标放入可编辑输入框"
+	}
+}
+
 func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionHost, post func(func())) {
 	for {
 		select {
@@ -170,7 +200,17 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					return
 				}
 				s.logAudioCompletion(completion.Event, completion.CleanupFailed, completion.Err)
-				err := s.coordinator.step(completion.Event)
+				var deliveryErr error
+				if result := completion.Transcript; result != nil {
+					snapshot := s.coordinator.core.Snapshot()
+					if snapshot.HasSession && snapshot.Session.Token == result.Token && snapshot.Session.Phase == bridge.PhaseDraining && snapshot.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
+						deliveryErr = host.deliver(result.Token, result.Text)
+						if deliveryErr != nil {
+							s.voiceStartBlocked = "文字未写入，请保持原输入框"
+						}
+					}
+				}
+				err := errors.Join(deliveryErr, s.coordinator.step(completion.Event))
 				if completion.CleanupFailed {
 					err = errors.Join(err, s.coordinator.step(bridge.RouteAvailable(false)))
 					s.report.AudioCleanupFailed = true
@@ -179,6 +219,7 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					s.report.AudioError = err.Error()
 				}
 				s.report.Core = s.coordinator.report()
+				s.invalidateDeviceView()
 			})
 		}
 	}
@@ -256,6 +297,7 @@ func (s *shell) detachAudioSession(host *audioSessionHost) {
 		s.liveAudio.connection = nil
 		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
 		s.audioResourcesBeforeStart = nil
+		s.audioResourcesDeliver = nil
 		s.report.AudioError = ""
 	}
 	if s.coordinator != nil {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"mimac.local/mimac/internal/bridge"
 	"os"
 	"time"
 
@@ -67,6 +68,7 @@ type shell struct {
 	audioResourcesReady              func() bool
 	audioResourcesBeforeStart        func(context.Context) error
 	audioResourcesClose              func(context.Context) error
+	audioResourcesDeliver            func(bridge.SessionToken, string) error
 	audioPost                        func(func())
 	audioQuitPending, audioQuitReady bool
 	deviceProfiles                   []devicePlugin

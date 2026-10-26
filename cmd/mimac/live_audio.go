@@ -31,13 +31,16 @@ func validateAudioBackend(backend string) error {
 }
 
 func (s *shell) desiredLiveAudioTool() *voiceTool {
-	if s.liveAudio.backend == "" || s.closing || s.plugins == nil || s.coordinator == nil ||
-		!s.remoteHasReservation() || !s.plugins.Active(outputPlugin) || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
+	if !s.audioRequested() || s.closing || s.plugins == nil || s.coordinator == nil ||
+		!s.remoteHasReservation() || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return nil
 	}
 	for _, tool := range s.tools {
-		if tool.id == s.currentVoiceTool && tool.id == "voice-doubao" && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready {
-			if _, err := s.selectedVoiceAction(); err == nil {
+		if tool.id == s.currentVoiceTool && (tool.id == "voice-doubao" || tool.id == appleSpeechToolID) && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready {
+			if tool.id != appleSpeechToolID && !s.plugins.Active(outputPlugin) {
+				return nil
+			}
+			if _, err := s.selectedVoiceAction(); err == nil || tool.id == appleSpeechToolID {
 				return tool
 			}
 		}
@@ -49,7 +52,7 @@ func (s *shell) desiredLiveAudioTool() *voiceTool {
 // while device, target selection and output stay in their respective adapters.
 func (s *shell) refreshLiveAudio() {
 	s.blockUnpreparedLiveAudio()
-	if s.liveAudio.backend == "" || s.closing || s.liveAudio.retiring || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
+	if s.closing || s.liveAudio.retiring || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return
 	}
 	tool := s.desiredLiveAudioTool()
@@ -73,6 +76,9 @@ func (s *shell) refreshLiveAudio() {
 		}
 		library := filepath.Join(resources, "libMiMacATVV.dylib")
 		factory = func(ctx context.Context, generation uint64, appPath string) (liveAudioRoute, error) {
+			if tool.id == appleSpeechToolID {
+				return openAppleAudioRoute(generation, library, filepath.Join(resources, "libMiMacSpeech.dylib"))
+			}
 			return openLiveXiaomiRoute(ctx, generation, library, "com.bytedance.inputmethod.doubaoime", filepath.Join(appPath, "Contents/MacOS/DoubaoIme"), locator)
 		}
 	}
@@ -99,11 +105,13 @@ func (s *shell) refreshLiveAudio() {
 	}
 	s.audioResourcesClose = connection.Close
 	s.audioResourcesBeforeStart = connection.BeforeStart
+	s.audioResourcesDeliver = connection.DeliverTranscript
 	if err := s.plugins.Enable(audioSessionPlugin); err != nil {
 		connection.cancel() // The closed startup gate proves no native owner exists.
 		s.liveAudio.connection = nil
 		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
 		s.audioResourcesBeforeStart = nil
+		s.audioResourcesDeliver = nil
 		s.report.AudioError = err.Error()
 		s.blockUnpreparedLiveAudio()
 		go func() { _ = connection.Close(context.Background()) }()
@@ -179,7 +187,7 @@ func (s *shell) retireLiveAudio() {
 }
 
 func (s *shell) liveAudioStatus() (string, statusTone, bool) {
-	if s.liveAudio.backend == "" {
+	if !s.audioRequested() {
 		return "", toneNeutral, false
 	}
 	if s.liveAudio.retiring {
@@ -189,7 +197,7 @@ func (s *shell) liveAudioStatus() (string, statusTone, bool) {
 		return "音频连接失败，请重新启用遥控器", toneError, true
 	}
 	if s.liveAudio.connection == nil {
-		if s.currentVoiceTool != "voice-doubao" {
+		if s.currentVoiceTool != "voice-doubao" && s.currentVoiceTool != appleSpeechToolID {
 			return "此工具尚不支持遥控器音频", toneNeutral, true
 		}
 		return "正在准备音频", toneNeutral, true
@@ -204,7 +212,7 @@ func (s *shell) liveAudioStatus() (string, statusTone, bool) {
 }
 
 func (s *shell) blockUnpreparedLiveAudio() {
-	if s.liveAudio.backend != "" && s.coordinator != nil && s.audioSession == nil {
+	if s.audioRequested() && s.coordinator != nil && s.audioSession == nil {
 		s.coordinator.voiceAudioBinding = func(bridge.ActionPlan) (bridge.Binding, error) {
 			return bridge.Binding{}, errors.New("remote audio backend is not prepared")
 		}
@@ -212,7 +220,11 @@ func (s *shell) blockUnpreparedLiveAudio() {
 }
 
 func (s *shell) logAudioCompletion(event bridge.Event, failed bool, err error) {
-	if s.liveAudio.backend != "" {
+	if s.audioRequested() {
 		log.Printf("audio completion: event=%T cleanup_failed=%t error=%v", event, failed, err)
 	}
+}
+
+func (s *shell) audioRequested() bool {
+	return s.liveAudio.backend != "" || s.currentVoiceTool == appleSpeechToolID
 }

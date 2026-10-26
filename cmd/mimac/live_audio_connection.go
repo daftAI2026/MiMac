@@ -284,3 +284,34 @@ func (c *liveAudioConnection) Close(ctx context.Context) error {
 	close(c.closed)
 	return nil
 }
+
+// Final text uses the same captured route and cleanup gate as start preflight.
+func (c *liveAudioConnection) DeliverTranscript(token bridge.SessionToken, text string) error {
+	if c == nil {
+		return errLiveAudioRouteNil
+	}
+	select {
+	case c.closeGate <- struct{}{}:
+	default:
+		return errLiveAudioClosed
+	}
+	defer func() { <-c.closeGate }()
+	select {
+	case <-c.done:
+	default:
+		return errLiveAudioNotReady
+	}
+	c.stateMu.Lock()
+	closing, route := c.closing || c.isClosed, c.route
+	c.stateMu.Unlock()
+	if closing || route == nil {
+		return errLiveAudioClosed
+	}
+	delivery, ok := route.(interface {
+		DeliverTranscript(bridge.SessionToken, string) error
+	})
+	if !ok {
+		return errors.New("audio route does not deliver text")
+	}
+	return delivery.DeliverTranscript(token, text)
+}
