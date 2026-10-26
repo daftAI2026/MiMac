@@ -249,6 +249,9 @@ func TestSynchronousUnloadWithPendingOpenFailsWithoutTakingOutputLock(t *testing
 	if !errors.Is(err, audiosession.ErrCleanupPending) {
 		t.Fatalf("pending unload = %v", err)
 	}
+	if s.audioSession == nil || s.coordinator.audio != runner || s.coordinator.voiceAudioBinding == nil {
+		t.Fatal("pending cleanup detached the audio routing hook")
+	}
 	if !s.plugins.Active(audioOutputPlugin) || !s.plugins.Active(corePlugin) {
 		t.Fatal("pending source lost dependencies")
 	}

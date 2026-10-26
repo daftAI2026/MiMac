@@ -471,10 +471,7 @@ func (s *shell) finishRemoteStop(sequence uint64, host *audioSessionHost, discon
 			return
 		}
 	} else if s.audioSession == host {
-		s.audioSession = nil
-		if s.coordinator != nil {
-			s.coordinator.audio = nil
-		}
+		s.detachAudioSession(host)
 	}
 
 	var stopErr error
@@ -533,10 +530,7 @@ func (s *shell) finishRemoteDisconnect(sequence uint64, generation uint64, host 
 			return
 		}
 	} else if s.audioSession == host {
-		s.audioSession = nil
-		if s.coordinator != nil {
-			s.coordinator.audio = nil
-		}
+		s.detachAudioSession(host)
 	}
 	// Do not restore the device mapping until the output adapter has confirmed
 	// that its synthesized key ledger is empty and its target is closed.

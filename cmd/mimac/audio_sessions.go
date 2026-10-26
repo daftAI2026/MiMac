@@ -101,6 +101,15 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 		host := &audioSessionHost{runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose}
 		s.audioSession = host
 		s.coordinator.audio = runner
+		// Activating a verified audio factory must also select Core's audio
+		// path for physical voice edges. Otherwise they remain shortcut-only.
+		ready := s.audioResourcesReady
+		s.coordinator.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
+			if s.closing || s.audioSession != host || (ready != nil && !ready()) {
+				return bridge.Binding{}, errors.New("audio session resources are not ready")
+			}
+			return voiceAudioBindingForAction(plan)
+		}
 		post := s.audioPost
 		if post == nil {
 			post = mygo.RunOnMain
@@ -117,8 +126,7 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			stop()
 			closeErr := host.close(stoppedCtx)
 			if closeErr == nil {
-				s.coordinator.audio = nil
-				s.audioSession = nil
+				s.detachAudioSession(host)
 			}
 			return errors.Join(routeErr, closeErr)
 		}, err
@@ -181,4 +189,18 @@ func (s *shell) deferAudioQuit(prevent func(), post func(func()), quit func()) b
 		})
 	}()
 	return true
+}
+
+// Only a confirmed cleanup may remove the audio routing hook. A failed close
+// retains the hook, so another press cannot silently fall back to tool-only
+// control while this session still owns audio resources.
+func (s *shell) detachAudioSession(host *audioSessionHost) {
+	if s.audioSession != host {
+		return
+	}
+	s.audioSession = nil
+	if s.coordinator != nil {
+		s.coordinator.audio = nil
+		s.coordinator.voiceAudioBinding = nil
+	}
 }

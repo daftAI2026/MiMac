@@ -63,6 +63,7 @@ type shell struct {
 	audioSession                     *audioSessionHost
 	audioSource                      audioSourceFactory
 	audioResources                   audiosession.Prepare
+	audioResourcesReady              func() bool
 	audioResourcesClose              func(context.Context) error
 	audioPost                        func(func())
 	audioQuitPending, audioQuitReady bool
