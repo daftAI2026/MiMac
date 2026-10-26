@@ -23,6 +23,7 @@ type deviceCoordinator struct {
 	resolveVoiceAction func() (bridge.ActionPlan, error)
 	preflightAction    func(bridge.ActionPlan) error
 	voiceAudioBinding  func(bridge.ActionPlan) (bridge.Binding, error)
+	beforeAudioStart   func() error
 	failureID          uint64
 	submitted          uint64
 	steps              uint64
@@ -106,6 +107,12 @@ func (d *deviceCoordinator) acceptWithRecorderIsolation(event devices.InputEvent
 						if binding, err := d.voiceAudioBinding(plan); err == nil {
 							if err := d.step(bridge.Configure(binding)); err == nil {
 								input = bridge.VoiceBegan(edge.Press)
+								if d.beforeAudioStart != nil && d.core.CanBeginVoice(edge.Press) {
+									if err := d.beforeAudioStart(); err != nil {
+										input = bridge.ObservedBegan(edge.Press)
+										eventErr = errors.Join(eventErr, err)
+									}
+								}
 							} else {
 								eventErr = errors.Join(eventErr, err)
 							}

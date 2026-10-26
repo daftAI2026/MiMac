@@ -65,6 +65,7 @@ type shell struct {
 	audioSource                      audioSourceFactory
 	audioResources                   audiosession.Prepare
 	audioResourcesReady              func() bool
+	audioResourcesBeforeStart        func(context.Context) error
 	audioResourcesClose              func(context.Context) error
 	audioPost                        func(func())
 	audioQuitPending, audioQuitReady bool

@@ -13,6 +13,7 @@ var (
 	errLiveAudioFactoryNil = errors.New("live audio connection: factory is required")
 	errLiveAudioRouteNil   = errors.New("live audio connection: factory returned no route")
 	errLiveAudioClosed     = errors.New("live audio connection: connection is closing or closed")
+	errLiveAudioNotReady   = errors.New("live audio connection: route is not ready")
 )
 
 // liveAudioRoute is the small lifecycle surface the connection needs from the
@@ -165,6 +166,35 @@ func (c *liveAudioConnection) Err() error {
 		return errLiveAudioRouteNil
 	}
 	return route.Error()
+}
+
+// BeforeStart runs a target adapter's start preflight after Core has
+// admitted a new physical press, but before its first target key is posted.
+// It never waits for construction or competes with native cleanup. Context
+// checks bound admission between native calls, not an in-flight system call.
+func (c *liveAudioConnection) BeforeStart(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("live audio connection: nil start context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c == nil {
+		return errLiveAudioRouteNil
+	}
+	select {
+	case c.closeGate <- struct{}{}:
+	default:
+		return errLiveAudioClosed
+	}
+	defer func() { <-c.closeGate }()
+	if !c.Ready() {
+		return errLiveAudioNotReady
+	}
+	if route, ok := c.route.(interface{ BeforeStart(context.Context) error }); ok {
+		return route.BeforeStart(ctx)
+	}
+	return nil
 }
 
 // Prepare waits for construction and Start, then transfers the prepared

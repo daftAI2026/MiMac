@@ -603,30 +603,14 @@ func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
 	if !c.beginPress(press, ownerVoice, nil) {
 		return
 	}
-	if c.state.outputFailureID != 0 {
-		return
+	allowed, reason := c.voiceStartAdmission()
+	if reason != 0 {
+		*effects = append(*effects, BlockedEffect{Reason: reason})
 	}
-	if !c.state.configured {
-		return
-	}
-	if c.hasActionLease() {
-		*effects = append(*effects, BlockedEffect{Reason: BlockActionConflictsWithHeldKey})
-		return
-	}
-	if !c.state.routeAvailable || !c.state.scopeAvailable || c.state.session != nil {
+	if !allowed {
 		return
 	}
 	binding := c.state.adopted.clone()
-	if c.hasUncertain(binding.keys) {
-		*effects = append(*effects, BlockedEffect{Reason: BlockToggleRecoveryRequired})
-		return
-	}
-	if binding.policy == PolicyToggle {
-		if c.anyLeased(binding.keys) {
-			*effects = append(*effects, BlockedEffect{Reason: BlockTapConflictsWithHeldKey})
-			return
-		}
-	}
 	token := SessionToken{device: press.device, id: c.state.nextSessionID}
 	c.state.nextSessionID++
 	c.state.session = &sessionState{token: token, press: press, binding: binding, phase: PhasePreparing}
@@ -636,6 +620,45 @@ func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
 		c.acquire(binding.keys, leaseOwner{kind: ownerVoice, session: token}, effects)
 	}
 	*effects = append(*effects, PrepareSourceEffect{Token: token})
+}
+
+// voiceStartAdmission is the side-effect-free session admission rule shared
+// by CanBeginVoice and voiceBegan. reason is zero when the existing behavior
+// rejects silently; otherwise it preserves the BlockedEffect reason/order.
+func (c *Core) voiceStartAdmission() (allowed bool, reason BlockReason) {
+	if c == nil || !c.initialized || c.state.outputFailureID != 0 || !c.state.configured {
+		return false, 0
+	}
+	if c.hasActionLease() {
+		return false, BlockActionConflictsWithHeldKey
+	}
+	if !c.state.routeAvailable || !c.state.scopeAvailable || c.state.session != nil {
+		return false, 0
+	}
+	binding := c.state.adopted
+	if c.hasUncertain(binding.keys) {
+		return false, BlockToggleRecoveryRequired
+	}
+	if binding.policy == PolicyToggle && c.anyLeased(binding.keys) {
+		return false, BlockTapConflictsWithHeldKey
+	}
+	return true, 0
+}
+
+// CanBeginVoice reports whether VoiceBegan for press would pass this Core's
+// current replay, device, button-slot, and session-admission checks. It does
+// not reserve the press or mutate Core state; callers must serialize it with
+// Configure and the subsequent VoiceBegan on the Core owner thread.
+func (c *Core) CanBeginVoice(press PressToken) bool {
+	if c == nil || !c.initialized || !press.valid() || !c.matchesCurrentDevice(press) || press.pressID <= c.state.lastPressID {
+		return false
+	}
+	slot := buttonSlot{device: press.device, button: press.buttonID}
+	if _, exists := c.state.active[slot]; exists {
+		return false
+	}
+	allowed, _ := c.voiceStartAdmission()
+	return allowed
 }
 
 func (c *Core) ordinaryBegan(press PressToken, keys []Key, effects *[]Effect) {

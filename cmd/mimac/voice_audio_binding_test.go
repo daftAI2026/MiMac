@@ -371,3 +371,47 @@ func countEffectName(effects []bridge.Effect, name string) int {
 	}
 	return count
 }
+
+func TestVoiceAudioBeforeStartRunsOnceBeforeTargetKey(t *testing.T) {
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	d, device, order := newVoiceAudioTestCoordinator(t, plan)
+	calls := 0
+	d.beforeAudioStart = func() error { calls++; *order = append(*order, "before-start"); return nil }
+	press := voiceAudioTestPress(t, device, 1)
+	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeDown)
+	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeDown)
+	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeUp)
+	acceptVoiceAudioEdge(t, d, device, voiceAudioTestPress(t, device, 2), devices.EdgeDown)
+	if calls != 1 || len(*order) < 3 || (*order)[0] != "before-start" || (*order)[1] != "keys:[KeyDownEffect]" {
+		t.Fatalf("preflight order=%v calls=%d", *order, calls)
+	}
+}
+
+func TestVoiceAudioBeforeStartFailureHasNoTargetEffectsAndCanRetry(t *testing.T) {
+	for _, toggle := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hold", true: "toggle"}[toggle], func(t *testing.T) {
+			plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+			if toggle {
+				plan = voiceAudioTestPlan(t, bridge.ActionTap, bridge.RequestToggle, bridge.RequestNone, "RightOption")
+			}
+			d, device, order := newVoiceAudioTestCoordinator(t, plan)
+			marker := errors.New("wrong target identity")
+			d.beforeAudioStart = func() error { return marker }
+			press := voiceAudioTestPress(t, device, 1)
+			_, err := d.accept(devices.InputEvent{State: devices.InputStateConnected, Device: device, Edges: []devices.Edge{{Kind: devices.EdgeDown, Press: press}}})
+			if !errors.Is(err, marker) {
+				t.Fatalf("start error=%v", err)
+			}
+			s := d.core.Snapshot()
+			if s.HasSession || len(s.RecoveryKeys) != 0 || s.OutputFailureID != 0 || len(*order) != 0 {
+				t.Fatalf("failed preflight leaked effects: %+v order=%v", s, *order)
+			}
+			acceptVoiceAudioEdge(t, d, device, press, devices.EdgeUp)
+			d.beforeAudioStart = func() error { return nil }
+			acceptVoiceAudioEdge(t, d, device, voiceAudioTestPress(t, device, 2), devices.EdgeDown)
+			if !d.core.Snapshot().HasSession {
+				t.Fatal("new press did not retry")
+			}
+		})
+	}
+}

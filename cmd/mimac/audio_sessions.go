@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,29 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 				return bridge.Binding{}, errors.New("audio session resources are not ready")
 			}
 			return voiceAudioBindingForAction(plan)
+		}
+		beforeStart := s.audioResourcesBeforeStart
+		s.coordinator.beforeAudioStart = func() error {
+			if s.closing || s.audioSession != host || (ready != nil && !ready()) {
+				return errors.New("audio session resources are not ready")
+			}
+			if beforeStart == nil {
+				return nil
+			}
+			// This is a stale-admission budget, not cancellation of an in-flight
+			// CoreAudio/CF call. No polling or device preparation runs here.
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			err := beforeStart(ctx)
+			log.Printf("audio route: before_start elapsed=%s error=%v", time.Since(started), err)
+			if err != nil {
+				s.report.AudioError = err.Error()
+				s.voiceStartBlocked = "语音输入未就绪，请重试"
+			} else {
+				s.report.AudioError = ""
+			}
+			return err
 		}
 		post := s.audioPost
 		if post == nil {
@@ -231,11 +255,13 @@ func (s *shell) detachAudioSession(host *audioSessionHost) {
 	if s.liveAudio.connection != nil {
 		s.liveAudio.connection = nil
 		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
+		s.audioResourcesBeforeStart = nil
 		s.report.AudioError = ""
 	}
 	if s.coordinator != nil {
 		s.coordinator.audio = nil
 		s.coordinator.voiceAudioBinding = nil
+		s.coordinator.beforeAudioStart = nil
 	}
 	s.blockUnpreparedLiveAudio()
 }

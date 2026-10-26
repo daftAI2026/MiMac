@@ -98,10 +98,12 @@ func (s *shell) refreshLiveAudio() {
 			s.remoteHasReservation() && s.coordinator.core.Snapshot().Generation == generation && connection.Ready()
 	}
 	s.audioResourcesClose = connection.Close
+	s.audioResourcesBeforeStart = connection.BeforeStart
 	if err := s.plugins.Enable(audioSessionPlugin); err != nil {
 		connection.cancel() // The closed startup gate proves no native owner exists.
 		s.liveAudio.connection = nil
 		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
+		s.audioResourcesBeforeStart = nil
 		s.report.AudioError = err.Error()
 		s.blockUnpreparedLiveAudio()
 		go func() { _ = connection.Close(context.Background()) }()
@@ -118,10 +120,11 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 			if s.closing || s.liveAudio.connection != connection {
 				return
 			}
-			if err := connection.Err(); err != nil {
+			ready, err := connection.Ready(), connection.Err()
+			if err != nil {
 				s.report.AudioError = err.Error()
 			}
-			log.Printf("audio route: ready=%t error=%v", connection.Ready(), connection.Err())
+			log.Printf("audio route: ready=%t error=%v", ready, err)
 			s.invalidateDeviceView()
 		})
 	}

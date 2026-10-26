@@ -330,3 +330,59 @@ func channelIsClosed(channel <-chan struct{}) bool {
 		return false
 	}
 }
+
+type startCheckedRoute struct {
+	*liveAudioConnectionTestRoute
+	before func(context.Context) error
+}
+
+func (r *startCheckedRoute) BeforeStart(ctx context.Context) error { return r.before(ctx) }
+
+func TestLiveAudioConnectionBeforeStartOnlyForReadyOpenRoute(t *testing.T) {
+	calls := 0
+	marker := errors.New("selection rejected")
+	route := &startCheckedRoute{newLiveAudioConnectionTestRoute(), func(context.Context) error { calls++; return marker }}
+	release := make(chan struct{})
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) { <-release; return route, nil })
+	if err := connection.BeforeStart(context.Background()); !errors.Is(err, errLiveAudioNotReady) {
+		t.Fatalf("cold preflight = %v", err)
+	}
+	close(release)
+	waitLiveAudioDone(t, connection)
+	if err := connection.BeforeStart(context.Background()); !errors.Is(err, marker) {
+		t.Fatalf("ready preflight = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := connection.BeforeStart(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled preflight = %v", err)
+	}
+	if err := connection.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.BeforeStart(context.Background()); err == nil {
+		t.Fatal("closed preflight accepted")
+	}
+	if calls != 1 {
+		t.Fatalf("target requests = %d, want 1", calls)
+	}
+}
+
+func TestLiveAudioConnectionBeforeStartDoesNotWaitOnClose(t *testing.T) {
+	route := &startCheckedRoute{newLiveAudioConnectionTestRoute(), func(context.Context) error { t.Error("start during close"); return nil }}
+	entered, release := make(chan struct{}), make(chan struct{})
+	route.closeEnter, route.closeBlock = entered, release
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) { return route, nil })
+	waitLiveAudioDone(t, connection)
+	done := make(chan error, 1)
+	go func() { done <- connection.Close(context.Background()) }()
+	<-entered
+	if err := connection.BeforeStart(context.Background()); !errors.Is(err, errLiveAudioClosed) {
+		t.Fatalf("concurrent preflight = %v", err)
+	}
+	// The channel retained below is the sole close owner.
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

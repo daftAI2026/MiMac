@@ -77,6 +77,12 @@ func (i *compatRouteTestInspector) setRunning(running bool) {
 	i.mu.Unlock()
 }
 
+func (i *compatRouteTestInspector) setProcesses(processes []audioroute.ProcessInput) {
+	i.mu.Lock()
+	i.processes = append([]audioroute.ProcessInput(nil), processes...)
+	i.mu.Unlock()
+}
+
 func (i *compatRouteTestInspector) snapshot() (deviceUID string, waitPID int32, waitUID string, waitCalls, processCalls int) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -108,6 +114,8 @@ type compatRouteTestOwner struct {
 	closeErrors  []error
 	sourceCalls  int
 	closeCalls   int
+	closeEntered chan struct{}
+	closeRelease chan struct{}
 	eventLog     *[]string
 	eventLogLock *sync.Mutex
 }
@@ -128,8 +136,15 @@ func (o *compatRouteTestOwner) close() error {
 		err = o.closeErrors[0]
 		o.closeErrors = o.closeErrors[1:]
 	}
+	closeEntered, closeRelease := o.closeEntered, o.closeRelease
 	eventLog, logLock := o.eventLog, o.eventLogLock
 	o.mu.Unlock()
+	if closeEntered != nil {
+		close(closeEntered)
+	}
+	if closeRelease != nil {
+		<-closeRelease
+	}
 	if eventLog != nil {
 		logLock.Lock()
 		*eventLog = append(*eventLog, "device-close")
@@ -314,7 +329,7 @@ func openCompatRouteForTest(t *testing.T, saved *string) (*compatLiveAudioRoute,
 	return compatRouteTestFixture(t, saved)
 }
 
-func TestOpenLiveXiaomiRouteUsesOnlyMiMacUIDAndCapturedDoubaoIdentity(t *testing.T) {
+func TestOpenLiveXiaomiRouteDefersMiMacSelectionUntilBeforeStart(t *testing.T) {
 	saved := "com.example.previous-input"
 	route, inspector, _, owner, requests, _, sink := openCompatRouteForTest(t, &saved)
 	defer closeCompatRouteForTest(t, route)
@@ -322,8 +337,8 @@ func TestOpenLiveXiaomiRouteUsesOnlyMiMacUIDAndCapturedDoubaoIdentity(t *testing
 	if route.pid != 42 || route.bundleID != compatDoubaoBundleID || route.generation != 7 {
 		t.Fatalf("captured route identity = pid %d bundle %q generation %d", route.pid, route.bundleID, route.generation)
 	}
-	if got := requests.snapshot(); len(got) != 1 || got[0] == nil || *got[0] != compatAudioDeviceUID {
-		t.Fatalf("startup selection requests = %v, want only %q", got, compatAudioDeviceUID)
+	if got := requests.snapshot(); len(got) != 0 {
+		t.Fatalf("factory changed Doubao selection = %v, want no request before a voice start", got)
 	}
 	if got, _, _, _, _ := inspector.snapshot(); got != compatAudioDeviceUID {
 		t.Fatalf("inspected UID = %q, want %q", got, compatAudioDeviceUID)
@@ -336,6 +351,23 @@ func TestOpenLiveXiaomiRouteUsesOnlyMiMacUIDAndCapturedDoubaoIdentity(t *testing
 		t.Fatal(err)
 	}
 	waitXiaomiRoute(t, route.Ready)
+	for range 3 {
+		if !route.Ready() || route.Error() != nil {
+			t.Fatalf("preparation status ready=%v error=%v", route.Ready(), route.Error())
+		}
+	}
+	if got := requests.snapshot(); len(got) != 0 {
+		t.Fatalf("Ready/Error changed Doubao selection = %v", got)
+	}
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("first BeforeStart() error = %v", err)
+	}
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("second BeforeStart() error = %v", err)
+	}
+	if got := requests.snapshot(); len(got) != 2 || got[0] == nil || *got[0] != compatAudioDeviceUID || got[1] == nil || *got[1] != compatAudioDeviceUID {
+		t.Fatalf("before-start selection requests = %v, want MiMac UID once per start", got)
+	}
 	if sink.config != (audiooutput.Config{DeviceUID: compatAudioDeviceUID, SampleRate: compatAudioSampleRate}) {
 		t.Fatalf("sink config = %+v, want exact MiMac UID and 16 kHz", sink.config)
 	}
@@ -361,8 +393,85 @@ func TestOpenLiveXiaomiRouteUsesOnlyMiMacUIDAndCapturedDoubaoIdentity(t *testing
 		t.Fatalf("Close() error = %v", err)
 	}
 	got := requests.snapshot()
-	if len(got) != 2 || got[1] == nil || *got[1] != saved {
-		t.Fatalf("selection requests after close = %v, want original optional %q", got, saved)
+	if len(got) != 3 || got[2] == nil || *got[2] != saved {
+		t.Fatalf("selection requests after close = %v, want two start requests then original optional %q", got, saved)
+	}
+}
+
+func TestCompatRouteBeforeStartRejectsBusyOrChangedTargetWithoutPosting(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*compatRouteTestInspector, *compatRouteTestIdentity)
+	}{
+		{name: "busy", mutate: func(inspector *compatRouteTestInspector, _ *compatRouteTestIdentity) {
+			inspector.setRunning(true)
+		}},
+		{name: "identity changed", mutate: func(_ *compatRouteTestInspector, identity *compatRouteTestIdentity) {
+			identity.setError(processidentity.ErrIdentityChanged)
+		}},
+		{name: "pid changed", mutate: func(inspector *compatRouteTestInspector, _ *compatRouteTestIdentity) {
+			inspector.setProcesses([]audioroute.ProcessInput{{Found: true, PID: 43}})
+		}},
+		{name: "ambiguous pid", mutate: func(inspector *compatRouteTestInspector, _ *compatRouteTestIdentity) {
+			inspector.setProcesses([]audioroute.ProcessInput{{Found: true, PID: 42}, {Found: true, PID: 43}})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route, inspector, identity, _, requests, _, _ := openCompatRouteForTest(t, nil)
+			test.mutate(inspector, identity)
+			if err := route.BeforeStart(context.Background()); err == nil {
+				t.Fatal("BeforeStart() succeeded for an ineligible target")
+			}
+			if got := requests.snapshot(); len(got) != 0 {
+				t.Fatalf("selection requests = %v, want none", got)
+			}
+			if err := route.Close(context.Background()); err != nil {
+				t.Fatalf("Close() after rejected start = %v", err)
+			}
+			if got := requests.snapshot(); len(got) != 0 {
+				t.Fatalf("selection requests after close = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCompatRouteBeforeStartFailsFastWhileCloseOwnsGate(t *testing.T) {
+	route, _, _, owner, requests, _, _ := openCompatRouteForTest(t, nil)
+	owner.closeEntered = make(chan struct{})
+	owner.closeRelease = make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(owner.closeRelease) })
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- route.Close(context.Background()) }()
+	select {
+	case <-owner.closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not reach the blocking owner close")
+	}
+	if err := route.BeforeStart(context.Background()); !errors.Is(err, errCompatRouteOperationBusy) {
+		t.Fatalf("BeforeStart() during Close = %v, want operation-busy error", err)
+	}
+	if got := requests.snapshot(); len(got) != 0 {
+		t.Fatalf("concurrent start posted selection = %v, want none", got)
+	}
+	releaseOnce.Do(func() { close(owner.closeRelease) })
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if got := requests.snapshot(); len(got) != 0 {
+		t.Fatalf("selection requests after Close = %v, want none", got)
+	}
+}
+
+func TestCompatRouteCloseWithoutBeforeStartDoesNotRestore(t *testing.T) {
+	route, _, _, _, requests, _, _ := openCompatRouteForTest(t, nil)
+	if err := route.Close(context.Background()); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if got := requests.snapshot(); len(got) != 0 {
+		t.Fatalf("selection requests = %v, want no selection or restore without a start attempt", got)
 	}
 }
 
@@ -407,14 +516,17 @@ func TestCompatRoutePartialDeviceOwnerOnOpenErrorRemainsClosable(t *testing.T) {
 		t.Fatalf("partial device owner Close calls = %d, want 1", closeCalls)
 	}
 	values := requests.snapshot()
-	if len(values) != 2 || values[0] == nil || *values[0] != compatAudioDeviceUID || values[1] == nil || *values[1] != saved {
-		t.Fatalf("requests = %v, want MiMac request followed by saved selection", values)
+	if len(values) != 0 {
+		t.Fatalf("requests = %v, want no selection writes before any voice start", values)
 	}
 }
 
 func TestCompatRouteBusyTargetCloseDeadlineRetainsSelectionLease(t *testing.T) {
 	saved := "old-input"
 	route, inspector, _, owner, requests, _, _ := openCompatRouteForTest(t, &saved)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() error = %v", err)
+	}
 	inspector.setRunning(true)
 
 	err := route.Close(context.Background())
@@ -444,6 +556,9 @@ func TestCompatRouteRestoreFailureRetainsLeaseForRetry(t *testing.T) {
 	saved := "saved-input"
 	restoreErr := errors.New("notification center post failed")
 	route, _, _, owner, requests, _, _ := compatRouteTestFixtureWith(t, &saved, []error{nil, restoreErr, nil}, nil, nil)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() error = %v", err)
+	}
 
 	if err := route.Close(context.Background()); !errors.Is(err, restoreErr) {
 		t.Fatalf("first Close() = %v, want restoration error", err)
@@ -456,7 +571,7 @@ func TestCompatRouteRestoreFailureRetainsLeaseForRetry(t *testing.T) {
 	}
 	got := requests.snapshot()
 	if len(got) != 3 || got[0] == nil || *got[0] != compatAudioDeviceUID || got[1] == nil || *got[1] != saved || got[2] == nil || *got[2] != saved {
-		t.Fatalf("selection requests = %v, want startup plus two saved-value posts", got)
+		t.Fatalf("selection requests = %v, want one start request plus two saved-value posts", got)
 	}
 }
 
@@ -471,12 +586,15 @@ func TestCompatRouteRestoresNilAndExplicitEmptyOptionalValues(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			route, _, _, _, requests, _, _ := openCompatRouteForTest(t, test.saved)
+			if err := route.BeforeStart(context.Background()); err != nil {
+				t.Fatalf("BeforeStart() error = %v", err)
+			}
 			if err := route.Close(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			got := requests.snapshot()
 			if len(got) != 2 || got[0] == nil || *got[0] != compatAudioDeviceUID {
-				t.Fatalf("selection requests = %v, want startup MiMac request and saved Optional", got)
+				t.Fatalf("selection requests = %v, want start MiMac request and saved Optional", got)
 			}
 			if test.saved == nil {
 				if got[1] != nil {
@@ -492,6 +610,9 @@ func TestCompatRouteRestoresNilAndExplicitEmptyOptionalValues(t *testing.T) {
 func TestCompatRouteIdentityChangeRetiresLeaseWithoutRestorePost(t *testing.T) {
 	saved := "saved-input"
 	route, _, identity, owner, requests, _, _ := openCompatRouteForTest(t, &saved)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() error = %v", err)
+	}
 	identity.setError(processidentity.ErrIdentityChanged)
 
 	if err := route.Close(context.Background()); err != nil {
@@ -502,7 +623,7 @@ func TestCompatRouteIdentityChangeRetiresLeaseWithoutRestorePost(t *testing.T) {
 	}
 	got := requests.snapshot()
 	if len(got) != 1 || got[0] == nil || *got[0] != compatAudioDeviceUID {
-		t.Fatalf("selection requests = %v, want no post to the new process generation", got)
+		t.Fatalf("selection requests = %v, want no restore post to the new process generation", got)
 	}
 }
 
@@ -510,6 +631,9 @@ func TestCompatRoutePrepareFailureStillClosesPartialSourceAndRestores(t *testing
 	saved := "saved-input"
 	prepareErr := errors.New("ATVV source initialization failed after partial allocation")
 	route, _, _, owner, requests, source, sink := compatRouteTestFixtureWith(t, &saved, nil, nil, prepareErr)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() error = %v", err)
+	}
 	if err := route.Start(); err != nil {
 		t.Fatalf("Start() returned synchronous error = %v", err)
 	}
@@ -566,15 +690,18 @@ func TestCompatRouteRequestFailureStillReturnsRestoreOwner(t *testing.T) {
 		idlePoll:         time.Millisecond,
 	}
 	got, err := openLiveXiaomiRouteWithDependencies(context.Background(), 7, "/tmp/libMiMacATVV.dylib", compatDoubaoBundleID, executable, locator, deps)
-	if got == nil || !errors.Is(err, postErr) {
-		t.Fatalf("open result=(%T,%v), want owner retained after uncertain post", got, err)
+	if got == nil || err != nil {
+		t.Fatalf("open result=(%T,%v), want route prepared without a selection request", got, err)
+	}
+	if err := got.(*compatLiveAudioRoute).BeforeStart(context.Background()); !errors.Is(err, postErr) {
+		t.Fatalf("BeforeStart() = %v, want uncertain post error", err)
 	}
 	if closeErr := got.Close(context.Background()); closeErr != nil {
-		t.Fatalf("Close() after request error = %v", closeErr)
+		t.Fatalf("Close() after BeforeStart error = %v", closeErr)
 	}
 	values := requests.snapshot()
 	if len(values) != 2 || values[0] == nil || *values[0] != compatAudioDeviceUID || values[1] == nil || *values[1] != saved {
-		t.Fatalf("requests = %v, want uncertain MiMac post and saved-value restoration", values)
+		t.Fatalf("requests = %v, want uncertain start post and saved-value restoration", values)
 	}
 }
 
@@ -633,6 +760,9 @@ func TestCompatRouteCloseOrdersDeviceBeforeSavedSelectionRequest(t *testing.T) {
 	requests.log, requests.logMu = &events, &eventsMu
 	source.eventLog, source.logMu = &events, &eventsMu
 	sink.eventLog, sink.logMu = &events, &eventsMu
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() error = %v", err)
+	}
 	if err := route.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +770,7 @@ func TestCompatRouteCloseOrdersDeviceBeforeSavedSelectionRequest(t *testing.T) {
 	if err := route.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := eventSnapshot(&events, &eventsMu), []string{"source-close", "sink-close", "device-close", "selection-request"}; !reflect.DeepEqual(got, want) {
+	if got, want := eventSnapshot(&events, &eventsMu), []string{"selection-request", "source-close", "sink-close", "device-close", "selection-request"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("close event order = %v, want %v", got, want)
 	}
 }

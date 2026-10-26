@@ -38,6 +38,7 @@ var (
 	errCompatRouteDeviceUID     = errors.New("mimac-compat route: verified MiMac endpoint is unavailable")
 	errCompatRouteOwnerNil      = errors.New("mimac-compat route: Xiaomi device owner is unavailable")
 	errCompatRouteUnavailable   = errors.New("mimac-compat route: Xiaomi route is unavailable")
+	errCompatRouteOperationBusy = errors.New("mimac-compat route: start or close operation is already in progress")
 )
 
 type compatAudioInspector interface {
@@ -258,31 +259,8 @@ func openLiveXiaomiRouteWithDependencies(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	currentProcess, err := uniqueCompatTargetProcess(inspector, targetBundleID)
-	if err != nil {
+	if err := lease.verifyCapturedTargetIdle(ctx); err != nil {
 		return nil, err
-	}
-	if currentProcess.PID != process.PID {
-		return nil, errCompatRouteTargetMissing
-	}
-	if err := requireCompatTargetIdle(ctx, inspector, identity, process.PID); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	uid := compatAudioDeviceUID
-	// Set before the call: a local post error does not prove that no notification
-	// was delivered, so Close must still attempt restoration of the saved value.
-	lease.selectionAttempted = true
-	if err := deps.requestSelection(ctx, locator, &uid); err != nil {
-		return lease, fmt.Errorf("mimac-compat route: request MiMac microphone selection (unacknowledged): %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return lease, err
-	}
-	if err := identity.Check(); err != nil {
-		return lease, fmt.Errorf("mimac-compat route: target changed after microphone request: %w", err)
 	}
 	owner, err = deps.openDeviceOwner(generation, libraryPath)
 	if err != nil {
@@ -371,6 +349,7 @@ type compatLiveAudioRoute struct {
 
 	closeGate          chan struct{}
 	mu                 sync.Mutex
+	closing            bool
 	closed             bool
 	routeDone          bool
 	leaseDone          bool
@@ -385,6 +364,79 @@ func (r *compatLiveAudioRoute) Start() error {
 		return errCompatRouteUnavailable
 	}
 	return r.route.Start()
+}
+
+// BeforeStart reasserts the selected input immediately before a verified voice
+// action. The request is one-way; WaitReceiver remains the independent exact
+// PID/UID gate before PCM is delivered.
+func (r *compatLiveAudioRoute) BeforeStart(ctx context.Context) error {
+	if r == nil || r.route == nil {
+		return errCompatRouteUnavailable
+	}
+	if ctx == nil {
+		return errCompatRouteContext
+	}
+	select {
+	case r.closeGate <- struct{}{}:
+	default:
+		return errCompatRouteOperationBusy
+	}
+	defer func() { <-r.closeGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	closing := r.closing || r.closed || r.routeDone
+	r.mu.Unlock()
+	if closing {
+		return errCompatRouteUnavailable
+	}
+	if err := r.verifyCapturedTargetIdle(ctx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.request == nil {
+		return errors.New("mimac-compat route: microphone selection requester is unavailable")
+	}
+
+	uid := compatAudioDeviceUID
+	// Mark before posting: a local error does not prove the notification was
+	// undelivered, so Close must still attempt restoration of the captured Optional.
+	r.mu.Lock()
+	if r.closing || r.closed || r.routeDone {
+		r.mu.Unlock()
+		return errCompatRouteUnavailable
+	}
+	r.selectionAttempted = true
+	r.mu.Unlock()
+
+	if err := r.request(ctx, r.locator, &uid); err != nil {
+		return fmt.Errorf("mimac-compat route: request MiMac microphone selection (unacknowledged): %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := r.verifyCapturedTargetIdle(ctx); err != nil {
+		return fmt.Errorf("mimac-compat route: verify target after microphone request: %w", err)
+	}
+	return nil
+}
+
+func (r *compatLiveAudioRoute) verifyCapturedTargetIdle(ctx context.Context) error {
+	if r.identity == nil || r.inspector == nil || r.pid <= 0 {
+		return errCompatRouteTargetNil
+	}
+	process, err := uniqueCompatTargetProcess(r.inspector, r.bundleID)
+	if err != nil {
+		return err
+	}
+	if process.PID != r.pid {
+		return errCompatRouteTargetMissing
+	}
+	return requireCompatTargetIdle(ctx, r.inspector, r.identity, r.pid)
 }
 
 func (r *compatLiveAudioRoute) Ready() bool {
@@ -449,6 +501,9 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 
 	r.mu.Lock()
 	closed, routeDone := r.closed, r.routeDone
+	if !closed {
+		r.closing = true
+	}
 	r.mu.Unlock()
 	if closed {
 		return nil
