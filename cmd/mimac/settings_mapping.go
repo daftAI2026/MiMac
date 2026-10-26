@@ -1,8 +1,6 @@
 package main
 
 import (
-	"time"
-
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/platform/statuscolor"
@@ -46,7 +44,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				if s.mappingError != "" && s.editButton == "" {
 					ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
-				mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled())
+				mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window)
 				disabled := s.remoteBusy()
 				if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
 					s.toggleRemote()
@@ -125,7 +123,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	})
 }
 
-func mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone, enabled bool) {
+func mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone, enabled bool, window *mygo.Window) {
 	color := a.statusColor(tone)
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
 		if tone == toneWarning || tone == toneError {
@@ -133,17 +131,11 @@ func mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone
 		} else if enabled && tone == toneActive {
 			dot := ui.Badge(c, "").Padding(0).Width(spaceSM).Height(spaceSM)
 			activeColor := a.theme.Success
-			if tone == toneActive {
-				if systemGreen, err := statuscolor.SystemGreen(a.theme.Dark); err == nil {
-					activeColor = systemGreen
-				}
-			} else {
-				activeColor = a.theme.TextMuted
+			if systemGreen, err := statuscolor.SystemGreen(a.theme.Dark); err == nil {
+				activeColor = systemGreen
 			}
+			readyHalo(dot, activeColor, window, c.Preferences().ReduceMotion)
 			dot.Background(activeColor)
-			if tone == toneActive && !c.Preferences().ReduceMotion {
-				dot.Opacity(0.25 + 0.75*dot.Loop("remote-status-pulse", 2*time.Second, ui.Bounce(ui.EaseInOut)))
-			}
 		}
 		ui.Text(c, label).FontSize(a.fonts.caption).TextColor(color).Role(ui.RoleStatus)
 	})

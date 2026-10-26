@@ -67,6 +67,7 @@ func (s *shell) remoteModel(c *ui.Context, a appearance, profile devices.Profile
 		body.Radius(model.CornerRadius*scale).Background(a.theme.Surface).Border(lineWidth, a.theme.Border)
 	}
 	ringPulse := selectionOutlinePulse(body, selectionPulseRun(profile.ID, s.selectedButton))
+	reduceMotion := c.Preferences().ReduceMotion
 	body.Children(func() {
 		if artwork != nil {
 			ui.Image(c, artwork).Grayscale().Absolute().Left(0).Top(0).Width(model.Width * scale).Height(model.Height * scale).Fit(ui.Contain)
@@ -80,13 +81,16 @@ func (s *shell) remoteModel(c *ui.Context, a appearance, profile devices.Profile
 			r := button.Bounds
 			item := ui.ButtonBase(c).Key(profile.ID + "/model/" + button.ID).Label(button.Label).Absolute().Left(r.Min.X * scale).Top(r.Min.Y * scale).
 				Width((r.Max.X - r.Min.X) * scale).Height((r.Max.Y - r.Min.Y) * scale).Padding(0).Radius(button.CornerRadius * scale).FocusRing(false)
+			selectedButton := s.selectedButton == button.ID
+			sweepRun := selectionPulseRun(profile.ID, button.ID)
+			sweep := selectionSweepLocal(item, selectedButton, sweepRun, s.window, reduceMotion)
 			if artwork != nil {
 				item.Background(ui.Transparent).Border(1, ui.Transparent)
 			} else {
 				item.Background(a.theme.Text).Border(lineWidth, a.theme.Border)
 			}
 			selected := float32(0)
-			if s.selectedButton == button.ID {
+			if selectedButton {
 				selected = 1
 			}
 			color := a.theme.Background
@@ -115,6 +119,7 @@ func (s *shell) remoteModel(c *ui.Context, a appearance, profile devices.Profile
 				item.Children(func() {
 					if selected == 1 {
 						addSelectionOutline(c, button.CornerRadius*scale, ringPulse)
+						addSelectionSweep(c, button.CornerRadius*scale, sweep, s.window, reduceMotion)
 					}
 					if artwork == nil {
 						if icon := controlSymbol(button.Symbol); icon != nil {
