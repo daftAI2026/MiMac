@@ -34,11 +34,13 @@ type snapshot struct {
 	processID int32
 	element   uintptr
 	selection uintptr
+	marker    uintptr // optional opaque range for parameterized text operations
 }
 
 // native keeps operating-system calls isolated from the one-shot lifecycle.
 // insert must revalidate process, focused element, and selection immediately
-// before making exactly one AXSelectedText set request.
+// before making exactly one text replacement request. A native adapter may
+// collapse the replacement selection afterward, but must never retry the text.
 type native interface {
 	capture() (snapshot, error)
 	insert(snapshot, string) error
@@ -92,6 +94,8 @@ func captureWith(n native) (*Target, error) {
 // Empty recognition results are accepted as no-ops and do not consume the
 // one-shot insertion. A successful return means the native AX request was
 // accepted; it does not prove that the target application visibly committed it.
+// An error may also occur after text was accepted (for example, if focus changed
+// before collapsing the replacement selection). Never retry the transcript.
 func (t *Target) Insert(text string) error {
 	if t == nil {
 		return ErrClosed

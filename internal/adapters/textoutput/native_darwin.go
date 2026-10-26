@@ -16,17 +16,21 @@ import (
 )
 
 const (
-	cfStringEncodingUTF8   = uint32(0x08000100)
-	axErrorSuccess         = int32(0)
-	axErrorAttrUnsupported = int32(-25205)
-	axErrorAPIDisabled     = int32(-25211)
-	axErrorNoValue         = int32(-25212)
-	axValueCFRange         = uint32(4)
+	cfStringEncodingUTF8    = uint32(0x08000100)
+	axErrorSuccess          = int32(0)
+	axErrorAttrUnsupported  = int32(-25205)
+	axErrorNotImplemented   = int32(-25208)
+	axErrorAPIDisabled      = int32(-25211)
+	axErrorNoValue          = int32(-25212)
+	axErrorParamUnsupported = int32(-25213)
+	axValueCFRange          = uint32(4)
 )
 
 type nativeAPI struct {
 	createApplication           func(int32) uintptr
 	copyAttributeValue          func(uintptr, uintptr, *uintptr) int32
+	copyParameterizedNames      func(uintptr, *uintptr) int32
+	copyParameterizedValue      func(uintptr, uintptr, uintptr, *uintptr) int32
 	getPID                      func(uintptr, *int32) int32
 	isAttributeSettable         func(uintptr, uintptr, *uint8) int32
 	setAttributeValue           func(uintptr, uintptr, uintptr) int32
@@ -41,12 +45,21 @@ type nativeAPI struct {
 	cfGetTypeID                 func(uintptr) uintptr
 	cfBooleanGetTypeID          func() uintptr
 	cfBooleanGetValue           func(uintptr) uint8
+	cfArrayCreateMutable        func(uintptr, int64, uintptr) uintptr
+	cfArrayAppendValue          func(uintptr, uintptr)
+	cfArrayGetCount             func(uintptr) int64
+	cfArrayGetValueAtIndex      func(uintptr, int64) uintptr
+	cfArrayGetTypeID            func() uintptr
 	axValueGetTypeID            func() uintptr
 	axValueGetType              func(uintptr) uint32
+	axValueGetValue             func(uintptr, uint32, unsafe.Pointer) uint8
+	axValueCreate               func(uint32, unsafe.Pointer) uintptr
 	isSecureEventInputOn        func() uint8
 	copyNativePointer           func(*uintptr, uintptr, uintptr) uintptr
 	trustedCheckPromptKey       uintptr
 	cfBooleanTrue               uintptr
+	cfBooleanFalse              uintptr
+	arrayCallbacks              uintptr
 	dictionaryKeyCallbacks      uintptr
 	dictionaryValueCallbacks    uintptr
 
@@ -130,6 +143,16 @@ func (systemNative) capture() (snapshot, error) {
 			api.cfRelease(selection)
 		}
 	}()
+	state.marker, err = operationMarker(api, element)
+	if err != nil {
+		return snapshot{}, err
+	}
+	releaseMarker := true
+	defer func() {
+		if releaseMarker && state.marker != 0 {
+			api.cfRelease(state.marker)
+		}
+	}()
 
 	// Fail closed if the foreground process, focused element, or selection moved
 	// while the initial snapshot was being assembled.
@@ -138,6 +161,7 @@ func (systemNative) capture() (snapshot, error) {
 	}
 	releaseElement = false
 	releaseSelection = false
+	releaseMarker = false
 	return state, nil
 }
 
@@ -148,6 +172,9 @@ func (systemNative) insert(state snapshot, text string) error {
 	}
 	if api.isProcessTrusted() == 0 {
 		return ErrPermissionDenied
+	}
+	if state.marker != 0 {
+		return insertTextOperation(api, state, text)
 	}
 	// The only output operation: set AXSelectedText on the captured element.
 	// There is no clipboard, key event, Return, or submit action fallback.
@@ -174,6 +201,9 @@ func (systemNative) insert(state snapshot, text string) error {
 
 func (systemNative) close(state snapshot) error {
 	if api, err := loadNativeAPI(); err == nil {
+		if state.marker != 0 {
+			api.cfRelease(state.marker)
+		}
 		if state.selection != 0 {
 			api.cfRelease(state.selection)
 		}
@@ -218,6 +248,8 @@ func loadNativeAPI() (*nativeAPI, error) {
 		}{
 			{1, &api.createApplication, "AXUIElementCreateApplication"},
 			{1, &api.copyAttributeValue, "AXUIElementCopyAttributeValue"},
+			{1, &api.copyParameterizedNames, "AXUIElementCopyParameterizedAttributeNames"},
+			{1, &api.copyParameterizedValue, "AXUIElementCopyParameterizedAttributeValue"},
 			{1, &api.getPID, "AXUIElementGetPid"},
 			{1, &api.isAttributeSettable, "AXUIElementIsAttributeSettable"},
 			{1, &api.setAttributeValue, "AXUIElementSetAttributeValue"},
@@ -232,8 +264,15 @@ func loadNativeAPI() (*nativeAPI, error) {
 			{0, &api.cfGetTypeID, "CFGetTypeID"},
 			{0, &api.cfBooleanGetTypeID, "CFBooleanGetTypeID"},
 			{0, &api.cfBooleanGetValue, "CFBooleanGetValue"},
+			{0, &api.cfArrayCreateMutable, "CFArrayCreateMutable"},
+			{0, &api.cfArrayAppendValue, "CFArrayAppendValue"},
+			{0, &api.cfArrayGetCount, "CFArrayGetCount"},
+			{0, &api.cfArrayGetValueAtIndex, "CFArrayGetValueAtIndex"},
+			{0, &api.cfArrayGetTypeID, "CFArrayGetTypeID"},
 			{1, &api.axValueGetTypeID, "AXValueGetTypeID"},
 			{1, &api.axValueGetType, "AXValueGetType"},
+			{1, &api.axValueGetValue, "AXValueGetValue"},
+			{1, &api.axValueCreate, "AXValueCreate"},
 			{3, &api.isSecureEventInputOn, "IsSecureEventInputEnabled"},
 			{4, &api.copyNativePointer, "memcpy"},
 		}
@@ -256,6 +295,8 @@ func loadNativeAPI() (*nativeAPI, error) {
 		}{
 			{1, "kAXTrustedCheckOptionPrompt", &api.trustedCheckPromptKey, true},
 			{0, "kCFBooleanTrue", &api.cfBooleanTrue, true},
+			{0, "kCFBooleanFalse", &api.cfBooleanFalse, true},
+			{0, "kCFTypeArrayCallBacks", &api.arrayCallbacks, false},
 			{0, "kCFTypeDictionaryKeyCallBacks", &api.dictionaryKeyCallbacks, false},
 			{0, "kCFTypeDictionaryValueCallBacks", &api.dictionaryValueCallbacks, false},
 		} {
@@ -280,7 +321,7 @@ func loadNativeAPI() (*nativeAPI, error) {
 				*binding.destination = address
 			}
 		}
-		if api.trustedCheckPromptKey == 0 || api.cfBooleanTrue == 0 ||
+		if api.trustedCheckPromptKey == 0 || api.cfBooleanTrue == 0 || api.cfBooleanFalse == 0 || api.arrayCallbacks == 0 ||
 			api.dictionaryKeyCallbacks == 0 || api.dictionaryValueCallbacks == 0 {
 			for _, loaded := range handles {
 				_ = purego.Dlclose(loaded)
@@ -490,9 +531,20 @@ func confirmSnapshot(api *nativeAPI, expected snapshot) error {
 	if !sameSelection {
 		return ErrTargetChanged
 	}
+	if expected.marker != 0 {
+		marker, err := api.requiredAttribute(element, "AXSelectedTextMarkerRange")
+		if err != nil {
+			return err
+		}
+		sameMarker := api.cfEqual(marker, expected.marker) != 0
+		api.cfRelease(marker)
+		if !sameMarker {
+			return ErrTargetChanged
+		}
+	}
 	// Process identity is checked again after the final AX element and selection
 	// reads, immediately before the caller asks this same captured element to
-	// accept AXSelectedText.
+	// accept the requested text or selection change.
 	finalPID, err := frontmostProcessID()
 	if err != nil {
 		return err
