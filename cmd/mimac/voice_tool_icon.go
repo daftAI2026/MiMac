@@ -39,7 +39,7 @@ func (s *shell) voiceToolIcon(tool *voiceTool) *ui.Bitmap {
 	}
 	if !tool.active {
 		if cached == nil {
-			cached = &voiceToolIcon{}
+			cached = &voiceToolIcon{bitmap: loadVoiceToolIcon("", tool.fallbackIconPNG)}
 			s.voiceToolIcons[tool.id] = cached
 			s.locateVoiceToolIcon(tool, cached)
 		}
@@ -53,7 +53,7 @@ func (s *shell) voiceToolIcon(tool *voiceTool) *ui.Bitmap {
 	if cached != nil && cached.cancel != nil {
 		cached.cancel()
 	}
-	cached = &voiceToolIcon{path: path, version: version, bitmap: loadVoiceToolIcon(path)}
+	cached = &voiceToolIcon{path: path, version: version, bitmap: loadVoiceToolIcon(path, tool.fallbackIconPNG)}
 	s.voiceToolIcons[tool.id] = cached
 	return cached.bitmap
 }
@@ -66,7 +66,7 @@ func (s *shell) locateVoiceToolIcon(tool *voiceTool, icon *voiceToolIcon) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	icon.cancel = cancel
-	locate, locator, id := tool.locateApplication, s.toolLocator, tool.id
+	locate, locator, id, fallback := tool.locateApplication, s.toolLocator, tool.id, tool.fallbackIconPNG
 	go func() {
 		defer cancel()
 		bundle, state, err := locate(ctx, locator)
@@ -77,21 +77,24 @@ func (s *shell) locateVoiceToolIcon(tool *voiceTool, icon *voiceToolIcon) {
 			icon.cancel = nil
 			if err == nil && state == voicetools.Ready {
 				icon.path, icon.version = bundle.Path, bundle.Version
-				icon.bitmap = loadVoiceToolIcon(bundle.Path)
+				icon.bitmap = loadVoiceToolIcon(bundle.Path, fallback)
 			}
 			s.invalidateDeviceView()
 		})
 	}()
 }
 
-func loadVoiceToolIcon(path string) *ui.Bitmap {
-	if path == "" {
+func loadVoiceToolIcon(path string, fallback []byte) *ui.Bitmap {
+	if path != "" {
+		if data, err := mygo.Shell.FileIcon(path, int(settingsIconSize*2)); err == nil {
+			if bitmap, err := ui.DecodeBitmap(data); err == nil {
+				return bitmap
+			}
+		}
+	}
+	if len(fallback) == 0 {
 		return nil
 	}
-	data, err := mygo.Shell.FileIcon(path, int(settingsIconSize*2))
-	if err != nil {
-		return nil
-	}
-	bitmap, _ := ui.DecodeBitmap(data)
+	bitmap, _ := ui.DecodeBitmap(fallback)
 	return bitmap
 }
