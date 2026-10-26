@@ -3,6 +3,7 @@ package audioroute
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,8 +17,6 @@ func TestWaitForInputRequiresExactActiveSingleRoute(t *testing.T) {
 		{"active unknown route", ProcessInput{Found: true, PID: 42, RunningInput: true}},
 		{"inactive", ProcessInput{Found: true, PID: 42, InputDeviceUIDs: []string{"test-input"}}},
 		{"wrong pid", ProcessInput{Found: true, PID: 43, RunningInput: true, InputDeviceUIDs: []string{"test-input"}}},
-		{"wrong uid", ProcessInput{Found: true, PID: 42, RunningInput: true, InputDeviceUIDs: []string{"physical-input"}}},
-		{"ambiguous", ProcessInput{Found: true, PID: 42, RunningInput: true, InputDeviceUIDs: []string{"test-input", "physical-input"}}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -36,6 +35,50 @@ func TestWaitForInputRequiresExactActiveSingleRoute(t *testing.T) {
 				t.Fatalf("accepted unready snapshot: calls=%d err=%v", calls, err)
 			}
 		})
+	}
+}
+
+func TestWaitForInputRejectsKnownWrongRouteImmediately(t *testing.T) {
+	cases := []struct {
+		name  string
+		value ProcessInput
+		want  string
+	}{
+		{"wrong uid", ProcessInput{Found: true, PID: 42, RunningInput: true, InputDeviceUIDs: []string{"physical-input"}}, "physical-input"},
+		{"multiple uids", ProcessInput{Found: true, PID: 42, RunningInput: true, InputDeviceUIDs: []string{"test-input", "physical-input"}}, "physical-input"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			calls := 0
+			err := waitForInput(ctx, 42, "test-input", func(int32) (ProcessInput, error) {
+				calls++
+				return tt.value, nil
+			})
+			if !errors.Is(err, ErrInputRouteMismatch) || calls != 1 {
+				t.Fatalf("known wrong route was not rejected immediately: calls=%d err=%v", calls, err)
+			}
+			if !strings.Contains(err.Error(), `expected UID "test-input"`) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("mismatch error lacks expected/actual UID: %v", err)
+			}
+		})
+	}
+}
+
+func TestWaitForInputWaitsForUnknownThenMatchesExpectedRoute(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	calls := 0
+	err := waitForInput(ctx, 42, "test-input", func(pid int32) (ProcessInput, error) {
+		calls++
+		if calls == 1 {
+			return ProcessInput{Found: true, PID: pid, RunningInput: true}, nil
+		}
+		return ProcessInput{Found: true, PID: pid, RunningInput: true, InputDeviceUIDs: []string{"test-input"}}, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("unknown route did not wait for exact match: calls=%d err=%v", calls, err)
 	}
 }
 

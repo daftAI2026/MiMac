@@ -10,6 +10,7 @@ import (
 )
 
 var ErrReadinessDeadlineRequired = errors.New("audioroute: input readiness requires a context deadline")
+var ErrInputRouteMismatch = errors.New("audioroute: active input route does not match requested UID")
 
 // WaitForInput observes a previously identified consumer PID until Core Audio
 // reports running input with exactly the requested device UID. It never opens
@@ -60,8 +61,13 @@ func waitForInput(ctx context.Context, pid int32, uid string, inspect func(int32
 		if err != nil {
 			return fmt.Errorf("audioroute: observe input readiness: %w", err)
 		}
-		if snapshot.Found && snapshot.PID == pid && snapshot.RunningInput && len(snapshot.InputDeviceUIDs) == 1 && snapshot.InputDeviceUIDs[0] == uid {
-			return nil
+		if snapshot.Found && snapshot.PID == pid && snapshot.RunningInput {
+			if len(snapshot.InputDeviceUIDs) == 1 && snapshot.InputDeviceUIDs[0] == uid {
+				return nil
+			}
+			if len(snapshot.InputDeviceUIDs) > 0 {
+				return fmt.Errorf("%w: expected UID %q, got %q", ErrInputRouteMismatch, uid, snapshot.InputDeviceUIDs)
+			}
 		}
 		if ticker == nil {
 			ticker = time.NewTicker(20 * time.Millisecond)
