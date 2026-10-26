@@ -375,7 +375,21 @@ func (s *Source) Stop(ctx context.Context) error {
 	}
 	if !s.started {
 		s.mu.Unlock()
-		return ErrSourceNotReady
+		// A physical release can arrive before AUDIO_START. Wait only within the
+		// caller's bounded stop context; do not mark stop requested or send
+		// MIC_CLOSE until the device has supplied the stream ID and codec.
+		if _, err := s.Ready(ctx); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		if err := s.checkOpenLocked(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if !s.started {
+			s.mu.Unlock()
+			return ErrSourceNotReady
+		}
 	}
 	s.stopRequested = true
 	shouldRequestClose := !s.stopObserved && !s.closeSent

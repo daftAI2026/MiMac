@@ -217,6 +217,34 @@ func TestDeviceOwnerReusesTransportAndClosesOnlyAtDeviceBoundary(t *testing.T) {
 	}
 }
 
+func TestSessionSourceStopTimeoutBeforeStartDoesNotLeakOwnerLease(t *testing.T) {
+	transport := &fakeDeviceTransport{}
+	owner := newFakeDeviceOwner(t, 18, transport)
+	t.Cleanup(func() { _ = owner.Close() })
+	emitTestCapabilities(t, transport)
+
+	first := newDeviceSession(t, owner, StreamKey{Generation: 18, Session: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := first.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("armed Stop without AUDIO_START = %v, want deadline", err)
+	}
+	if stops, _ := transport.snapshot(); len(stops) != 0 {
+		t.Fatalf("armed Stop sent MIC_CLOSE without AUDIO_START: %v", stops)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close timed-out inactive session: %v", err)
+	}
+
+	second := newDeviceSession(t, owner, StreamKey{Generation: 18, Session: 2})
+	if err := second.Close(); err != nil {
+		t.Fatalf("new session could not use released owner lease: %v", err)
+	}
+	if stops, _ := transport.snapshot(); len(stops) != 0 {
+		t.Fatalf("inactive session cleanup sent unexpected MIC_CLOSE: %v", stops)
+	}
+}
+
 func TestDeviceOwnerRejectsConcurrentAndStaleSessionLeases(t *testing.T) {
 	transport := &fakeDeviceTransport{}
 	owner := newFakeDeviceOwner(t, 21, transport)

@@ -58,7 +58,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		}
 	})
 
-	t.Run("release cancels receiver wait", func(t *testing.T) {
+	t.Run("early release keeps receiver wait and drains captured PCM", func(t *testing.T) {
 		f := newReceiverChainFixture(t)
 		f.pressDown(t)
 		waitReceiverChainSignal(t, f.sink.waiting)
@@ -66,14 +66,52 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
 
 		f.pressUp(t)
+		waitReceiverChainSignal(t, f.source.stopped)
+		if snapshot := f.host.coordinator.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != bridge.PhaseDraining || len(snapshot.PressedButtons) != 0 || !reflect.DeepEqual(snapshot.HeldKeys, []bridge.Key{"RightCommand"}) {
+			t.Fatalf("early physical release did not retain the draining voice lease: %+v", snapshot)
+		}
+		assertReceiverChainTargetStart(t, f.keySink, false)
+		assertReceiverChainNoPCM(t, f.source, f.sink)
+
+		f.sink.receiverDecision <- nil
+		runHostTask(t, f.tasks) // Late SourcePrepared opens the already-draining session's gate.
+		pcm := waitReceiverChainPCM(t, f.sink.writes)
+		if !reflect.DeepEqual(pcm, []int16{17, -4, 3}) {
+			t.Fatalf("copied PCM after early release = %v", pcm)
+		}
+		waitReceiverChainSignal(t, f.sink.drained)
+		runHostTask(t, f.tasks) // SourceDrained releases the target key and disposes the source.
 		waitReceiverChainSignal(t, f.source.closed)
 		waitReceiverChainSignal(t, f.sink.closed)
 
-		assertReceiverChainNoPCM(t, f.source, f.sink)
 		assertReceiverChainCore(t, f, false, 0)
 		assertReceiverChainTargetStart(t, f.keySink, true)
+		if f.resolveCalls.Load() != 1 || f.sink.waitCalls.Load() != 1 || f.sink.writeCalls.Load() != 1 || f.sink.drainCalls.Load() != 1 || f.source.stopCalls.Load() != 1 {
+			t.Fatalf("early-release drain lifecycle: resolve=%d waits=%d writes=%d drains=%d stops=%d", f.resolveCalls.Load(), f.sink.waitCalls.Load(), f.sink.writeCalls.Load(), f.sink.drainCalls.Load(), f.source.stopCalls.Load())
+		}
+		assertReceiverChainNoMainTask(t, f.tasks)
+		closeReceiverChainAudioPlugin(t, f)
+	})
+
+	t.Run("device disconnect still cancels receiver wait", func(t *testing.T) {
+		f := newReceiverChainFixture(t)
+		f.pressDown(t)
+		waitReceiverChainSignal(t, f.sink.waiting)
+		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
+
+		if err := f.host.coordinator.step(bridge.DeviceDisconnected(f.device)); err != nil {
+			t.Fatal(err)
+		}
+		waitReceiverChainSignal(t, f.source.closed)
+		waitReceiverChainSignal(t, f.sink.closed)
+		assertReceiverChainNoPCM(t, f.source, f.sink)
+		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.PressedButtons) != 0 || len(snapshot.HeldKeys) != 0 {
+			t.Fatalf("device disconnect left audio/Core state: %+v", snapshot)
+		}
+		assertReceiverChainTargetStart(t, f.keySink, true)
 		if f.resolveCalls.Load() != 1 || f.sink.waitCalls.Load() != 1 {
-			t.Fatalf("cancelled wait restarted the tool or receiver: resolve=%d waits=%d", f.resolveCalls.Load(), f.sink.waitCalls.Load())
+			t.Fatalf("disconnect restarted preparation: resolve=%d waits=%d", f.resolveCalls.Load(), f.sink.waitCalls.Load())
 		}
 		assertReceiverChainNoMainTask(t, f.tasks)
 	})

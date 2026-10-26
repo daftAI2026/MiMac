@@ -809,9 +809,12 @@ func (c *Core) pressEnded(press PressToken, effects *[]Effect) {
 	if s == nil || s.press != press {
 		return
 	}
-	if s.resourceID == "" {
-		// A release before source readiness cannot open a gate later. Cancel
-		// the pending preparation; any late resource callback is disposed.
+	canDrainBeforePrepared := s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle
+	if s.resourceID == "" && !canDrainBeforePrepared {
+		// Exact-edge releases its target keys with the physical edge. If source
+		// readiness has not arrived yet, cancel preparation so a late callback
+		// cannot start capture after the target action has already ended. Only
+		// the policies that finish at the drain boundary keep this preparation.
 		c.cancelSession(effects)
 		return
 	}
@@ -834,12 +837,17 @@ func (c *Core) sourcePrepared(token SessionToken, resourceID string, effects *[]
 		}
 		return
 	}
-	if s.phase != PhasePreparing {
+	wasPreparing := s.phase == PhasePreparing
+	drainingBeforePrepared := s.phase == PhaseDraining && s.resourceID == "" &&
+		(s.binding.policy == PolicyAfterDrain || s.binding.policy == PolicyToggle)
+	if !wasPreparing && !drainingBeforePrepared {
 		*effects = append(*effects, DisposeResourceEffect{Token: token, ResourceID: resourceID})
 		return
 	}
 	s.resourceID = resourceID
-	s.phase = PhaseCapturing
+	if wasPreparing {
+		s.phase = PhaseCapturing
+	}
 	*effects = append(*effects, OpenGateEffect{Token: token})
 }
 

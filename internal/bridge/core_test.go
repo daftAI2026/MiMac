@@ -354,25 +354,97 @@ func TestAfterDrainKeepsLeaseUntilLocalDrain(t *testing.T) {
 	}
 }
 
-func TestEarlyReleaseCancelsPreparationAndDisposesLateResource(t *testing.T) {
+func TestEarlyVoiceEndedDrainsPreparationAndOpensLateResource(t *testing.T) {
 	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
 	press := mustPress(t, device, "voice", 1)
 	begin := mustStep(t, core, VoiceBegan(press))
 	token := prepareToken(t, begin)
 	ended := mustStep(t, core, VoiceEnded(press))
-	if hasEffect[OpenGateEffect](ended) || !hasEffect[StopSourceEffect](ended) || !hasEffect[KeyUpEffect](ended) {
-		t.Fatalf("early release did not cancel preparation safely: %#v", ended)
+	if hasEffect[CloseGateEffect](ended) || hasEffect[KeyUpEffect](ended) || !hasEffect[StopSourceEffect](ended) {
+		t.Fatalf("early voice end did not retain the draining lease: %#v", ended)
+	}
+	if snapshot := core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != PhaseDraining || !reflect.DeepEqual(snapshot.HeldKeys, []Key{"space"}) {
+		t.Fatalf("early voice end did not enter draining with its key lease: %+v", snapshot)
+	}
+	prepared := mustStep(t, core, SourcePrepared(token, "late-source"))
+	if !reflect.DeepEqual(prepared, []Effect{OpenGateEffect{Token: token}}) {
+		t.Fatalf("matching resource prepared after voice end should open the gate: %#v", prepared)
+	}
+	if snapshot := core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != PhaseDraining {
+		t.Fatalf("late preparation changed the draining phase: %+v", snapshot)
+	}
+	drained := mustStep(t, core, SourceDrained(token))
+	if !hasEffect[CloseGateEffect](drained) || !containsDisposed(drained, "late-source") || !reflect.DeepEqual(keyTransitions(drained), []string{"up:space"}) {
+		t.Fatalf("early voice end did not complete normal drain cleanup: %#v", drained)
 	}
 	if core.Snapshot().HasSession {
-		t.Fatal("early release left an active session")
+		t.Fatal("drained early voice end left an active session")
+	}
+}
+
+func TestToggleEarlyVoiceEndedDrainsPreparationWithoutGuessingCancellation(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyToggle, "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	ended := mustStep(t, core, VoiceEnded(press))
+	if hasEffect[CloseGateEffect](ended) || hasEffect[TargetTapEffect](ended) || !hasEffect[StopSourceEffect](ended) {
+		t.Fatalf("toggle voice end during preparation did not wait for drain: %#v", ended)
+	}
+	if snapshot := core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != PhaseDraining {
+		t.Fatalf("toggle voice end did not enter draining: %+v", snapshot)
+	}
+	prepared := mustStep(t, core, SourcePrepared(token, "toggle-source"))
+	if !reflect.DeepEqual(prepared, []Effect{OpenGateEffect{Token: token}}) {
+		t.Fatalf("matching toggle resource prepared after voice end should open the gate: %#v", prepared)
+	}
+	drained := mustStep(t, core, SourceDrained(token))
+	if !reflect.DeepEqual(tapKeys(t, drained), [][]Key{{"space"}}) || !hasEffect[CloseGateEffect](drained) || !containsDisposed(drained, "toggle-source") {
+		t.Fatalf("toggle completion did not tap only at drain boundary: %#v", drained)
+	}
+	if core.Snapshot().HasSession || len(core.Snapshot().RecoveryKeys) != 0 {
+		t.Fatalf("normal toggle drain incorrectly entered recovery: %+v", core.Snapshot())
+	}
+}
+
+func TestExactEdgeEarlyVoiceEndedStillCancelsPreparation(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyExactEdge, "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	ended := mustStep(t, core, VoiceEnded(press))
+	if !hasEffect[CloseGateEffect](ended) || !hasEffect[StopSourceEffect](ended) || !hasEffect[KeyUpEffect](ended) {
+		t.Fatalf("exact-edge early release no longer cancels preparation: %#v", ended)
+	}
+	if core.Snapshot().HasSession {
+		t.Fatal("exact-edge early release left an active session")
 	}
 	late := mustStep(t, core, SourcePrepared(token, "late-source"))
-	if hasEffect[OpenGateEffect](late) || len(late) != 1 {
-		t.Fatalf("late prepared source should only be disposed: %#v", late)
+	if hasEffect[OpenGateEffect](late) || !containsDisposed(late, "late-source") {
+		t.Fatalf("exact-edge late resource was not disposed: %#v", late)
 	}
-	disposed, ok := late[0].(DisposeResourceEffect)
-	if !ok || disposed.ResourceID != "late-source" {
-		t.Fatalf("late resource was not disposed: %#v", late)
+}
+
+func TestFailureAfterEarlyVoiceEndedStillCancelsAndReleasesOwnership(t *testing.T) {
+	core, device := setupCore(t, mustBinding(t, PolicyAfterDrain, "space"))
+	press := mustPress(t, device, "voice", 1)
+	begin := mustStep(t, core, VoiceBegan(press))
+	token := prepareToken(t, begin)
+	ended := mustStep(t, core, VoiceEnded(press))
+	if hasEffect[CloseGateEffect](ended) || !hasEffect[StopSourceEffect](ended) {
+		t.Fatalf("VoiceEnded was treated as cancellation: %#v", ended)
+	}
+
+	failed := mustStep(t, core, SourceFailed(token))
+	if !hasEffect[CloseGateEffect](failed) || !hasEffect[StopSourceEffect](failed) || !reflect.DeepEqual(keyTransitions(failed), []string{"up:space"}) {
+		t.Fatalf("source failure during early drain did not cancel and release ownership: %#v", failed)
+	}
+	if core.Snapshot().HasSession || len(core.Snapshot().HeldKeys) != 0 {
+		t.Fatalf("source failure left an early-drain lease: %+v", core.Snapshot())
+	}
+	late := mustStep(t, core, SourcePrepared(token, "failed-late-source"))
+	if hasEffect[OpenGateEffect](late) || !containsDisposed(late, "failed-late-source") {
+		t.Fatalf("late resource after drain failure was not disposed: %#v", late)
 	}
 }
 
@@ -476,7 +548,10 @@ func TestRecoveryBlocksReconfiguredVoiceChord(t *testing.T) {
 			if !hasEffect[PrepareSourceEffect](disjoint) || !reflect.DeepEqual(keyTransitions(disjoint), []string{"down:enter"}) {
 				t.Fatalf("disjoint voice chord did not start normally: %#v", disjoint)
 			}
+			disjointToken := prepareToken(t, disjoint)
+			mustStep(t, core, SourcePrepared(disjointToken, "disjoint-source"))
 			mustStep(t, core, VoiceEnded(disjointPress))
+			mustStep(t, core, SourceDrained(disjointToken))
 			if got := core.Snapshot().RecoveryKeys; !reflect.DeepEqual(got, []Key{"ctrl", "space"}) {
 				t.Fatalf("using a disjoint chord cleared recovery state: %v", got)
 			}

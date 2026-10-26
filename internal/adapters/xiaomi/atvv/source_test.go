@@ -388,6 +388,70 @@ func TestSourceStopCancellationDoesNotDuplicateClose(t *testing.T) {
 	}
 }
 
+func TestSourceStopWaitsForStartAndDoesNotCloseOnReadyTimeout(t *testing.T) {
+	key := StreamKey{Generation: 4, Session: 17}
+	transport := newFakeStreamTransport()
+	source := newArmedSource(t, key, transport)
+
+	cancelledCtx, cancelStop := context.WithCancel(context.Background())
+	cancelledDone := make(chan error, 1)
+	go func() { cancelledDone <- source.Stop(cancelledCtx) }()
+	select {
+	case err := <-cancelledDone:
+		t.Fatalf("Stop returned before its no-START context was cancelled: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	cancelStop()
+	select {
+	case err := <-cancelledDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Stop before AUDIO_START = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not honor cancellation while waiting for AUDIO_START")
+	}
+	if requests, _ := transport.snapshot(); len(requests) != 0 {
+		t.Fatalf("cancelled Stop without AUDIO_START sent MIC_CLOSE: %v", requests)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := source.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop before AUDIO_START = %v, want bounded readiness timeout", err)
+	}
+	if requests, _ := transport.snapshot(); len(requests) != 0 {
+		t.Fatalf("Stop without AUDIO_START sent MIC_CLOSE: %v", requests)
+	}
+
+	// The timed-out stop must not poison the armed source. A later START lets a
+	// fresh Stop perform the ordinary serial MIC_CLOSE/AUDIO_STOP handshake.
+	start16k(t, source, key)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- source.Stop(context.Background()) }()
+	select {
+	case <-transport.stopQueued:
+	case <-time.After(time.Second):
+		t.Fatal("Stop after AUDIO_START did not request MIC_CLOSE")
+	}
+	if err := source.HandleControl(key, []byte{0x00, 0x02}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop after AUDIO_STOP = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after AUDIO_STOP")
+	}
+	if requests, _ := transport.snapshot(); len(requests) != 1 || requests[0] != 0x0B {
+		t.Fatalf("post-START MIC_CLOSE requests = %v, want exactly one", requests)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSourceRejectsLateAudioAndSecondStream(t *testing.T) {
 	key := StreamKey{Generation: 4, Session: 10}
 	source := newArmedSource(t, key, newFakeStreamTransport())

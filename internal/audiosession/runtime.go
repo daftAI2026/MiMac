@@ -238,8 +238,9 @@ func (r *Runtime) run(s *resource) {
 		err = sourceHealth(resources.Source)
 	}
 	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
-		// This is a failure deadline, not a startup delay. Keep Core preparing
-		// so a release cancels the wait instead of starting a drain behind it.
+		// This is a failure deadline, not a startup delay. Core decides whether
+		// physical release cancels this wait or keeps the prepared source alive
+		// long enough to open the gate and drain its captured tail.
 		readyCtx, cancelReady := context.WithTimeout(s.ctx, 2*time.Second)
 		err = resources.WaitReceiver(readyCtx)
 		err = errors.Join(err, readyCtx.Err())
