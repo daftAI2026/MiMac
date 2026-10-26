@@ -192,3 +192,62 @@ func TestReceiverIgnoringCancellationRetainsOwnedResources(t *testing.T) {
 	default:
 	}
 }
+
+type receiverHealthSource struct {
+	*sourceStub
+	health func() error
+}
+
+func (s *receiverHealthSource) Err() error { return s.health() }
+
+func TestReceiverGateRejectsSourceFaultBeforePublishingPrepared(t *testing.T) {
+	for _, stage := range []string{"before-wait", "during-wait", "healthy"} {
+		t.Run(stage, func(t *testing.T) {
+			source, sink := newSourceStub(), newSinkStub()
+			fault := errors.New("source disconnected or buffer overflowed")
+			var healthErr error
+			if stage == "before-wait" {
+				healthErr = fault
+			}
+			calls := 0
+			checked := &receiverHealthSource{sourceStub: source, health: func() error { return healthErr }}
+			r := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+				return Resources{Source: checked, Sink: sink, SampleRate: 16000, WaitReceiver: func(context.Context) error {
+					calls++
+					if stage == "during-wait" {
+						healthErr = fault
+					}
+					return nil
+				}}, nil
+			})
+			core, device := newCoreForSessionTest(t, "receiver-health-"+stage)
+			_, _, prepare := beginVoiceSession(t, core, device, 1)
+			if err := r.Submit(prepare); err != nil {
+				t.Fatal(err)
+			}
+			completion := waitCompletion(t, r)
+			if stage == "healthy" {
+				if completion.Err != nil || calls != 1 {
+					t.Fatalf("healthy receiver: %+v calls=%d", completion, calls)
+				}
+				applySourceEffects(t, r, applyCompletion(t, core, completion))
+				waitSignal(t, source.readStarted)
+				return
+			}
+			if !errors.Is(completion.Err, fault) {
+				t.Fatalf("faulted source published preparation: %+v", completion)
+			}
+			if stage == "before-wait" && calls != 0 {
+				t.Fatalf("faulted source triggered receiver %d times", calls)
+			}
+			applySourceEffects(t, r, applyExpectedFailure(t, core, completion))
+			waitSignal(t, source.closeStart)
+			waitSignal(t, sink.closeStart)
+			select {
+			case <-source.readStarted:
+				t.Fatal("faulted source started PCM")
+			default:
+			}
+		})
+	}
+}

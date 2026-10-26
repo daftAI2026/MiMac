@@ -477,6 +477,14 @@ func (s preparedAudioSource) Read(ctx context.Context, pcm []int16) (int, error)
 
 func (s preparedAudioSource) Stop(ctx context.Context) error { return s.inner.Stop(ctx) }
 
+// Preserve asynchronous source health across the ownership wrapper.
+func (s preparedAudioSource) Err() error {
+	if health, ok := s.inner.(interface{ Err() error }); ok {
+		return health.Err()
+	}
+	return nil
+}
+
 func (s preparedAudioSource) Close() error {
 	if s.owner == nil {
 		return nil

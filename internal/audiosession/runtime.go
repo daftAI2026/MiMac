@@ -18,6 +18,8 @@ import (
 // Read returns io.EOF only after the source's verified tail boundary. Read and
 // Stop must respond to cancellation. Close owns native callback quiescence and
 // must retain anything still live when it returns an error.
+// An optional Err() error method reports asynchronous transport faults without
+// starting capture or blocking; Runtime checks it around receiver preparation.
 type Source interface {
 	Read(context.Context, []int16) (int, error)
 	Stop(context.Context) error
@@ -232,6 +234,9 @@ func (r *Runtime) run(s *resource) {
 	if err == nil && (resources.Source == nil || resources.Sink == nil || (resources.SampleRate != 8000 && resources.SampleRate != 16000)) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
 	}
+	if s.ctx.Err() == nil && err == nil {
+		err = sourceHealth(resources.Source)
+	}
 	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
 		// This is a failure deadline, not a startup delay. Keep Core preparing
 		// so a release cancels the wait instead of starting a drain behind it.
@@ -239,6 +244,11 @@ func (r *Runtime) run(s *resource) {
 		err = resources.WaitReceiver(readyCtx)
 		err = errors.Join(err, readyCtx.Err())
 		cancelReady()
+	}
+	if s.ctx.Err() == nil && err == nil {
+		// Native callbacks can fault a pre-armed source while the receiver waits.
+		// Do not publish readiness for a source already known to have failed.
+		err = sourceHealth(resources.Source)
 	}
 	if s.ctx.Err() == nil && err == nil {
 		r.emit(Completion{Event: bridge.SourcePrepared(s.token, resourceID)})
@@ -325,6 +335,13 @@ func (r *Runtime) copyPCM(s *resource) error {
 			return io.ErrNoProgress
 		}
 	}
+}
+
+func sourceHealth(source Source) error {
+	if health, ok := source.(interface{ Err() error }); ok {
+		return health.Err()
+	}
+	return nil
 }
 
 func writePCM(ctx context.Context, sink Sink, pcm []int16) error {

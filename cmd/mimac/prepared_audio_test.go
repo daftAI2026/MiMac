@@ -501,3 +501,34 @@ func TestPreparedAudioTakePreservesReceiverReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPreparedAudioLeasePreservesLiveSourceHealth(t *testing.T) {
+	source, sink := &preparedAudioTestSource{}, &preparedAudioTestSink{}
+	owner, err := newPreparedAudioOwner(func(context.Context) (audiosession.Resources, error) {
+		return audiosession.Resources{Source: source, Sink: sink, SampleRate: 16000}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitPreparedAudio(t, owner.Ready)
+	resources, err := owner.Take(preparedAudioToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { resources.Source.Close(); resources.Sink.Close(); closePreparedAudio(t, owner) }()
+	health, ok := resources.Source.(interface{ Err() error })
+	if !ok {
+		t.Fatal("lease erased source health capability")
+	}
+	if err := health.Err(); err != nil {
+		t.Fatalf("healthy source=%v", err)
+	}
+	fault := errors.New("source fault after lease transfer")
+	source.setErr(fault)
+	if err := health.Err(); !errors.Is(err, fault) {
+		t.Fatalf("lease source health=%v", err)
+	}
+}
