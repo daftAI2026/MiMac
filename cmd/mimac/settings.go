@@ -185,14 +185,7 @@ func (s *shell) detectDevice() {
 
 func settingsValueRow(c *ui.Context, t *ui.Theme, size float32, label, value string) {
 	ui.Row(c).Gap(spaceLG).AlignItems(ui.Center).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).Padding(settingsRowPadding, 0).Children(func() {
-		ui.Text(c, label).Width(labelColumnWidth).Shrink(0).SingleLine().FontSize(size)
-		ui.Text(c, value).Grow(1).Shrink(1).MinWidth(0).FontSize(size).TextColor(t.TextMuted).TextAlign(ui.End)
-	})
-}
-
-func settingsActionRow(c *ui.Context, t *ui.Theme, size float32, label, value string) {
-	ui.Row(c).Gap(spaceLG).AlignItems(ui.Start).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).Padding(settingsRowPadding, 0).Children(func() {
-		ui.Text(c, label).Width(labelColumnWidth).Shrink(0).SingleLine().FontSize(size)
+		ui.Text(c, label).MinWidth(labelColumnWidth).Shrink(0).SingleLine().FontSize(size)
 		ui.Text(c, value).Grow(1).Shrink(1).MinWidth(0).FontSize(size).TextColor(t.TextMuted).TextAlign(ui.End)
 	})
 }

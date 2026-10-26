@@ -95,10 +95,12 @@ func (s *shell) voiceToolDetails(c *ui.Context, a appearance, tool *voiceTool) {
 		ui.Text(c, "未发现可显示的快捷键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 		return
 	}
-	for _, action := range tool.snapshot.Actions {
-		sectionLine(c, a)
-		settingsActionRow(c, &a.theme, a.fonts.body, action.Name, toolActionLabel(action))
-	}
+	ui.Column(c).FillWidth().MinWidth(0).Children(func() {
+		for _, action := range tool.snapshot.Actions {
+			sectionLine(c, a)
+			settingsValueRow(c, &a.theme, a.fonts.body, action.Name, toolActionLabel(action))
+		}
+	})
 }
 
 func toolActionLabel(action voicetools.Action) string {
