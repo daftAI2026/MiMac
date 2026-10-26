@@ -43,13 +43,14 @@ type preparedAudioOwner struct {
 	started bool
 	closed  bool
 
-	prepareCancel context.CancelFunc
-	prepareDone   chan struct{}
-	current       audiosession.Resources
-	generation    uint64
-	sourceClosed  bool
-	sinkClosed    bool
-	leaseDone     chan struct{}
+	prepareCancel       context.CancelFunc
+	prepareDone         chan struct{}
+	current             audiosession.Resources
+	generation          uint64
+	sourceFaultRecorded bool
+	sourceClosed        bool
+	sinkClosed          bool
+	leaseDone           chan struct{}
 
 	cleanupDone chan struct{}
 	cleanupErr  error
@@ -133,15 +134,17 @@ func (o *preparedAudioOwner) Error() error {
 	}
 	o.mu.Lock()
 	generation, source, err := o.generation, o.current.Source, o.lastErr
-	checkSource := !o.closed && source != nil && (o.state == preparedAudioReady || o.state == preparedAudioFailed)
+	checkSource := !o.closed && !o.sourceFaultRecorded && source != nil && o.state == preparedAudioReady
 	o.mu.Unlock()
 	if checkSource {
 		if sourceErr := preparedAudioSourceError(source); sourceErr != nil {
 			o.recordSourceError(generation, sourceErr)
-			if !errors.Is(err, sourceErr) {
-				err = errors.Join(err, sourceErr)
-			}
 		}
+		o.mu.Lock()
+		if o.generation == generation {
+			err = o.lastErr
+		}
+		o.mu.Unlock()
 	}
 	return err
 }
@@ -209,15 +212,21 @@ func (o *preparedAudioOwner) recordSourceError(generation uint64, err error) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.generation != generation || o.current.Source == nil {
+	if o.closed || o.generation != generation || o.current.Source == nil || o.sourceFaultRecorded {
 		return
 	}
+	o.sourceFaultRecorded = true
+	changed := false
 	if !errors.Is(o.lastErr, err) {
 		o.lastErr = errors.Join(o.lastErr, err)
-		o.signalChangeLocked()
+		changed = true
 	}
 	if o.state == preparedAudioReady {
-		o.setStateLocked(preparedAudioFailed)
+		o.state = preparedAudioFailed
+		changed = true
+	}
+	if changed {
+		o.signalChangeLocked()
 	}
 }
 
@@ -253,6 +262,7 @@ func (o *preparedAudioOwner) startPrepareLocked() {
 	generation := o.generation
 	o.prepareCancel = cancel
 	o.prepareDone = done
+	o.sourceFaultRecorded = false
 	o.setStateLocked(preparedAudioPreparing)
 	o.lastErr = nil
 	go o.runPrepare(ctx, generation, done)

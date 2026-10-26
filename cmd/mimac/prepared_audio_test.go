@@ -18,6 +18,8 @@ type preparedAudioTestSource struct {
 	closeCalls int
 	closeErrs  []error
 	err        error
+	errCalls   int
+	freshErr   bool
 }
 
 func (*preparedAudioTestSource) Read(context.Context, []int16) (int, error) { return 0, io.EOF }
@@ -41,12 +43,28 @@ func (s *preparedAudioTestSource) closes() int {
 func (s *preparedAudioTestSource) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.errCalls++
+	if s.freshErr && s.err != nil {
+		return errors.New(s.err.Error())
+	}
 	return s.err
 }
 func (s *preparedAudioTestSource) setErr(err error) {
 	s.mu.Lock()
 	s.err = err
 	s.mu.Unlock()
+}
+func (s *preparedAudioTestSource) setFreshErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.freshErr = true
+	s.errCalls = 0
+	s.mu.Unlock()
+}
+func (s *preparedAudioTestSource) errorCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errCalls
 }
 
 type preparedAudioTestSink struct {
@@ -424,6 +442,56 @@ func TestPreparedAudioOwnerRejectsReadySourceFault(t *testing.T) {
 			closePreparedAudio(t, owner)
 		})
 	}
+}
+
+func TestPreparedAudioOwnerSourceErrorQueriesAreIdempotent(t *testing.T) {
+	source, sink := &preparedAudioTestSource{}, &preparedAudioTestSink{}
+	owner, err := newPreparedAudioOwner(func(context.Context) (audiosession.Resources, error) {
+		return audiosession.Resources{Source: source, Sink: sink, SampleRate: 16000}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitPreparedAudio(t, owner.Ready)
+	for {
+		select {
+		case <-owner.Changes():
+		default:
+			goto drained
+		}
+	}
+drained:
+	source.setFreshErr(errors.New("atvv source: source is closed"))
+	first := owner.Error()
+	if first == nil || first.Error() != "atvv source: source is closed" {
+		t.Fatalf("first source fault = %v", first)
+	}
+	select {
+	case <-owner.Changes():
+	default:
+		t.Fatal("first source fault did not notify the host")
+	}
+	for i := 0; i < 100; i++ {
+		got := owner.Error()
+		if got == nil || got.Error() != first.Error() {
+			t.Fatalf("Error query %d changed cached source fault: %v", i, got)
+		}
+		if owner.Ready() {
+			t.Fatalf("Ready query %d accepted a faulted source", i)
+		}
+	}
+	if got := source.errorCalls(); got != 1 {
+		t.Fatalf("source health queried %d times after first fault, want 1", got)
+	}
+	select {
+	case <-owner.Changes():
+		t.Fatal("health queries emitted repeated change notifications")
+	default:
+	}
+	closePreparedAudio(t, owner)
 }
 
 func TestPreparedAudioOwnerCloseWaitsForRuntimeLeaseWithoutClosingIt(t *testing.T) {
