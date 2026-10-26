@@ -14,17 +14,22 @@ import (
 var ErrMicrophoneSelectionUnsupported = errors.New("doubao microphone selection: unverified platform or bundle")
 
 // MicrophoneSelection describes only the persisted selectedMicrophoneId field.
-// Automatic means no explicit UID was saved; it does not identify the device
-// Doubao or Core Audio currently routes to at runtime.
+// Automatic preserves the route/display classification for nil or empty values;
+// it does not identify the device Doubao or Core Audio routes to at runtime.
 type MicrophoneSelection struct {
 	Automatic bool
 	DeviceUID string
+	// SelectedMicrophoneID preserves the stored Optional<String> value. A nil
+	// pointer means the field was absent or null; a non-nil pointer to "" is
+	// distinct and must be restored as an explicitly present empty string.
+	SelectedMicrophoneID *string `json:"selectedMicrophoneId,omitempty"`
 }
 
 // ReadMicrophoneSelection reads only the exact selectedMicrophoneId field from
 // the verified Doubao 1.0.2 (1) MMKV key d. It uses the same fixed locator as
 // shortcut discovery and never writes configuration or returns other fields.
-// Absent, null, and empty values mean that no explicit device UID is saved.
+// Automatic retains the route display meaning for nil and empty values;
+// SelectedMicrophoneID preserves the original optional string for restoration.
 func ReadMicrophoneSelection(ctx context.Context, locator voicetools.Locator) (MicrophoneSelection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,8 +76,11 @@ func (candidate settingsCandidate) microphoneSelection() (MicrophoneSelection, e
 	if err := json.Unmarshal(raw, &deviceUID); err != nil {
 		return MicrophoneSelection{}, errMicrophoneFieldType
 	}
+	selection.SelectedMicrophoneID = &deviceUID
 	if deviceUID == "" {
 		return selection, nil
 	}
-	return MicrophoneSelection{DeviceUID: deviceUID}, nil
+	selection.Automatic = false
+	selection.DeviceUID = deviceUID
+	return selection, nil
 }

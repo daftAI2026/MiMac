@@ -15,15 +15,17 @@ import (
 func TestReadMicrophoneSelectionNarrowFieldValues(t *testing.T) {
 	requireDarwin(t)
 	for _, test := range []struct {
-		name      string
-		fields    map[string]interface{}
-		automatic bool
-		deviceUID string
+		name                 string
+		fields               map[string]interface{}
+		automatic            bool
+		deviceUID            string
+		selectedIDPresent    bool
+		selectedMicrophoneID string
 	}{
 		{name: "absent", fields: map[string]interface{}{"unrelated": "ignored"}, automatic: true},
 		{name: "null", fields: map[string]interface{}{"selectedMicrophoneId": nil}, automatic: true},
-		{name: "empty", fields: map[string]interface{}{"selectedMicrophoneId": ""}, automatic: true},
-		{name: "explicit", fields: map[string]interface{}{"selectedMicrophoneId": "com.example.device.42"}, deviceUID: "com.example.device.42"},
+		{name: "empty", fields: map[string]interface{}{"selectedMicrophoneId": ""}, automatic: true, selectedIDPresent: true},
+		{name: "explicit", fields: map[string]interface{}{"selectedMicrophoneId": "com.example.device.42"}, deviceUID: "com.example.device.42", selectedIDPresent: true, selectedMicrophoneID: "com.example.device.42"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
@@ -38,6 +40,59 @@ func TestReadMicrophoneSelectionNarrowFieldValues(t *testing.T) {
 			}
 			if got.Automatic != test.automatic || got.DeviceUID != test.deviceUID {
 				t.Fatalf("selection = %#v, want Automatic=%v DeviceUID=%q", got, test.automatic, test.deviceUID)
+			}
+			if test.selectedIDPresent {
+				if got.SelectedMicrophoneID == nil || *got.SelectedMicrophoneID != test.selectedMicrophoneID {
+					t.Fatalf("SelectedMicrophoneID = %v, want present %q", got.SelectedMicrophoneID, test.selectedMicrophoneID)
+				}
+			} else if got.SelectedMicrophoneID != nil {
+				t.Fatalf("SelectedMicrophoneID = %q, want nil for absent/null field", *got.SelectedMicrophoneID)
+			}
+		})
+	}
+}
+
+func TestMicrophoneSelectionOptionalStates(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		candidate            settingsCandidate
+		automatic            bool
+		deviceUID            string
+		selectedIDPresent    bool
+		selectedMicrophoneID string
+	}{
+		{name: "record absent", candidate: settingsCandidate{}, automatic: true},
+		{name: "field absent", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{"unrelated": json.RawMessage(`"ignored"`)}}, automatic: true},
+		{name: "null", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`null`)}}, automatic: true},
+		{name: "empty", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`""`)}}, automatic: true, selectedIDPresent: true},
+		{name: "UID", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`"device.uid"`)}}, automatic: false, deviceUID: "device.uid", selectedIDPresent: true, selectedMicrophoneID: "device.uid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.candidate.microphoneSelection()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Automatic != test.automatic || got.DeviceUID != test.deviceUID {
+				t.Fatalf("selection = %#v, want Automatic=%v DeviceUID=%q", got, test.automatic, test.deviceUID)
+			}
+			if test.selectedIDPresent {
+				if got.SelectedMicrophoneID == nil || *got.SelectedMicrophoneID != test.selectedMicrophoneID {
+					t.Fatalf("SelectedMicrophoneID = %v, want present %q", got.SelectedMicrophoneID, test.selectedMicrophoneID)
+				}
+				encoded, err := json.Marshal(got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(encoded, &fields); err != nil {
+					t.Fatal(err)
+				}
+				want, _ := json.Marshal(test.selectedMicrophoneID)
+				if raw, ok := fields["selectedMicrophoneId"]; !ok || string(raw) != string(want) {
+					t.Fatalf("serialized selectedMicrophoneId = %s (present %v), want %s", raw, ok, want)
+				}
+			} else if got.SelectedMicrophoneID != nil {
+				t.Fatalf("SelectedMicrophoneID = %q, want nil for absent/null field", *got.SelectedMicrophoneID)
 			}
 		})
 	}
@@ -157,7 +212,7 @@ func TestReadMicrophoneSelectionTombstoneMeansAutomatic(t *testing.T) {
 	requireDarwin(t)
 	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{key: []byte("d"), value: nil}})
-	if got, err := ReadMicrophoneSelection(context.Background(), locator); err != nil || !got.Automatic || got.DeviceUID != "" {
+	if got, err := ReadMicrophoneSelection(context.Background(), locator); err != nil || !got.Automatic || got.DeviceUID != "" || got.SelectedMicrophoneID != nil {
 		t.Fatalf("tombstone selection = (%#v, %v), want automatic", got, err)
 	}
 }
