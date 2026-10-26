@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"mimac.local/mimac/internal/adapters/audiooutput"
@@ -92,6 +93,256 @@ func openTestSink(t *testing.T, queue *fakeOutput, input *fakeEndpoint, wait fun
 		t.Fatalf("openWith: %v", err)
 	}
 	return sink, &events
+}
+
+// This reproduces the current per-session construction pattern: each fresh
+// Sink opens and destroys its own endpoint, so a receiver that retained the
+// previous UID will be left with a stale route after the next session starts.
+func TestSeparateSinkGenerationsReproduceChangingEndpointUID(t *testing.T) {
+	var events []string
+	var endpointOpens int
+	var receivedUIDs []string
+	newSink := func() *Sink {
+		t.Helper()
+		queue := &fakeOutput{events: &events}
+		sink, err := openWith(
+			audiooutput.Config{DeviceUID: "test-output", SampleRate: 16000}, "/tmp/process-tap.dylib",
+			func(_ context.Context, uid string) error {
+				receivedUIDs = append(receivedUIDs, uid)
+				return nil
+			},
+			func(audiooutput.Config) (output, error) { return queue, nil },
+			func(string) (endpoint, error) {
+				endpointOpens++
+				return &fakeEndpoint{events: &events, uid: "input." + strconv.Itoa(endpointOpens)}, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("openWith: %v", err)
+		}
+		return sink
+	}
+
+	first := newSink()
+	if err := first.Prepare(context.Background()); err != nil {
+		t.Fatalf("first Prepare: %v", err)
+	}
+	firstUID := first.InputUID()
+	if err := first.WaitReceiver(context.Background()); err != nil {
+		t.Fatalf("first WaitReceiver: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	second := newSink()
+	if err := second.Prepare(context.Background()); err != nil {
+		t.Fatalf("second Prepare: %v", err)
+	}
+	secondUID := second.InputUID()
+	if err := second.WaitReceiver(context.Background()); err != nil {
+		t.Fatalf("second WaitReceiver: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	if endpointOpens != 2 {
+		t.Fatalf("separate Sink endpoint opens = %d, want 2", endpointOpens)
+	}
+	if firstUID == "" || secondUID == "" || firstUID == secondUID {
+		t.Fatalf("per-Sink endpoint UIDs = %q, %q; expected two distinct native UIDs", firstUID, secondUID)
+	}
+	if !reflect.DeepEqual(receivedUIDs, []string{firstUID, secondUID}) {
+		t.Fatalf("receiver UIDs = %v, want the changing Sink UIDs", receivedUIDs)
+	}
+}
+
+func TestEndpointOwnerReusesOneUIDAcrossSequentialSinkGenerations(t *testing.T) {
+	var events []string
+	endpointOpens := 0
+	input := &fakeEndpoint{events: &events, uid: "input.route.uid"}
+	owner, err := newEndpointOwner("/tmp/process-tap.dylib", func(path string) (endpoint, error) {
+		if path != "/tmp/process-tap.dylib" {
+			t.Fatalf("endpoint path = %q", path)
+		}
+		endpointOpens++
+		events = append(events, "endpoint.open")
+		return input, nil
+	})
+	if err != nil {
+		t.Fatalf("newEndpointOwner: %v", err)
+	}
+
+	var receivedUIDs []string
+	for generation := 0; generation < 2; generation++ {
+		queue := &fakeOutput{events: &events}
+		sink := openSharedTestSink(t, owner, queue, func(_ context.Context, uid string) error {
+			receivedUIDs = append(receivedUIDs, uid)
+			return nil
+		})
+		if err := sink.Prepare(context.Background()); err != nil {
+			t.Fatalf("generation %d Prepare: %v", generation, err)
+		}
+		if got := sink.InputUID(); got != input.uid {
+			t.Fatalf("generation %d InputUID() = %q, want %q", generation, got, input.uid)
+		}
+		if err := sink.WaitReceiver(context.Background()); err != nil {
+			t.Fatalf("generation %d WaitReceiver: %v", generation, err)
+		}
+		if err := sink.Close(); err != nil {
+			t.Fatalf("generation %d Close: %v", generation, err)
+		}
+		if input.closes != 0 {
+			t.Fatalf("endpoint closed with session Sink generation %d", generation)
+		}
+	}
+
+	if endpointOpens != 1 {
+		t.Fatalf("endpoint opens = %d, want 1", endpointOpens)
+	}
+	if !reflect.DeepEqual(receivedUIDs, []string{input.uid, input.uid}) {
+		t.Fatalf("receiver UIDs = %v, want the one stable UID", receivedUIDs)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("route owner Close: %v", err)
+	}
+	if input.closes != 1 {
+		t.Fatalf("endpoint closes = %d, want one route-scope close", input.closes)
+	}
+	if got, want := events, []string{"queue.prepare", "endpoint.open", "queue.close", "queue.prepare", "queue.close", "endpoint.close"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle events = %v, want %v", got, want)
+	}
+}
+
+func TestEndpointOwnerRejectsParallelSinkLeaseAndCloseWhileLeased(t *testing.T) {
+	var events []string
+	input := &fakeEndpoint{events: &events, uid: "input.single-lease.uid"}
+	owner, err := newEndpointOwner("/tmp/process-tap.dylib", func(string) (endpoint, error) { return input, nil })
+	if err != nil {
+		t.Fatalf("newEndpointOwner: %v", err)
+	}
+	first := openSharedTestSink(t, owner, &fakeOutput{events: &events}, func(context.Context, string) error { return nil })
+	if err := first.Prepare(context.Background()); err != nil {
+		t.Fatalf("first Prepare: %v", err)
+	}
+
+	second := openSharedTestSink(t, owner, &fakeOutput{events: &events}, func(context.Context, string) error { return nil })
+	if err := second.Prepare(context.Background()); !errors.Is(err, ErrEndpointLeased) {
+		t.Fatalf("parallel Prepare = %v, want ErrEndpointLeased", err)
+	}
+	if err := owner.Close(); !errors.Is(err, ErrEndpointLeased) {
+		t.Fatalf("Close with active Sink lease = %v, want ErrEndpointLeased", err)
+	}
+	if input.closes != 0 {
+		t.Fatalf("native endpoint closed with an active Sink lease: %d calls", input.closes)
+	}
+
+	third := openSharedTestSink(t, owner, &fakeOutput{events: &events}, func(context.Context, string) error { return nil })
+	if err := third.Prepare(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Prepare after owner Close began = %v, want ErrClosed", err)
+	}
+	if err := third.Close(); err != nil {
+		t.Fatalf("third Close: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("route owner Close after lease release: %v", err)
+	}
+	if input.closes != 1 {
+		t.Fatalf("native endpoint closes = %d, want 1", input.closes)
+	}
+}
+
+func TestQueueCloseFailureRetainsSharedEndpointLease(t *testing.T) {
+	var events []string
+	firstQueueCloseErr := errors.New("output queue is still live")
+	queue := &fakeOutput{events: &events, closeErrs: []error{firstQueueCloseErr}}
+	input := &fakeEndpoint{events: &events, uid: "input.retry.uid"}
+	owner, err := newEndpointOwner("/tmp/process-tap.dylib", func(string) (endpoint, error) { return input, nil })
+	if err != nil {
+		t.Fatalf("newEndpointOwner: %v", err)
+	}
+	sink := openSharedTestSink(t, owner, queue, func(context.Context, string) error { return nil })
+	if err := sink.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := sink.Close(); !errors.Is(err, firstQueueCloseErr) {
+		t.Fatalf("first Sink.Close = %v, want queue close error", err)
+	}
+	if err := owner.Close(); !errors.Is(err, ErrEndpointLeased) {
+		t.Fatalf("owner Close after failed queue close = %v, want ErrEndpointLeased", err)
+	}
+	if input.closes != 0 {
+		t.Fatalf("endpoint closed before queue cleanup succeeded: %d calls", input.closes)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Sink.Close retry: %v", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("owner Close after queue cleanup: %v", err)
+	}
+	if input.closes != 1 {
+		t.Fatalf("endpoint closes = %d, want 1", input.closes)
+	}
+	if got, want := events, []string{"queue.prepare", "queue.close", "queue.close", "endpoint.close"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle events = %v, want %v", got, want)
+	}
+}
+
+func TestEndpointOwnerRetainsPartialOpenAndNativeCloseFailureForRetry(t *testing.T) {
+	var events []string
+	openErr := errors.New("partial endpoint open")
+	closeErr := errors.New("native endpoint remains live")
+	input := &fakeEndpoint{events: &events, uid: "input.partial.uid", closeErrs: []error{closeErr}}
+	endpointOpens := 0
+	owner, err := newEndpointOwner("/tmp/process-tap.dylib", func(string) (endpoint, error) {
+		endpointOpens++
+		events = append(events, "endpoint.open")
+		return input, openErr
+	})
+	if err != nil {
+		t.Fatalf("newEndpointOwner: %v", err)
+	}
+	sink := openSharedTestSink(t, owner, &fakeOutput{events: &events}, func(context.Context, string) error { return nil })
+	if err := sink.Prepare(context.Background()); !errors.Is(err, openErr) {
+		t.Fatalf("Prepare = %v, want partial open error", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Sink.Close: %v", err)
+	}
+	if err := owner.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("first owner Close = %v, want native close error", err)
+	}
+	if endpointOpens != 1 || input.closes != 1 {
+		t.Fatalf("after first cleanup: opens=%d closes=%d, want 1/1", endpointOpens, input.closes)
+	}
+	if _, err := owner.acquire(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("acquire after Close began = %v, want ErrClosed", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("owner Close retry: %v", err)
+	}
+	if endpointOpens != 1 || input.closes != 2 {
+		t.Fatalf("after retry: opens=%d closes=%d, want 1/2", endpointOpens, input.closes)
+	}
+}
+
+func openSharedTestSink(t *testing.T, owner *EndpointOwner, queue *fakeOutput, wait func(context.Context, string) error) *Sink {
+	t.Helper()
+	sink, err := openWithEndpoint(
+		audiooutput.Config{DeviceUID: "test-output", SampleRate: 16000}, owner, wait,
+		func(audiooutput.Config) (output, error) { return queue, nil },
+	)
+	if err != nil {
+		t.Fatalf("openWithEndpoint: %v", err)
+	}
+	return sink
 }
 
 func TestPrepareParksQueueBeforeOpeningEndpointWithoutWritingPCM(t *testing.T) {

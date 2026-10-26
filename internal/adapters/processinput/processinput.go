@@ -23,6 +23,8 @@ var (
 	ErrNotPrepared        = errors.New("processinput: input has not been prepared")
 	ErrReceiverNotReady   = errors.New("processinput: receiver has not accepted the input")
 	ErrBusy               = errors.New("processinput: receiver wait is in progress")
+	ErrEndpointLeased     = errors.New("processinput: endpoint already has an active sink lease")
+	ErrOwnerRequired      = errors.New("processinput: shared endpoint owner is required")
 	ErrClosed             = errors.New("processinput: sink is closing or closed")
 	ErrFaulted            = errors.New("processinput: sink is faulted")
 )
@@ -42,20 +44,168 @@ type endpoint interface {
 type outputFactory func(audiooutput.Config) (output, error)
 type endpointFactory func(string) (endpoint, error)
 
-// Sink owns an output queue and, after Prepare, a process-tap endpoint. It
-// performs synchronous native calls; Open, Prepare, Drain and Close belong
-// on a worker, never the UI thread. It never starts a PCM producer or claims
-// that a target stopped using
-// the endpoint; its host must stop consumers before Close.
+// EndpointOwner retains one process-tap endpoint across output Sink
+// generations. It permits one active Sink lease at a time so two session
+// queues cannot feed the same tap concurrently. Close is final: it rejects
+// new leases, refuses to close while a lease is active, and retains a native
+// handle after a failed Close so the host can retry teardown.
+//
+// Open and Close call synchronous native code and belong on a worker, never
+// the UI thread. The host must stop external consumers before Close; the
+// native endpoint's active-I/O check remains the final veto.
+type EndpointOwner struct {
+	mu      sync.Mutex
+	closeMu sync.Mutex
+
+	libraryPath  string
+	openEndpoint endpointFactory
+	endpoint     endpoint
+	inputUID     string
+	openErr      error
+	leased       bool
+	closing      bool
+	closed       bool
+}
+
+// endpointLease gives one Sink access to the owner's stable endpoint UID.
+// Releasing it never closes the native endpoint.
+type endpointLease struct {
+	owner *EndpointOwner
+	uid   string
+	once  sync.Once
+}
+
+func (l *endpointLease) InputUID() string {
+	if l == nil {
+		return ""
+	}
+	return l.uid
+}
+
+func (l *endpointLease) release() {
+	if l == nil || l.owner == nil {
+		return
+	}
+	l.once.Do(func() {
+		l.owner.mu.Lock()
+		l.owner.leased = false
+		l.owner.mu.Unlock()
+	})
+}
+
+// NewEndpointOwner creates an unopened owner for a single process-tap
+// endpoint. The first Sink.Prepare opens it after that Sink's output queue is
+// parked; subsequent Sink generations reuse the same cached input UID.
+func NewEndpointOwner(libraryPath string) (*EndpointOwner, error) {
+	return newEndpointOwner(libraryPath, openProcessTap)
+}
+
+func newEndpointOwner(libraryPath string, makeEndpoint endpointFactory) (*EndpointOwner, error) {
+	if !filepath.IsAbs(libraryPath) || strings.IndexByte(libraryPath, 0) >= 0 {
+		return nil, ErrInvalidLibraryPath
+	}
+	if makeEndpoint == nil {
+		return nil, ErrFactoryRequired
+	}
+	return &EndpointOwner{libraryPath: libraryPath, openEndpoint: makeEndpoint}, nil
+}
+
+// acquire opens the endpoint once and creates the only active session lease.
+// The caller runs on the sink preparation worker because opening is
+// synchronous and not cancellable.
+func (o *EndpointOwner) acquire() (*endpointLease, error) {
+	if o == nil {
+		return nil, ErrOwnerRequired
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closing || o.closed {
+		return nil, ErrClosed
+	}
+	if o.leased {
+		return nil, ErrEndpointLeased
+	}
+	if o.openErr != nil {
+		return nil, o.openErr
+	}
+	if o.endpoint == nil {
+		opened, err := o.openEndpoint(o.libraryPath)
+		if opened != nil {
+			o.endpoint = opened
+		}
+		if err != nil {
+			// Keep a partial native endpoint under owner control for Close/retry.
+			if opened != nil {
+				o.openErr = err
+			}
+			return nil, err
+		}
+		if opened == nil {
+			return nil, ErrEndpointMissing
+		}
+		o.inputUID = opened.InputUID()
+		if o.inputUID == "" {
+			o.openErr = errors.New("processinput: endpoint returned no input UID")
+			return nil, o.openErr
+		}
+	}
+	o.leased = true
+	return &endpointLease{owner: o, uid: o.inputUID}, nil
+}
+
+// Close rejects new leases and closes the one retained endpoint after all
+// session Sink leases have been released. A failed native close keeps the
+// endpoint owned for a later retry.
+func (o *EndpointOwner) Close() error {
+	if o == nil {
+		return nil
+	}
+	o.closeMu.Lock()
+	defer o.closeMu.Unlock()
+
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return nil
+	}
+	o.closing = true
+	if o.leased {
+		o.mu.Unlock()
+		return ErrEndpointLeased
+	}
+	owned := o.endpoint
+	o.inputUID = ""
+	o.mu.Unlock()
+
+	if owned != nil {
+		if err := owned.Close(); err != nil {
+			return fmt.Errorf("processinput: close endpoint owner: %w", err)
+		}
+	}
+
+	o.mu.Lock()
+	o.endpoint = nil
+	o.openErr = nil
+	o.closed = true
+	o.mu.Unlock()
+	return nil
+}
+
+// Sink owns one parked output queue and a lease on a process-tap endpoint.
+// A standalone Sink created by Open also owns its private EndpointOwner;
+// OpenWithEndpoint borrows a route-scoped owner. It performs synchronous
+// native calls; Open, Prepare, Drain and Close belong on a worker, never the
+// UI thread. It never starts a PCM producer or claims that a target stopped
+// using the endpoint; its host must stop consumers before closing the owner.
 type Sink struct {
 	mu sync.Mutex
 
-	output       output
-	endpoint     endpoint
-	inputUID     string
-	libraryPath  string
-	waitReceiver func(context.Context, string) error
-	openEndpoint endpointFactory
+	output        output
+	endpointOwner *EndpointOwner
+	endpointLease *endpointLease
+	inputUID      string
+	waitReceiver  func(context.Context, string) error
+	ownsEndpoint  bool
 
 	prepared      bool
 	receiverReady bool
@@ -71,6 +221,14 @@ type Sink struct {
 // when Open returns an error.
 func Open(config audiooutput.Config, libraryPath string, waitReceiver func(context.Context, string) error) (*Sink, error) {
 	return openWith(config, libraryPath, waitReceiver, openAudioOutput, openProcessTap)
+}
+
+// OpenWithEndpoint creates a session output Sink that borrows the given
+// route-scoped endpoint owner. The owner retains one exact InputUID across
+// sequential Sink generations and must be closed by the route after session
+// resources finish cleanup.
+func OpenWithEndpoint(config audiooutput.Config, owner *EndpointOwner, waitReceiver func(context.Context, string) error) (*Sink, error) {
+	return openWithEndpoint(config, owner, waitReceiver, openAudioOutput)
 }
 
 func openAudioOutput(config audiooutput.Config) (output, error) {
@@ -99,12 +257,28 @@ func openWith(config audiooutput.Config, libraryPath string, waitReceiver func(c
 	if makeOutput == nil || makeEndpoint == nil {
 		return nil, ErrFactoryRequired
 	}
-
-	owned := &Sink{
-		libraryPath:  libraryPath,
-		waitReceiver: waitReceiver,
-		openEndpoint: makeEndpoint,
+	owner, err := newEndpointOwner(libraryPath, makeEndpoint)
+	if err != nil {
+		return nil, err
 	}
+	owned, err := openWithEndpoint(config, owner, waitReceiver, makeOutput)
+	if owned != nil {
+		owned.ownsEndpoint = true
+	}
+	return owned, err
+}
+
+func openWithEndpoint(config audiooutput.Config, owner *EndpointOwner, waitReceiver func(context.Context, string) error, makeOutput outputFactory) (*Sink, error) {
+	if owner == nil {
+		return nil, ErrOwnerRequired
+	}
+	if waitReceiver == nil {
+		return nil, ErrReceiverRequired
+	}
+	if makeOutput == nil {
+		return nil, ErrFactoryRequired
+	}
+	owned := &Sink{endpointOwner: owner, waitReceiver: waitReceiver}
 	queue, err := makeOutput(config)
 	if queue == nil {
 		if err == nil {
@@ -154,20 +328,20 @@ func (s *Sink) Prepare(ctx context.Context) error {
 		return s.failLocked(err)
 	}
 
-	opened, openErr := s.openEndpoint(s.libraryPath)
-	if opened != nil {
-		s.endpoint = opened
+	lease, openErr := s.endpointOwner.acquire()
+	if lease != nil {
+		s.endpointLease = lease
 	}
 	if openErr != nil {
 		return s.failLocked(fmt.Errorf("processinput: open endpoint: %w", openErr))
 	}
-	if opened == nil {
+	if lease == nil {
 		return s.failLocked(ErrEndpointMissing)
 	}
 	if err := ctx.Err(); err != nil {
 		return s.failLocked(err)
 	}
-	uid := opened.InputUID()
+	uid := lease.InputUID()
 	if uid == "" {
 		return s.failLocked(errors.New("processinput: endpoint returned no input UID"))
 	}
@@ -312,11 +486,14 @@ func (s *Sink) Close() error {
 		}
 		s.output = nil
 	}
-	if s.endpoint != nil {
-		if err := s.endpoint.Close(); err != nil {
-			return fmt.Errorf("processinput: close endpoint: %w", err)
+	if s.endpointLease != nil {
+		s.endpointLease.release()
+		s.endpointLease = nil
+	}
+	if s.ownsEndpoint && s.endpointOwner != nil {
+		if err := s.endpointOwner.Close(); err != nil {
+			return err
 		}
-		s.endpoint = nil
 	}
 	s.closed = true
 	return nil
