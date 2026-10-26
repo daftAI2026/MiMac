@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"mimac.local/mimac/internal/adapters/keyoutput"
@@ -220,6 +221,9 @@ func (s *shell) remoteButtonLabel() string {
 // remoteStatus projects existing owners into one UI result. A connected HID
 // lease alone does not mean the selected voice action is executable.
 func (s *shell) remoteStatus() (string, statusTone) {
+	if !s.audioQuitPending && s.report.AudioCleanupFailed && strings.HasPrefix(s.report.Error, "audio shutdown: ") {
+		return "清理未完成，请再次退出", toneError
+	}
 	if (s.plugins != nil && s.plugins.Failure(remotePlugin) != nil) || s.deviceNeedsRestart || s.outputNeedsRestart {
 		return "恢复失败", toneError
 	}
@@ -259,6 +263,9 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	}
 	if s.voiceStartBlocked != "" {
 		return s.voiceStartBlocked, toneNeutral
+	}
+	if label, tone, applies := s.liveAudioStatus(); applies {
+		return label, tone
 	}
 	return "已启用", toneActive
 }
@@ -319,6 +326,7 @@ func (s *shell) toggleRemote() {
 // refreshRemoteOutput is safe to call after mapping and tool configuration
 // changes. It never opens a target or starts microphone capture.
 func (s *shell) refreshRemoteOutput(requestPermission bool) {
+	defer s.refreshLiveAudio()
 	if s.plugins == nil || s.coordinator == nil || !s.remoteHasReservation() ||
 		!s.coordinator.hasExecutableMapping() || s.plugins.Active(outputPlugin) {
 		return

@@ -48,6 +48,7 @@ type shell struct {
 	preferencesState
 	voiceToolsState
 	remoteState
+	liveAudio                        liveAudioState
 	window                           *mygo.Window
 	navigation                       *navigation.Control
 	generalControls                  *nativeprefs.Control
@@ -181,7 +182,12 @@ func main() {
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
+	audioBackend := flag.String("audio-backend", "", "optional audio backend: mimac-compat; never installs a component")
 	flag.Parse()
+	if err := validateAudioBackend(*audioBackend); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if *appearance != "system" && *appearance != "light" && *appearance != "dark" {
 		fmt.Fprintln(os.Stderr, "host-theme must be system, light, or dark")
 		os.Exit(2)
@@ -196,7 +202,7 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &shell{cancel: cancel}
+	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: *audioBackend}}
 	mygo.App.SetName("MiMac")
 	s.loadPreferences()
 	s.applySavedAppearance()

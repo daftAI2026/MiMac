@@ -62,6 +62,10 @@ func (s *shell) toggleOutput() {
 		return
 	}
 	if s.output != nil {
+		if s.liveAudio.connection != nil {
+			s.beginRemoteStop()
+			return
+		}
 		if err := s.plugins.Disable(outputPlugin); err != nil {
 			s.outputNeedsRestart = true
 		}
@@ -83,6 +87,7 @@ func (s *shell) toggleOutput() {
 		return
 	}
 	s.outputNeedsPermission = false
+	s.refreshLiveAudio()
 }
 
 func (d *deviceCoordinator) attachOutput(sink keySink) error {

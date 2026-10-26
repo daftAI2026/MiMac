@@ -12,6 +12,7 @@ func (s *shell) syncVoiceBinding() {
 	if s.coordinator == nil {
 		return
 	}
+	s.blockUnpreparedLiveAudio()
 	s.coordinator.voiceButton = s.voiceButtonID()
 	s.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) {
 		if !s.remoteHasReservation() {

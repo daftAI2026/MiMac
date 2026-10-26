@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,7 @@ import (
 )
 
 const audioSessionPlugin = "audio-session"
+const audioShutdownErrorPrefix = "audio shutdown: "
 
 // A verified device plugin supplies the source and its negotiated PCM format
 // and selected route. No production factory is installed until that device's
@@ -143,6 +145,7 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 				if s.closing || s.audioSession != host || ctx.Err() != nil {
 					return
 				}
+				s.logAudioCompletion(completion.Event, completion.CleanupFailed, completion.Err)
 				err := s.coordinator.step(completion.Event)
 				if completion.CleanupFailed {
 					err = errors.Join(err, s.coordinator.step(bridge.RouteAvailable(false)))
@@ -158,8 +161,8 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 }
 
 // deferAudioQuit leaves the MyGo loop alive while a worker releases native
-// resources. Repeated quit requests reuse the same task. A deadline records
-// unconfirmed cleanup; the plugin dependency graph retains the live handles.
+// resources. Repeated quit requests reuse the same task. A failed attempt keeps
+// the owner and voice gate, but permits a later quit request to retry cleanup.
 func (s *shell) deferAudioQuit(prevent func(), post func(func()), quit func()) bool {
 	if s.audioSession == nil || s.audioQuitReady {
 		return false
@@ -173,18 +176,43 @@ func (s *shell) deferAudioQuit(prevent func(), post func(func()), quit func()) b
 	host := s.audioSession
 	host.cancel()
 	if err := s.coordinator.step(bridge.RouteAvailable(false)); err != nil {
-		s.report.Error = fmt.Sprintf("audio shutdown: %v", err)
+		if s.report.Error == "" || strings.HasPrefix(s.report.Error, audioShutdownErrorPrefix) {
+			s.report.Error = fmt.Sprintf("%s%v", audioShutdownErrorPrefix, err)
+		}
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := host.close(ctx)
 		cancel()
 		post(func() {
-			s.audioQuitReady = true
+			s.audioQuitPending = false
 			if err != nil {
+				s.audioQuitReady = false
+				// Invalidate any older remote cleanup completion and keep route
+				// preparation disabled until a later quit confirms this owner closed.
+				s.remoteState.cleanupSequence++
+				s.remoteState.stopPending = true
+				s.remoteState.cleanupInFlight = true
+				if s.coordinator != nil {
+					s.coordinator.voiceAudioBinding = func(bridge.ActionPlan) (bridge.Binding, error) {
+						return bridge.Binding{}, errors.New("audio shutdown cleanup is pending")
+					}
+				}
 				s.report.AudioCleanupFailed = true
-				s.report.Error = fmt.Sprintf("audio shutdown: %v", err)
+				if s.report.Error == "" || strings.HasPrefix(s.report.Error, audioShutdownErrorPrefix) {
+					s.report.Error = fmt.Sprintf("%s%v", audioShutdownErrorPrefix, err)
+				}
+				s.closing = false
+				s.invalidateDeviceView()
+				return
 			}
+			s.audioQuitReady = true
+			// Clear only the error this shutdown path wrote. Preserve independent
+			// diagnostics that may have been recorded earlier.
+			if strings.HasPrefix(s.report.Error, audioShutdownErrorPrefix) {
+				s.report.Error = ""
+			}
+			s.report.AudioCleanupFailed = false
 			quit()
 		})
 	}()
@@ -198,9 +226,16 @@ func (s *shell) detachAudioSession(host *audioSessionHost) {
 	if s.audioSession != host {
 		return
 	}
+	s.liveAudio.retiring = false
 	s.audioSession = nil
+	if s.liveAudio.connection != nil {
+		s.liveAudio.connection = nil
+		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
+		s.report.AudioError = ""
+	}
 	if s.coordinator != nil {
 		s.coordinator.audio = nil
 		s.coordinator.voiceAudioBinding = nil
 	}
+	s.blockUnpreparedLiveAudio()
 }

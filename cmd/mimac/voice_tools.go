@@ -162,6 +162,7 @@ func (s *shell) loadVoiceTools() {
 }
 
 func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
+	defer s.refreshLiveAudio()
 	if s.closing || s.toolLoadFailed || s.plugins == nil || !slices.Contains(s.tools, tool) {
 		return errors.New("voice tool activation unavailable")
 	}
@@ -199,6 +200,7 @@ func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
 // Adapter availability and the selected voice target are separate choices.
 // Only one loaded adapter may supply the active tool's mapping presets.
 func (s *shell) selectVoiceTool(tool *voiceTool) error {
+	defer s.refreshLiveAudio()
 	if s.closing || s.toolLoadFailed || !slices.Contains(s.tools, tool) || !tool.active {
 		return errors.New("voice tool selection unavailable")
 	}

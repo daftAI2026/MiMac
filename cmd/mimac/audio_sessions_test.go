@@ -214,6 +214,89 @@ func TestAudioQuitDoesNotWaitOnNativeOpenOrMainCompletion(t *testing.T) {
 	}
 }
 
+func TestAudioQuitCleanupFailureKeepsQuitBlockedAndCanRetry(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	host := s.audioSession
+	t.Cleanup(func() { host.resourcesClosed.Store(true) }) // The test's failed close owns no real resource.
+	var attempts atomic.Int32
+	host.closeResources = func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			return errors.Join(audiosession.ErrCleanupPending, context.DeadlineExceeded)
+		}
+		return nil
+	}
+
+	prevented, quitCalls := 0, 0
+	post := func(fn func()) { tasks <- fn }
+	if !s.deferAudioQuit(func() { prevented++ }, post, func() { quitCalls++ }) {
+		t.Fatal("active audio did not defer quit")
+	}
+	runHostTask(t, tasks)
+	if quitCalls != 0 {
+		t.Errorf("quit proceeded after unconfirmed cleanup: calls=%d", quitCalls)
+	}
+	if s.audioQuitReady || s.audioQuitPending || s.closing {
+		t.Errorf("failed quit left terminal host flags: ready=%t pending=%t closing=%t", s.audioQuitReady, s.audioQuitPending, s.closing)
+	}
+	if s.audioSession != host || !s.report.AudioCleanupFailed {
+		t.Errorf("failed quit lost original owner or cleanup error: host=%p want=%p report=%+v", s.audioSession, host, s.report)
+	}
+	if !s.remoteState.stopPending || !s.remoteState.cleanupInFlight {
+		t.Errorf("failed quit did not keep new audio preparation blocked: stop=%t cleanup=%t", s.remoteState.stopPending, s.remoteState.cleanupInFlight)
+	}
+	if s.coordinator.voiceAudioBinding == nil {
+		t.Fatal("failed quit removed the voice gate")
+	}
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	if _, err := s.coordinator.voiceAudioBinding(plan); err == nil {
+		t.Error("failed quit left the voice gate enabled")
+	}
+	if prevented != 1 {
+		t.Errorf("prevent calls=%d, want 1", prevented)
+	}
+
+	if !s.deferAudioQuit(func() { prevented++ }, post, func() { quitCalls++ }) {
+		t.Fatal("second quit did not retry cleanup")
+	}
+	runHostTask(t, tasks)
+	if attempts.Load() != 2 || quitCalls != 1 || !s.audioQuitReady || s.audioQuitPending || s.audioSession != host {
+		t.Fatalf("successful retry did not finish shutdown: attempts=%d quit=%d ready=%t pending=%t host=%p", attempts.Load(), quitCalls, s.audioQuitReady, s.audioQuitPending, s.audioSession)
+	}
+	if s.report.AudioCleanupFailed || s.report.AudioError != "" || s.report.Error != "" {
+		t.Fatalf("successful retry retained shutdown diagnostics: %+v", s.report)
+	}
+}
+
+func TestAudioQuitRetryPreservesUnrelatedReportError(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	host := s.audioSession
+	t.Cleanup(func() { host.resourcesClosed.Store(true) })
+	var attempts atomic.Int32
+	host.closeResources = func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			return errors.Join(audiosession.ErrCleanupPending, context.DeadlineExceeded)
+		}
+		return nil
+	}
+	const previousError = "preferences: earlier failure"
+	s.report.Error = previousError
+	post := func(fn func()) { tasks <- fn }
+	if !s.deferAudioQuit(func() {}, post, func() {}) {
+		t.Fatal("active audio did not defer quit")
+	}
+	runHostTask(t, tasks)
+	if s.report.Error != previousError {
+		t.Fatalf("quit failure replaced unrelated report error: %q", s.report.Error)
+	}
+	if !s.deferAudioQuit(func() {}, post, func() {}) {
+		t.Fatal("second quit did not retry cleanup")
+	}
+	runHostTask(t, tasks)
+	if s.report.Error != previousError || s.report.AudioCleanupFailed {
+		t.Fatalf("successful retry changed unrelated error or retained cleanup failure: %+v", s.report)
+	}
+}
+
 func TestAudioCompletionQueuedBeforeShutdownCannotReopenGate(t *testing.T) {
 	s, tasks, source, sink := newSessionHostTest(t)
 	beginHostVoice(t, s)

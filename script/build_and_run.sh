@@ -6,6 +6,12 @@ case "$MODE" in
   run|--verify|--debug|--logs) ;;
   *) echo "usage: $0 [run|--verify|--debug|--logs]" >&2; exit 2 ;;
 esac
+if (( $# > 0 )); then shift; fi
+if (( $# > 0 )); then
+  [[ "$1" == -- && "$MODE" == run ]] || { echo "App arguments require: run -- [arguments]" >&2; exit 2; }
+  shift
+fi
+APP_ARGS=("$@")
 [[ "$(uname -s)" == Darwin ]] || { echo "MiMac currently requires macOS" >&2; exit 2; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_BIN="$(command -v "${MIMAC_GO:-go}")"
@@ -46,7 +52,7 @@ if [[ -n "${MIMAC_SIGN_IDENTITY:-}" ]]; then
 fi
 "$GO_BIN" tool mygo build "${BUILD_ARGS[@]}"
 case "$MODE" in
-  run) /usr/bin/open -n "$APP_BUNDLE" ;;
+  run) /usr/bin/open -n "$APP_BUNDLE" --args "${APP_ARGS[@]}" ;;
   --debug) /usr/bin/lldb -- "$APP_BINARY" ;;
   --logs)
     /usr/bin/open -n "$APP_BUNDLE"
