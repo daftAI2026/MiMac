@@ -16,4 +16,6 @@ go test ./...
 
 可用 `MIMAC_GO=/path/to/go` 指定工具链，`MIMAC_SIGN_IDENTITY` 指定本机已有签名身份。`--verify` 执行有界的设置窗口启动与退出检查。
 
+可选音频兼容组件使用 macOS HAL 和固定版本的 libASPL，独立于普通 App 构建。运行 `python3 script/build_audio_compat.py --package` 可构建、测试并生成本机验收安装包；脚本不会安装组件或重启音频服务。该组件尚未接入普通 App 的语音链路。
+
 图标源文件为 `Assets/Brand/MiMac.icon`，可用 `./script/export_icon.sh` 更新同源 PNG。有 Xcode 时 MyGo 编译原生图标；否则使用 PNG。
