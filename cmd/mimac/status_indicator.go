@@ -18,7 +18,7 @@ type readyHaloState struct {
 }
 
 // readyHalo draws a quiet ripple around the ready dot. Painter.After wakes
-// only when another ripple is due; AnimationFrame is requested only while a
+// only when another ripple is due; active frames are capped at 30 per second while a
 // ripple is visible.
 func readyHalo(dot ui.Element, color ui.Color, window *mygo.Window, reduceMotion bool) {
 	state := ui.Local(dot, "remote-ready-halo", func() readyHaloState { return readyHaloState{} })
@@ -64,6 +64,6 @@ func readyHalo(dot ui.Element, color ui.Color, window *mygo.Window, reduceMotion
 		}
 		centerX, centerY := bounds.X+bounds.W/2, bounds.Y+bounds.H/2
 		p.Stroke(ui.Rect{X: centerX - radius, Y: centerY - radius, W: 2 * radius, H: 2 * radius}, color.Alpha(alpha), radius, 0.5)
-		p.AnimationFrame()
+		p.After(decorativeMotionFrameInterval)
 	})
 }

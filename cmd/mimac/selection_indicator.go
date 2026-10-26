@@ -76,9 +76,12 @@ func addSelectionOutline(c *ui.Context, radius, opacity float32) {
 }
 
 const (
-	selectionSweepDelay    = 3600 * time.Millisecond
-	selectionSweepDuration = 600 * time.Millisecond
-	selectionSweepRest     = 6500 * time.Millisecond
+	// Decorative motion uses elapsed time for its curve, but does not need
+	// to redraw the entire MyGo surface at the display's maximum rate.
+	decorativeMotionFrameInterval = time.Second / 30
+	selectionSweepDelay           = 3600 * time.Millisecond
+	selectionSweepDuration        = 600 * time.Millisecond
+	selectionSweepRest            = 6500 * time.Millisecond
 )
 
 type selectionSweepState struct {
@@ -137,7 +140,7 @@ func addSelectionSweep(c *ui.Context, radius float32, state *selectionSweepState
 		}
 		progress := ui.EaseInOut(float32(elapsed) / float32(selectionSweepDuration))
 		paintSelectionSweep(p, bounds, radius, progress)
-		p.AnimationFrame()
+		p.After(decorativeMotionFrameInterval)
 	})
 }
 
