@@ -9,38 +9,61 @@ import (
 	"unsafe"
 )
 
-// Some editable elements advertise AXSelectedText as writable but do not
-// implement its setter (including WebKit). Discover a parameterized operation
-// once at capture, without inspecting text or guessing from the application.
+// Marker-based fields can advertise a writable AXSelectedText while silently
+// ignoring its setter. Require the complete range-operation capability before
+// capturing such a target; never fall back after a possible output request.
 func operationMarker(api *nativeAPI, element uintptr) (uintptr, error) {
+	operation, err := hasTextOperation(api, element)
+	if err != nil {
+		return 0, err
+	}
+	marker, err := api.optionalAttribute(element, "AXSelectedTextMarkerRange")
+	if err != nil {
+		return 0, err
+	}
+	if operation && marker != 0 {
+		return marker, nil
+	}
+	if operation || marker != 0 {
+		if marker != 0 {
+			api.cfRelease(marker)
+		}
+		return 0, ErrUnsupportedTarget
+	}
+	// Standard AppKit text controls use the selected-text setter and have no
+	// opaque marker. Keep that independently verified native path.
+	return 0, nil
+}
+
+func hasTextOperation(api *nativeAPI, element uintptr) (bool, error) {
 	var names uintptr
 	code := api.copyParameterizedNames(element, &names)
 	if names != 0 {
 		defer api.cfRelease(names)
 	}
 	if code == axErrorAttrUnsupported || code == axErrorNoValue || code == axErrorNotImplemented || code == axErrorParamUnsupported {
-		return 0, nil
+		return false, nil
 	}
 	if code != axErrorSuccess {
-		return 0, nativeAXError("list parameterized attributes", code)
+		return false, nativeAXError("list parameterized attributes", code)
 	}
 	if names == 0 {
-		return 0, nil
+		return false, nil
 	}
 	if api.cfGetTypeID(names) != api.cfArrayGetTypeID() {
-		return 0, ErrNotEditable
+		return false, ErrNotEditable
 	}
 	attribute, err := api.makeString("AXTextOperation")
 	if err != nil {
-		return 0, err
+		return false, err
 	}
 	defer api.cfRelease(attribute)
 	for i, count := int64(0), api.cfArrayGetCount(names); i < count; i++ {
 		if api.cfEqual(api.cfArrayGetValueAtIndex(names, i), attribute) != 0 {
-			return api.optionalAttribute(element, "AXSelectedTextMarkerRange")
+			return true, nil
 		}
 	}
-	return 0, nil
+	return false, nil
 }
 
 type nativeRange struct{ location, length int64 }
@@ -104,7 +127,7 @@ func insertTextOperation(api *nativeAPI, state snapshot, text string) error {
 	// An empty result means that no range was handled. Never read returned
 	// strings and never retry through another path after this request.
 	if result == 0 || api.cfGetTypeID(result) != api.cfArrayGetTypeID() || api.cfArrayGetCount(result) != 1 {
-		return errors.New("textoutput: text operation did not acknowledge one replacement")
+		return errors.New("textoutput: text operation returned no replacement result")
 	}
 	if replacement != 0 {
 		expected := snapshot{processID: state.processID, element: state.element, selection: replacement}

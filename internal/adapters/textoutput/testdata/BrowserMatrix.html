@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MiMac 输入兼容性测试</title>
+<style>
+body { font: 16px system-ui; margin: 32px; }
+label { display: block; margin-bottom: 16px; }
+input, textarea, [contenteditable] { display: block; font: inherit; width: 400px; min-height: 28px; }
+[contenteditable] { border: 0.5px solid #888; }
+</style>
+<h1>MiMac 输入兼容性测试</h1>
+<label>Input <input id="input" aria-label="matrix input"></label>
+<label>Textarea <textarea id="textarea" aria-label="matrix textarea"></textarea></label>
+<label>Contenteditable <div id="editable" contenteditable="true" role="textbox" aria-label="matrix editable"></div></label>
+<label>Other <input id="other" aria-label="matrix other"></label>
+<label>Password <input id="password" type="password" aria-label="matrix password" autocomplete="off"></label>
+<script>
+// This test-owned page is the independent output oracle. Production never reads
+// input contents; the fixture never reads even its own password field.
+const editable = ["input", "textarea", "editable"];
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function select(element, start, end) {
+  if (element.id !== "editable") { element.setSelectionRange(start, end); return; }
+  const range = document.createRange();
+  range.setStart(element.firstChild, start); range.setEnd(element.firstChild, end);
+  const selection = window.getSelection();
+  selection.removeAllRanges(); selection.addRange(range);
+}
+function state(seq, error = "") {
+  return {seq, error, other: document.getElementById("other").value,
+    web: Object.fromEntries([...editable.map(id => {
+      const element = document.getElementById(id);
+      return [id, id === "editable" ? element.textContent : element.value];
+    }), ["focused", document.activeElement.id]])};
+}
+let previous = 0;
+async function poll() {
+  await fetch("ready", {method: "POST"});
+  for (;;) {
+    try {
+      const command = await (await fetch("command", {cache: "no-store"})).json();
+      if (!command.seq || command.seq <= previous) { await sleep(20); continue; }
+      previous = command.seq;
+      let error = "";
+      try {
+        const {action, target} = command;
+        const element = document.getElementById(target);
+        if (action === "reset") {
+          for (const id of editable) {
+            const item = document.getElementById(id);
+            if (id === "editable") item.textContent = "L|old|R";
+            else item.value = "L|old|R";
+          }
+          document.getElementById("other").value = "untouched";
+          document.getElementById("password").value = "";
+          element.focus();
+          if (target !== "password") select(element, 2, 5);
+        } else if (action === "focus") element.focus();
+        else if (action === "selection") select(element, 0, 0);
+        else if (action !== "snapshot") throw new Error("unknown command");
+        // Settle DOM/AX focus only, never repeat an output request.
+        if (action !== "snapshot") await sleep(150);
+      } catch (failure) { error = String(failure); }
+      await fetch("result", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(state(previous, error))});
+    } catch (_) { await sleep(100); }
+  }
+}
+poll();
+</script>

@@ -12,11 +12,28 @@ import (
 	"time"
 )
 
-// Native compatibility uses an explicitly launched, test-owned AppKit/WebKit
+// Native compatibility uses an explicitly launched, test-owned native/browser
 // fixture. It never targets an arbitrary application or changes privacy grants.
 // The GUI fixture writes only its own synthetic text; the adapter does not read
 // input contents. Command/result exchange lives in a caller-selected cache dir.
 func TestNativeEditableMatrix(t *testing.T) {
+	if os.Getenv("MIMAC_TEXT_MATRIX_EXPECT_UNSUPPORTED") == "1" {
+		t.Skip("explicit unsupported-target rejection run, not an editable-support test")
+	}
+	runNativeMatrix(t, false)
+}
+
+func TestNativeUnsupportedWebMatrix(t *testing.T) {
+	if os.Getenv("MIMAC_TEXT_MATRIX_EXPECT_UNSUPPORTED") != "1" {
+		t.Skip("requires explicit unsupported browser fixture")
+	}
+	if os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") != "1" {
+		t.Fatal("unsupported-target matrix requires the web-only fixture")
+	}
+	runNativeMatrix(t, true)
+}
+
+func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 	dir := os.Getenv("MIMAC_TEXT_MATRIX_DIR")
 	if dir == "" {
 		t.Skip("requires explicit native TextMatrix fixture")
@@ -28,6 +45,14 @@ func TestNativeEditableMatrix(t *testing.T) {
 	pid, err := strconv.Atoi(string(pidBytes))
 	if err != nil || pid <= 0 {
 		t.Fatal("invalid fixture PID")
+	}
+	kinds := []string{"textview", "field", "input", "textarea", "editable"}
+	rejectKinds := []string{"textview", "input", "textarea", "editable"}
+	secureKinds := []string{"secure", "password"}
+	if os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") == "1" {
+		kinds = []string{"input", "textarea", "editable"}
+		rejectKinds = kinds
+		secureKinds = []string{"password"}
 	}
 	seq := 0
 	if data, err := os.ReadFile(filepath.Join(dir, "result.json")); err == nil {
@@ -73,7 +98,7 @@ func TestNativeEditableMatrix(t *testing.T) {
 		if err != nil || front != int32(pid) {
 			t.Fatalf("fixture must be frontmost: got %d want %d err %v", front, pid, err)
 		}
-		// WebKit constructs its AX tree lazily. Synchronize only our fixture's
+		// Browser engines construct their AX tree lazily. Synchronize our fixture's
 		// requested DOM focus before capture; never retry an output operation.
 		if kind == "input" || kind == "textarea" || kind == "editable" || kind == "password" {
 			api, _ := loadNativeAPI()
@@ -103,6 +128,23 @@ func TestNativeEditableMatrix(t *testing.T) {
 				t.Fatal("fixture AX focus did not settle")
 			}
 		}
+		if expectUnsupported && kind != "password" {
+			api, _ := loadNativeAPI()
+			element, _, err := focusedElement(api, int32(pid))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer api.cfRelease(element)
+			operation, opErr := hasTextOperation(api, element)
+			marker, markerErr := api.optionalAttribute(element, "AXSelectedTextMarkerRange")
+			if marker != 0 {
+				defer api.cfRelease(marker)
+			}
+			if opErr != nil || markerErr != nil || operation || marker == 0 {
+				t.Fatalf("fixture is not marker-only: operation=%t marker=%t errors=%v/%v", operation, marker != 0, opErr, markerErr)
+			}
+			t.Log("confirmed marker-only target; verifying rejection, not text support")
+		}
 		target, err := Capture()
 		if target != nil && target.snapshot.processID != int32(pid) {
 			_ = target.Close()
@@ -110,16 +152,34 @@ func TestNativeEditableMatrix(t *testing.T) {
 		}
 		return target, err
 	}
-	for _, kind := range []string{"textview", "field", "input", "textarea", "editable"} {
+	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
 			command(t, "reset", kind)
 			target, err := capture(t, kind)
+			if expectUnsupported {
+				if target != nil {
+					_ = target.Close()
+				}
+				if !errors.Is(err, ErrUnsupportedTarget) {
+					t.Fatalf("unsupported target Capture = %v, want ErrUnsupportedTarget", err)
+				}
+				if state := command(t, "snapshot", kind); state.value(kind) != "L|old|R" || state.Other != "untouched" {
+					t.Fatal("rejected target changed fixture text")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer target.Close()
+			api, _ := loadNativeAPI()
+			marker, markerErr := api.optionalAttribute(target.snapshot.element, "AXSelectedTextMarkerRange")
+			t.Logf("native text-operation capability: %t; selected marker: %t (error %v)", target.snapshot.marker != 0, marker != 0, markerErr)
+			if marker != 0 {
+				api.cfRelease(marker)
+			}
 			if err := target.Insert("mImAc听写🙂✓"); err != nil {
-				t.Fatal(err)
+				t.Fatalf("Insert: %v; fixture after request: %q", err, command(t, "snapshot", kind).value(kind))
 			}
 			state := command(t, "snapshot", kind)
 			deadline := time.Now().Add(2 * time.Second)
@@ -160,7 +220,10 @@ func TestNativeEditableMatrix(t *testing.T) {
 			}
 		})
 	}
-	for _, kind := range []string{"textview", "input", "textarea", "editable"} {
+	if expectUnsupported {
+		rejectKinds = nil
+	} // Capture rejects before an output lease exists.
+	for _, kind := range rejectKinds {
 		for _, action := range []string{"focus", "selection"} {
 			t.Run("reject_"+kind+"_"+action, func(t *testing.T) {
 				command(t, "reset", kind)
@@ -184,7 +247,7 @@ func TestNativeEditableMatrix(t *testing.T) {
 			})
 		}
 	}
-	for _, kind := range []string{"secure", "password"} {
+	for _, kind := range secureKinds {
 		t.Run("reject_"+kind, func(t *testing.T) {
 			command(t, "reset", kind)
 			target, err := capture(t, kind)
@@ -196,7 +259,7 @@ func TestNativeEditableMatrix(t *testing.T) {
 			}
 		})
 	}
-	command(t, "reset", "textview")
+	command(t, "reset", kinds[0])
 }
 
 type matrixResult struct {

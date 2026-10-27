@@ -30,7 +30,7 @@ type Button struct {
 	ID           string
 	Label        string
 	Symbol       string
-	DefaultLabel string // Observed device output, display-only; never synthesized by the host.
+	DefaultLabel string // Profile/HID key label, not a confirmed macOS action; display-only, never synthesized.
 	Bounds       Rect
 	CornerRadius float32
 }

@@ -13,19 +13,20 @@ import (
 const MaxTextBytes = 64 * 1024
 
 var (
-	ErrUnsupported      = errors.New("textoutput: unsupported platform")
-	ErrPermissionDenied = errors.New("textoutput: accessibility permission is unavailable")
-	ErrNoFrontmostApp   = errors.New("textoutput: no frontmost application")
-	ErrNoFocusedElement = errors.New("textoutput: no focused accessibility element")
-	ErrNotEditable      = errors.New("textoutput: focused element is not editable")
-	ErrSecureInput      = errors.New("textoutput: secure input is active")
-	ErrTargetChanged    = errors.New("textoutput: captured target or selection changed")
-	ErrInvalidTarget    = errors.New("textoutput: invalid accessibility target")
-	ErrInvalidUTF8      = errors.New("textoutput: text is not valid UTF-8")
-	ErrNUL              = errors.New("textoutput: text contains NUL")
-	ErrTooLarge         = errors.New("textoutput: text exceeds 64 KiB")
-	ErrClosed           = errors.New("textoutput: target is closed")
-	ErrAlreadySubmitted = errors.New("textoutput: target has already been submitted")
+	ErrUnsupported       = errors.New("textoutput: unsupported platform")
+	ErrUnsupportedTarget = errors.New("textoutput: target lacks a supported text replacement operation")
+	ErrPermissionDenied  = errors.New("textoutput: accessibility permission is unavailable")
+	ErrNoFrontmostApp    = errors.New("textoutput: no frontmost application")
+	ErrNoFocusedElement  = errors.New("textoutput: no focused accessibility element")
+	ErrNotEditable       = errors.New("textoutput: focused element is not editable")
+	ErrSecureInput       = errors.New("textoutput: secure input is active")
+	ErrTargetChanged     = errors.New("textoutput: captured target or selection changed")
+	ErrInvalidTarget     = errors.New("textoutput: invalid accessibility target")
+	ErrInvalidUTF8       = errors.New("textoutput: text is not valid UTF-8")
+	ErrNUL               = errors.New("textoutput: text contains NUL")
+	ErrTooLarge          = errors.New("textoutput: text exceeds 64 KiB")
+	ErrClosed            = errors.New("textoutput: target is closed")
+	ErrAlreadySubmitted  = errors.New("textoutput: target has already been submitted")
 )
 
 // snapshot holds only target identity and selection metadata. Native

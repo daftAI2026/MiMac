@@ -180,6 +180,8 @@ func appleTextTargetPrompt(err error) string {
 		return "请允许辅助功能权限"
 	case errors.Is(err, textoutput.ErrSecureInput):
 		return "请退出密码输入后重试"
+	case errors.Is(err, textoutput.ErrUnsupportedTarget):
+		return "此输入框暂不支持直接输入，请切换输入位置"
 	case errors.Is(err, textoutput.ErrTargetChanged):
 		return "输入位置已变化，请重试"
 	case errors.Is(err, context.DeadlineExceeded):
