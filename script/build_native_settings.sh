@@ -60,6 +60,18 @@ for arch in arm64 amd64; do
 			exit 1
 		}
 	done
+	xcrun --sdk macosx clang -fobjc-arc -O2 -mmacosx-version-min=14.2 \
+		-arch "$target_arch" -dynamiclib \
+		-install_name @rpath/libMiMacReadyIndicator.dylib \
+		"$ROOT_DIR/internal/platform/readyindicator/native/ReadyIndicator.m" \
+		-framework AppKit -framework QuartzCore -framework CoreGraphics \
+		-o "$output_dir/libMiMacReadyIndicator.dylib"
+	for symbol in MiMacReadyIndicatorABIVersion MiMacReadyIndicatorInstall MiMacReadyIndicatorUpdate MiMacReadyIndicatorClose; do
+		/usr/bin/nm -gU "$output_dir/libMiMacReadyIndicator.dylib" | /usr/bin/grep -q " _$symbol$" || {
+			echo "missing ready indicator export: $symbol" >&2
+			exit 1
+		}
+	done
 	"$SWIFTC" \
 		-sdk "$SDK_PATH" \
 		-swift-version 5 \
@@ -78,4 +90,4 @@ for arch in arm64 amd64; do
 	done
 done
 
-echo "Built native settings, ATVV, process tap and Apple Speech libraries for darwin-arm64 and darwin-amd64."
+echo "Built native settings, ATVV, process tap, ready indicator and Apple Speech libraries for darwin-arm64 and darwin-amd64."

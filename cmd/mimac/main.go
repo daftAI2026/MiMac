@@ -49,6 +49,7 @@ type shell struct {
 	preferencesState
 	voiceToolsState
 	remoteState
+	readyIndicator                   readyIndicatorState
 	powerState                       powerState
 	liveAudio                        liveAudioState
 	window                           *mygo.Window
@@ -108,6 +109,7 @@ func (s *shell) showSettings() {
 		s.detectDevice()
 	}
 	s.window.OnClosed(func() {
+		s.clearReadyIndicator()
 		s.closeGeneralControls()
 		if s.navigation != nil {
 			s.navigation.Close()
@@ -242,6 +244,7 @@ func main() {
 			return
 		}
 		s.closing = true
+		s.clearReadyIndicator()
 		s.unwatchPower()
 		s.closeGeneralControls()
 		if s.navigation != nil {

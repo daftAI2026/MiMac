@@ -73,6 +73,9 @@ func (s *shell) settings(c *ui.Context) {
 	if s.page == "" {
 		s.page = pageMappings
 	}
+	if s.page != pageMappings {
+		s.clearReadyIndicator()
+	}
 	ui.Row(c).Fill().Children(func() {
 		ui.Column(c).Width(sidebarWidth).Shrink(0).FillHeight().Padding(0, spaceMD, sectionGap, spaceMD).Background(a.theme.Surface).Children(func() {
 			ui.Box(c).Height(max(c.TitleBar().Height, sidebarHeaderHeight)).FillWidth().Shrink(0).DragWindow()

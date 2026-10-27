@@ -37,7 +37,18 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 			ui.Column(c).Grow(1).Basis(0).FillWidth().MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Role(ui.RoleGroup).Label("遥控器展示区").Children(func() {
 				s.remoteModel(c, a, profile)
 			})
-			ui.Column(c).FillWidth().Gap(spaceSM).Padding(0, 0, mappingFooterInset, 0).AlignItems(ui.Center).Children(func() {
+			footerMessage := ""
+			if s.mappingError != "" && s.editButton == "" {
+				footerMessage = s.mappingError
+			}
+			footerState := readyIndicatorFooterState{
+				permission: s.deviceNeedsPermission || s.outputNeedsPermission,
+				message:    footerMessage,
+				action:     s.remoteButtonLabel(),
+				busy:       s.remoteBusy(),
+			}
+			footer := ui.Column(c).Key("mapping-status-footer").FillWidth().Gap(spaceSM).Padding(0, 0, mappingFooterInset, 0).AlignItems(ui.Center)
+			footer.Children(func() {
 				if s.deviceNeedsPermission || s.outputNeedsPermission {
 					if appButton(c, a, "打开系统设置", false).Clicked() {
 						if s.deviceNeedsPermission {
@@ -50,7 +61,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				if s.mappingError != "" && s.editButton == "" {
 					ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
-				mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window)
+				s.mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window, footer, footerState)
 				disabled := s.remoteBusy()
 				if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
 					s.toggleRemote()
@@ -165,19 +176,23 @@ func (s *shell) chooseMappingVoiceTool(c *ui.Context, tool *voiceTool) {
 	c.Invalidate()
 }
 
-func mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone, enabled bool, window *mygo.Window) {
+func (s *shell) mappingStatusRow(c *ui.Context, a appearance, label string, tone statusTone, enabled bool, window *mygo.Window, footer ui.Element, footerState readyIndicatorFooterState) {
 	color := a.statusColor(tone)
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
 		if tone == toneWarning || tone == toneError {
+			s.clearReadyIndicator()
 			ui.Text(c, "!").FontSize(a.fonts.caption).TextColor(color)
 		} else if enabled && tone == toneActive {
-			dot := ui.Badge(c, "").Padding(0).Width(spaceSM).Height(spaceSM)
 			activeColor := a.theme.Success
 			if systemGreen, err := statuscolor.SystemGreen(a.theme.Dark); err == nil {
 				activeColor = systemGreen
 			}
-			readyHalo(dot, activeColor, window, c.Preferences().ReduceMotion)
-			dot.Background(activeColor)
+			element := readyIndicatorSlot(c)
+			if !s.syncReadyIndicator(c, element, footer, activeColor, label, footerState, a.fonts.caption, a.fonts.body, window, c.Preferences().ReduceMotion) {
+				drawReadyIndicatorFallback(element, activeColor)
+			}
+		} else {
+			s.clearReadyIndicator()
 		}
 		ui.Text(c, label).FontSize(a.fonts.caption).TextColor(color).Role(ui.RoleStatus)
 	})
