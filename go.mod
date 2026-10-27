@@ -1,10 +1,10 @@
 module mimac.local/mimac
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/ebitengine/purego v0.11.1
-	github.com/egoist/mygo v0.6.3-0.20261022145949-321cdfbd7011
+	github.com/egoist/mygo v0.7.1
 	golang.org/x/image v0.46.0
 	howett.net/plist v1.0.1
 )
