@@ -1,0 +1,20 @@
+flowchart TD
+    input["设备边沿与音频完成事件"] --> owner["MyGo 主线程上的 coordinator"]
+    owner --> core["Core：唯一语音状态机"]
+    core --> snapshot["Snapshot：当前 token 与 phase"]
+    snapshot --> exists{"当前是否有会话"}
+    exists -->|是| phases["Preparing / Capturing / Draining"]
+    phases --> project["纯投影：正在准备语音 / 正在收音 / 正在结束语音"]
+    exists -->|否| idle["空会话投影；不推断完成、取消或提交"]
+    project --> report["诊断：当前 session ID 与 phase"]
+    idle --> report
+    project --> priority["权限、故障、切换状态优先"]
+    idle --> priority
+    priority --> status["复用映射页、插件页与菜单栏的状态位置"]
+    owner --> refresh["沿用现有事件后的刷新；空闲不轮询"]
+    refresh --> status
+    project -.-> renderer["未来：可替换呈现适配器与统一语音条"]
+    pcm["Runtime 现有 PCM 通路"] -.-> meter["未来：带 token 的有界电平通道"]
+    meter -.-> renderer
+    siri["独立 Siri 原版研究组件"] -.-> renderer
+    renderer -.-> settings["未来：用户显示偏好；厂商原生条按插件能力处理"]

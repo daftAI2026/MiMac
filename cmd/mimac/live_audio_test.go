@@ -236,7 +236,7 @@ func TestLiveAudioHostUnsupportedTargetDoesNotOpenOrFallback(t *testing.T) {
 	if s.liveAudio.connection != nil || s.coordinator.voiceAudioBinding == nil {
 		t.Fatal("unsupported target has a route or shortcut-only fallback")
 	}
-	if _, _, applies := s.liveAudioStatus(); !applies {
+	if _, _, applies := s.liveAudioStatus(s.coordinator.core.Snapshot()); !applies {
 		t.Fatal("missing unsupported-target status")
 	}
 }

@@ -44,6 +44,8 @@ type coreReport struct {
 	UnexpectedEffects uint64 `json:"unexpected_effects"`
 	SubmittedEffects  uint64 `json:"submitted_effects"`
 	OutputFailureID   uint64 `json:"output_failure_id"`
+	AudioSessionID    uint64 `json:"audio_session_id,omitempty"`
+	AudioPhase        string `json:"audio_phase,omitempty"`
 }
 
 func newDeviceCoordinator() *deviceCoordinator {
@@ -139,12 +141,14 @@ func (d *deviceCoordinator) disconnect() error {
 
 func (d *deviceCoordinator) report() coreReport {
 	s := d.core.Snapshot()
+	voice := presentVoiceSession(s)
 	return coreReport{
 		Steps: d.steps, ReceivedEdges: d.edges, PeakPressed: d.peakHeld,
 		Pressed: len(s.PressedButtons), Connected: s.Connected,
 		Generation: s.Generation, Configured: s.Configured,
 		UnexpectedEffects: d.unexpected,
 		SubmittedEffects:  d.submitted, OutputFailureID: s.OutputFailureID,
+		AudioSessionID: voice.id, AudioPhase: voice.phase,
 	}
 }
 

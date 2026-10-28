@@ -13,6 +13,7 @@ import (
 	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/audiosession"
+	"mimac.local/mimac/internal/bridge"
 )
 
 const remotePlugin = "remote-control"
@@ -185,12 +186,18 @@ func (s *shell) stopRemotePlugin() error {
 }
 
 func (s *shell) remoteHasReservation() bool {
+	if s.coordinator == nil {
+		return false
+	}
+	return s.remoteHasReservationWith(s.coordinator.core.Snapshot())
+}
+
+func (s *shell) remoteHasReservationWith(snapshot bridge.Snapshot) bool {
 	if s.powerInputBlocked() || s.remoteState.reservation == nil || s.remoteState.err != nil ||
 		s.remoteState.cleanupInFlight || s.remoteState.stopPending ||
 		!s.remoteEnabled() || s.plugins.Failure(remotePlugin) != nil || s.coordinator == nil {
 		return false
 	}
-	snapshot := s.coordinator.core.Snapshot()
 	return snapshot.Connected && snapshot.Generation == s.remoteState.reservationGeneration
 }
 
@@ -272,8 +279,12 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	if !s.remoteEnabled() {
 		return "未启用", toneNeutral
 	}
-	if !s.remoteHasReservation() {
-		if s.coordinator != nil && !s.coordinator.core.Snapshot().Connected {
+	var snapshot bridge.Snapshot
+	if s.coordinator != nil {
+		snapshot = s.coordinator.core.Snapshot()
+	}
+	if !s.remoteHasReservationWith(snapshot) {
+		if s.coordinator != nil && !snapshot.Connected {
 			return "等待遥控器", toneNeutral
 		}
 		return "正在连接", toneNeutral
@@ -294,8 +305,11 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	if s.voiceStartBlocked != "" {
 		return s.voiceStartBlocked, toneNeutral
 	}
-	if label, tone, applies := s.liveAudioStatus(); applies {
+	if label, tone, applies := s.liveAudioStatus(snapshot); applies {
 		return label, tone
+	}
+	if voice := presentVoiceSession(snapshot); voice.label != "" {
+		return voice.label, toneActive
 	}
 	return "已启用", toneActive
 }

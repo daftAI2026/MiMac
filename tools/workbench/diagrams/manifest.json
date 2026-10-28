@@ -104,6 +104,21 @@
     ]
   },
   {
+    "id": "voice-presentation-boundary",
+    "title": "语音状态与呈现边界",
+    "summary": "当前状态文案与诊断直接投影 Core 的 session/token/phase，不维护第二状态机；既有权限、故障和切换状态优先。收音阶段不证明已有非零 PCM，结束阶段不证明目标已提交。虚线为尚未接入的电平通道、统一语音条与 Siri 渲染器。",
+    "sourcePaths": [
+      "cmd/mimac/voice_presentation.go",
+      "cmd/mimac/coordinator.go",
+      "cmd/mimac/device.go",
+      "cmd/mimac/remote.go",
+      "cmd/mimac/live_audio.go",
+      "cmd/mimac/audio_sessions.go",
+      "internal/bridge/core.go",
+      "internal/audiosession/runtime.go"
+    ]
+  },
+  {
     "id": "power-quit-recovery",
     "title": "睡眠、关闭与恢复",
     "summary": "睡眠/锁屏先阻断输入再关闭设备与会话，恢复时仅尝试一次且不触发权限提示。关闭设置窗保留菜单栏宿主；退出时先完成音频清理，再关闭插件。",

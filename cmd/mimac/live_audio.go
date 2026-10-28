@@ -187,7 +187,7 @@ func (s *shell) retireLiveAudio() {
 	})
 }
 
-func (s *shell) liveAudioStatus() (string, statusTone, bool) {
+func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, bool) {
 	if !s.audioRequested() {
 		return "", toneNeutral, false
 	}
@@ -206,7 +206,7 @@ func (s *shell) liveAudioStatus() (string, statusTone, bool) {
 	if err := s.liveAudio.connection.Err(); err != nil {
 		return "音频连接失败，请重新启用遥控器", toneError, true
 	}
-	if !s.liveAudio.connection.Ready() && !s.coordinator.core.Snapshot().HasSession {
+	if !s.liveAudio.connection.Ready() && !snapshot.HasSession {
 		return "正在准备音频", toneNeutral, true
 	}
 	return "", toneNeutral, false
