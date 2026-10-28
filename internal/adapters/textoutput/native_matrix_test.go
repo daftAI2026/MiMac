@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,6 +35,7 @@ func TestNativeUnsupportedWebMatrix(t *testing.T) {
 }
 
 func runNativeMatrix(t *testing.T, expectUnsupported bool) {
+	const matrixText = "mImAc听写🙂✓中文长句 AbCd é é 🇨🇳 👨‍👩‍👧‍👦 Привет 完整输出"
 	dir := os.Getenv("MIMAC_TEXT_MATRIX_DIR")
 	if dir == "" {
 		t.Skip("requires explicit native TextMatrix fixture")
@@ -174,20 +176,20 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 			defer target.Close()
 			api, _ := loadNativeAPI()
 			marker, markerErr := api.optionalAttribute(target.snapshot.element, "AXSelectedTextMarkerRange")
-			t.Logf("native text-operation capability: %t; selected marker: %t (error %v)", target.snapshot.marker != 0, marker != 0, markerErr)
+			t.Logf("native text-operation capability: %t; selected marker: %t (error %v)", target.snapshot.marker != 0 && !target.snapshot.unicodeText, marker != 0, markerErr)
 			if marker != 0 {
 				api.cfRelease(marker)
 			}
-			if err := target.Insert("mImAc听写🙂✓"); err != nil {
+			if err := target.Insert(matrixText); err != nil {
 				t.Fatalf("Insert: %v; fixture after request: %q", err, command(t, "snapshot", kind).value(kind))
 			}
 			state := command(t, "snapshot", kind)
 			deadline := time.Now().Add(2 * time.Second)
-			for state.value(kind) != "L|mImAc听写🙂✓|R" && time.Now().Before(deadline) {
+			for state.value(kind) != "L|"+matrixText+"|R" && time.Now().Before(deadline) {
 				time.Sleep(20 * time.Millisecond)
 				state = command(t, "snapshot", kind)
 			}
-			if got := state.value(kind); got != "L|mImAc听写🙂✓|R" {
+			if got := state.value(kind); got != "L|"+matrixText+"|R" {
 				t.Fatalf("actual fixture value %q, want exact selected-range replacement", got)
 			}
 			if err := target.Insert("duplicate"); !errors.Is(err, ErrAlreadySubmitted) {
@@ -210,7 +212,7 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 			deadline = time.Now().Add(2 * time.Second)
 			for {
 				state = command(t, "snapshot", kind)
-				if state.value(kind) == "L|mImAc听写🙂✓续写|R" {
+				if state.value(kind) == "L|"+matrixText+"续写|R" {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -243,6 +245,78 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 				state := command(t, "snapshot", changed)
 				if state.value(kind) != "L|old|R" || state.Other != "untouched" {
 					t.Fatal("changed target received text")
+				}
+			})
+		}
+	}
+	if !expectUnsupported && os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") == "1" {
+		for _, kind := range kinds {
+			t.Run("large_"+kind, func(t *testing.T) {
+				command(t, "reset", kind)
+				target, err := capture(t, kind)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer target.Close()
+				text := strings.Repeat("A中", MaxTextBytes/4)
+				if err := target.Insert(text); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					state := command(t, "snapshot", kind)
+					if state.value(kind) == "L|"+text+"|R" && state.Web["enterCount"] == "0" {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("large insert mismatch: bytes=%d enter=%s", len(state.value(kind)), state.Web["enterCount"])
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			})
+		}
+		t.Run("focus_changes_during_dispatch", func(t *testing.T) {
+			command(t, "reset", "input")
+			target, err := capture(t, "input")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			command(t, "redirect", "input")
+			text := "首字后焦点改变，后续文字必须不进入别的输入框 Aa🙂"
+			if err := target.Insert(text); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			var state matrixResult
+			for {
+				state = command(t, "snapshot", "input")
+				if state.Web["focused"] == "other" || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if state.value("input") != "L|"+text+"|R" || state.Other != "untouched" || state.Web["focused"] != "other" || state.Web["enterCount"] != "0" {
+				t.Fatalf("text dispatch crossed fields or submitted: original=%q other=%q focus=%q enter=%s", state.value("input"), state.Other, state.Web["focused"], state.Web["enterCount"])
+			}
+		})
+		for name, text := range map[string]string{"newline": "line\nline", "tab": "a\tb", "escape": "a\x1bb"} {
+			t.Run("reject_control_"+name, func(t *testing.T) {
+				command(t, "reset", "input")
+				target, err := capture(t, "input")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer target.Close()
+				if !target.snapshot.unicodeText {
+					t.Skip("control rejection applies to event transport only")
+				}
+				if err := target.Insert(text); !errors.Is(err, ErrUnsupportedText) {
+					t.Fatalf("control Insert = %v", err)
+				}
+				state := command(t, "snapshot", "input")
+				if state.value("input") != "L|old|R" || state.Other != "untouched" || state.Web["enterCount"] != "0" {
+					t.Fatal("rejected control changed fixture")
 				}
 			})
 		}

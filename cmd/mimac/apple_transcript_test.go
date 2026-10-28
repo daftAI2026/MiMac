@@ -9,11 +9,51 @@ import (
 	"testing"
 	"time"
 
+	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 )
+
+func TestAudioHostReportsFinalTextFailureWithoutRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		prompt     string
+		permission bool
+	}{
+		{"access_revoked", textoutput.ErrPermissionDenied, "请允许辅助功能权限", true},
+		{"event_access_revoked", textoutput.ErrPostEventPermissionDenied, "请允许辅助功能权限", true},
+		{"control_text", textoutput.ErrUnsupportedText, "此输入框不支持多行或控制字符", false},
+		{"target_moved", textoutput.ErrTargetChanged, "输入位置已变化，请重试", false},
+		{"native_payload", textoutput.ErrEventPayload, "文字未写入，此输入方式暂不可用", false},
+		{"unknown_delivery", errors.New("uncertain native output"), "请检查输入结果", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, tasks, source, sink, _ := newTranscriptAudioHost(t, nil)
+			calls := 0
+			host.audioSession.deliver = func(bridge.SessionToken, string) error { calls++; return tc.err }
+			press, _ := beginTranscriptAudioSession(t, host)
+			runHostTask(t, tasks)
+			waitHostSignal(t, source.reading)
+			if err := host.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			waitHostSignal(t, sink.drainStarted)
+			completion := runAndReturnHostTask(t, tasks)
+			completion()
+			waitHostSignal(t, sink.closed)
+			if host.voiceStartBlocked != tc.prompt || host.outputNeedsPermission != tc.permission {
+				t.Fatalf("prompt=%q permission=%t, want %q/%t", host.voiceStartBlocked, host.outputNeedsPermission, tc.prompt, tc.permission)
+			}
+			completion() // A duplicated queued completion must not deliver again.
+			if calls != 1 || host.coordinator.core.Snapshot().HasSession {
+				t.Fatal("failed text was retried or kept the audio session alive")
+			}
+		})
+	}
+}
 
 func TestAudioHostDeliversFinalTranscriptOnceAfterTailDrain(t *testing.T) {
 	host, tasks, source, sink, delivered := newTranscriptAudioHost(t, nil)

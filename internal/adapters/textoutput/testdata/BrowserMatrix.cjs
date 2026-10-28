@@ -2,7 +2,8 @@
 const {app, BrowserWindow} = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const [url, directory] = process.argv.slice(2);
+const entry = process.argv.indexOf(__filename);
+const [url, directory] = entry < 1 ? [] : process.argv.slice(entry + 1);
 if (!url || !directory || !url.startsWith("http://127.0.0.1:")) process.exit(2);
 app.setPath("userData", path.join(directory, "profile"));
 app.whenReady().then(async () => {

@@ -27,6 +27,15 @@ const (
 )
 
 type nativeAPI struct {
+	preflightPostEvent func() bool
+	requestPostEvent   func() bool
+	eventSourceCreate  func(int32) uintptr
+	eventCreate        func(uintptr, uint16, bool) uintptr
+	eventSetUnicode    func(uintptr, uint64, *uint16)
+	eventGetUnicode    func(uintptr, uint64, *uint64, *uint16)
+	eventSetFlags      func(uintptr, uint64)
+	eventPostToPID     func(int32, uintptr)
+
 	createApplication           func(int32) uintptr
 	copyAttributeValue          func(uintptr, uintptr, *uintptr) int32
 	copyParameterizedNames      func(uintptr, *uintptr) int32
@@ -143,7 +152,7 @@ func (systemNative) capture() (snapshot, error) {
 			api.cfRelease(selection)
 		}
 	}()
-	state.marker, err = operationMarker(api, element)
+	state.marker, state.unicodeText, err = textCapability(api, element)
 	if err != nil {
 		return snapshot{}, err
 	}
@@ -153,6 +162,10 @@ func (systemNative) capture() (snapshot, error) {
 			api.cfRelease(state.marker)
 		}
 	}()
+
+	if state.unicodeText && !api.preflightPostEvent() {
+		return snapshot{}, ErrPostEventPermissionDenied
+	}
 
 	// Fail closed if the foreground process, focused element, or selection moved
 	// while the initial snapshot was being assembled.
@@ -173,11 +186,14 @@ func (systemNative) insert(state snapshot, text string) error {
 	if api.isProcessTrusted() == 0 {
 		return ErrPermissionDenied
 	}
+	if state.unicodeText {
+		return insertUnicodeText(api, state, text)
+	}
 	if state.marker != 0 {
 		return insertTextOperation(api, state, text)
 	}
-	// The only output operation: set AXSelectedText on the captured element.
-	// There is no clipboard, key event, Return, or submit action fallback.
+	// Standard AppKit controls accept AXSelectedText on the captured element.
+	// Transport is chosen at capture, never retried after a possible write.
 	attribute, err := api.makeString("AXSelectedText")
 	if err != nil {
 		return err
@@ -226,6 +242,7 @@ func loadNativeAPI() (*nativeAPI, error) {
 			"/System/Library/Frameworks/AppKit.framework/AppKit",
 			"/System/Library/Frameworks/Carbon.framework/Frameworks/HIToolbox.framework/HIToolbox",
 			"/usr/lib/libSystem.B.dylib",
+			"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
 		}
 		handles := make([]uintptr, 0, len(frameworkPaths))
 		for _, path := range frameworkPaths {
@@ -275,6 +292,14 @@ func loadNativeAPI() (*nativeAPI, error) {
 			{1, &api.axValueCreate, "AXValueCreate"},
 			{3, &api.isSecureEventInputOn, "IsSecureEventInputEnabled"},
 			{4, &api.copyNativePointer, "memcpy"},
+			{5, &api.preflightPostEvent, "CGPreflightPostEventAccess"},
+			{5, &api.requestPostEvent, "CGRequestPostEventAccess"},
+			{5, &api.eventSourceCreate, "CGEventSourceCreate"},
+			{5, &api.eventCreate, "CGEventCreateKeyboardEvent"},
+			{5, &api.eventSetUnicode, "CGEventKeyboardSetUnicodeString"},
+			{5, &api.eventGetUnicode, "CGEventKeyboardGetUnicodeString"},
+			{5, &api.eventSetFlags, "CGEventSetFlags"},
+			{5, &api.eventPostToPID, "CGEventPostToPid"},
 		}
 		for _, binding := range bindings {
 			address, err := purego.Dlsym(handles[binding.library], binding.symbol)

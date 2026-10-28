@@ -137,7 +137,11 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 				s.voiceStartBlocked = appleTextTargetPrompt(err)
 				s.outputNeedsPermission = errors.Is(err, textoutput.ErrPermissionDenied)
 				if s.outputNeedsPermission {
-					textoutput.RequestAccess()
+					if errors.Is(err, textoutput.ErrPostEventPermissionDenied) {
+						textoutput.RequestPostEventAccess()
+					} else {
+						textoutput.RequestAccess()
+					}
 				}
 				return err
 			}
@@ -180,6 +184,8 @@ func appleTextTargetPrompt(err error) string {
 		return "请允许辅助功能权限"
 	case errors.Is(err, textoutput.ErrSecureInput):
 		return "请退出密码输入后重试"
+	case errors.Is(err, textoutput.ErrUnsupportedText):
+		return "此输入框不支持多行或控制字符"
 	case errors.Is(err, textoutput.ErrUnsupportedTarget):
 		return "此输入框暂不支持直接输入，请切换输入位置"
 	case errors.Is(err, textoutput.ErrTargetChanged):
@@ -188,6 +194,20 @@ func appleTextTargetPrompt(err error) string {
 		return "输入框响应超时，请重试"
 	default:
 		return "请将光标放入可编辑输入框"
+	}
+}
+
+// A native error can occur after accepting text. Unknown errors must not
+// assert that nothing was inserted or invite an automatic duplicate attempt.
+func appleTextDeliveryPrompt(err error) string {
+	switch {
+	case errors.Is(err, textoutput.ErrPermissionDenied), errors.Is(err, textoutput.ErrUnsupportedText),
+		errors.Is(err, textoutput.ErrSecureInput), errors.Is(err, textoutput.ErrTargetChanged):
+		return appleTextTargetPrompt(err)
+	case errors.Is(err, textoutput.ErrEventPayload):
+		return "文字未写入，此输入方式暂不可用"
+	default:
+		return "请检查输入结果"
 	}
 }
 
@@ -208,7 +228,8 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					if snapshot.HasSession && snapshot.Session.Token == result.Token && snapshot.Session.Phase == bridge.PhaseDraining && snapshot.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
 						deliveryErr = host.deliver(result.Token, result.Text)
 						if deliveryErr != nil {
-							s.voiceStartBlocked = "文字未写入，请保持原输入框"
+							s.outputNeedsPermission = errors.Is(deliveryErr, textoutput.ErrPermissionDenied)
+							s.voiceStartBlocked = appleTextDeliveryPrompt(deliveryErr)
 						}
 					}
 				}

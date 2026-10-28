@@ -9,30 +9,25 @@ import (
 	"unsafe"
 )
 
-// Marker-based fields can advertise a writable AXSelectedText while silently
-// ignoring its setter. Require the complete range-operation capability before
-// capturing such a target; never fall back after a possible output request.
-func operationMarker(api *nativeAPI, element uintptr) (uintptr, error) {
+// Select one transport before output. Marker-only browser fields can advertise
+// writable AXSelectedText yet ignore its setter. They require a whole Unicode
+// event instead. An incomplete advertised operation is still rejected.
+func textCapability(api *nativeAPI, element uintptr) (uintptr, bool, error) {
 	operation, err := hasTextOperation(api, element)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	marker, err := api.optionalAttribute(element, "AXSelectedTextMarkerRange")
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if operation && marker != 0 {
-		return marker, nil
+	if marker != 0 {
+		return marker, !operation, nil
 	}
-	if operation || marker != 0 {
-		if marker != 0 {
-			api.cfRelease(marker)
-		}
-		return 0, ErrUnsupportedTarget
+	if operation {
+		return 0, false, ErrUnsupportedTarget
 	}
-	// Standard AppKit text controls use the selected-text setter and have no
-	// opaque marker. Keep that independently verified native path.
-	return 0, nil
+	return 0, false, nil // verified AppKit selected-text setter
 }
 
 func hasTextOperation(api *nativeAPI, element uintptr) (bool, error) {

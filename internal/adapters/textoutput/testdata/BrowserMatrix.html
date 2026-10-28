@@ -30,8 +30,14 @@ function state(seq, error = "") {
     web: Object.fromEntries([...editable.map(id => {
       const element = document.getElementById(id);
       return [id, id === "editable" ? element.textContent : element.value];
-    }), ["focused", document.activeElement.id]])};
+    }), ["focused", document.activeElement.id], ["enterCount", String(enterCount)]])};
 }
+let enterCount = 0;
+document.addEventListener("keydown", event => { if (event.key === "Enter") enterCount++; });
+let redirectOnInput = false;
+document.getElementById("input").addEventListener("input", () => {
+  if (redirectOnInput) { redirectOnInput = false; document.getElementById("other").focus(); }
+});
 let previous = 0;
 async function poll() {
   await fetch("ready", {method: "POST"});
@@ -45,6 +51,8 @@ async function poll() {
         const {action, target} = command;
         const element = document.getElementById(target);
         if (action === "reset") {
+          redirectOnInput = false;
+          enterCount = 0;
           for (const id of editable) {
             const item = document.getElementById(id);
             if (id === "editable") item.textContent = "L|old|R";
@@ -56,6 +64,7 @@ async function poll() {
           if (target !== "password") select(element, 2, 5);
         } else if (action === "focus") element.focus();
         else if (action === "selection") select(element, 0, 0);
+        else if (action === "redirect") redirectOnInput = true;
         else if (action !== "snapshot") throw new Error("unknown command");
         // Settle DOM/AX focus only, never repeat an output request.
         if (action !== "snapshot") await sleep(150);

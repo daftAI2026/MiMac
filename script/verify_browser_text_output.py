@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the production text adapter against a disposable Chrome/Electron page.
 
-No audio, account, clipboard, key events or privacy prompts. Existing browser
+No audio, account, clipboard, Return or privacy prompts. Text events target only
+the captured fixture PID. Existing browser
 profiles and windows are not used. Requires already granted Accessibility access.
 """
 import argparse
@@ -282,7 +283,7 @@ def run():
                     self.reply(204)
                 elif self.path == prefix + "result":
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length < 32768:
+                    if not 0 < length < 131072:
                         self.reply(400)
                         return
                     data = json.loads(self.rfile.read(length))

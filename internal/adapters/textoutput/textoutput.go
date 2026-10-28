@@ -13,34 +13,38 @@ import (
 const MaxTextBytes = 64 * 1024
 
 var (
-	ErrUnsupported       = errors.New("textoutput: unsupported platform")
-	ErrUnsupportedTarget = errors.New("textoutput: target lacks a supported text replacement operation")
-	ErrPermissionDenied  = errors.New("textoutput: accessibility permission is unavailable")
-	ErrNoFrontmostApp    = errors.New("textoutput: no frontmost application")
-	ErrNoFocusedElement  = errors.New("textoutput: no focused accessibility element")
-	ErrNotEditable       = errors.New("textoutput: focused element is not editable")
-	ErrSecureInput       = errors.New("textoutput: secure input is active")
-	ErrTargetChanged     = errors.New("textoutput: captured target or selection changed")
-	ErrInvalidTarget     = errors.New("textoutput: invalid accessibility target")
-	ErrInvalidUTF8       = errors.New("textoutput: text is not valid UTF-8")
-	ErrNUL               = errors.New("textoutput: text contains NUL")
-	ErrTooLarge          = errors.New("textoutput: text exceeds 64 KiB")
-	ErrClosed            = errors.New("textoutput: target is closed")
-	ErrAlreadySubmitted  = errors.New("textoutput: target has already been submitted")
+	ErrUnsupported               = errors.New("textoutput: unsupported platform")
+	ErrUnsupportedTarget         = errors.New("textoutput: target lacks a supported text replacement operation")
+	ErrPermissionDenied          = errors.New("textoutput: accessibility permission is unavailable")
+	ErrPostEventPermissionDenied = fmt.Errorf("%w (Post Event)", ErrPermissionDenied)
+	ErrUnsupportedText           = errors.New("textoutput: event input does not support control characters or line separators")
+	ErrEventPayload              = errors.New("textoutput: native text event did not retain the complete payload")
+	ErrNoFrontmostApp            = errors.New("textoutput: no frontmost application")
+	ErrNoFocusedElement          = errors.New("textoutput: no focused accessibility element")
+	ErrNotEditable               = errors.New("textoutput: focused element is not editable")
+	ErrSecureInput               = errors.New("textoutput: secure input is active")
+	ErrTargetChanged             = errors.New("textoutput: captured target or selection changed")
+	ErrInvalidTarget             = errors.New("textoutput: invalid accessibility target")
+	ErrInvalidUTF8               = errors.New("textoutput: text is not valid UTF-8")
+	ErrNUL                       = errors.New("textoutput: text contains NUL")
+	ErrTooLarge                  = errors.New("textoutput: text exceeds 64 KiB")
+	ErrClosed                    = errors.New("textoutput: target is closed")
+	ErrAlreadySubmitted          = errors.New("textoutput: target has already been submitted")
 )
 
 // snapshot holds only target identity and selection metadata. Native
 // implementations must not read the field's text or interact with a clipboard.
 type snapshot struct {
-	processID int32
-	element   uintptr
-	selection uintptr
-	marker    uintptr // optional opaque range for parameterized text operations
+	processID   int32
+	element     uintptr
+	selection   uintptr
+	marker      uintptr // optional opaque selected range
+	unicodeText bool    // marker exists, but no AXTextOperation; use one whole text event
 }
 
 // native keeps operating-system calls isolated from the one-shot lifecycle.
 // insert must revalidate process, focused element, and selection immediately
-// before making exactly one text replacement request. A native adapter may
+// before making exactly one text replacement attempt. A native adapter may
 // collapse the replacement selection afterward, but must never retry the text.
 type native interface {
 	capture() (snapshot, error)
@@ -76,6 +80,10 @@ func HasAccess() bool { return hasAccessibilityAccess() }
 // user grants permission; call HasAccess again afterward.
 func RequestAccess() bool { return requestAccessibilityAccess() }
 
+// RequestPostEventAccess requests the distinct event permission only when an
+// event-only target required it. Invoke after an explicit user input action.
+func RequestPostEventAccess() bool { return requestPostEventAccess() }
+
 func captureWith(n native) (*Target, error) {
 	if n == nil {
 		return nil, ErrUnsupported
@@ -93,7 +101,7 @@ func captureWith(n native) (*Target, error) {
 
 // Insert sends one final, non-empty UTF-8 transcript to the captured element.
 // Empty recognition results are accepted as no-ops and do not consume the
-// one-shot insertion. A successful return means the native AX request was
+// one-shot insertion. A successful return means the native text request was
 // accepted; it does not prove that the target application visibly committed it.
 // An error may also occur after text was accepted (for example, if focus changed
 // before collapsing the replacement selection). Never retry the transcript.

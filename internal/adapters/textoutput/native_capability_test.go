@@ -8,19 +8,20 @@ import (
 )
 
 // The marker-only case mirrors Chromium's advertised-but-no-op AXSelectedText
-// setter. A CF transport success must not let Capture choose that fallback.
-func TestOperationMarkerCapabilities(t *testing.T) {
+// setter. A CF transport success must not choose that setter.
+func TestTextCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
 		namesCode, markerCode     int32
 		advertised                bool
 		marker                    uintptr
 		wantError, wantPermission bool
+		wantUnicode               bool
 	}{
 		{name: "native_without_parameterized_attributes", namesCode: axErrorParamUnsupported, markerCode: axErrorAttrUnsupported},
 		{name: "native_without_marker", markerCode: axErrorNoValue},
-		{name: "chromium_marker_without_operation", marker: 4, wantError: true},
-		{name: "marker_with_unavailable_operation_list", namesCode: axErrorParamUnsupported, marker: 4, wantError: true},
+		{name: "chromium_marker_without_operation", marker: 4, wantUnicode: true},
+		{name: "marker_with_unavailable_operation_list", namesCode: axErrorParamUnsupported, marker: 4, wantUnicode: true},
 		{name: "advertised_without_marker", advertised: true, markerCode: axErrorNoValue, wantError: true},
 		{name: "advertised_unsupported_marker", advertised: true, markerCode: axErrorAttrUnsupported, wantError: true},
 		{name: "complete", advertised: true, marker: 4},
@@ -54,7 +55,10 @@ func TestOperationMarkerCapabilities(t *testing.T) {
 				},
 				copyAttributeValue: func(_, _ uintptr, out *uintptr) int32 { *out = tc.marker; return tc.markerCode },
 			}
-			marker, err := operationMarker(api, 10)
+			marker, unicodeText, err := textCapability(api, 10)
+			if unicodeText != tc.wantUnicode {
+				t.Fatalf("unicodeText = %t, want %t", unicodeText, tc.wantUnicode)
+			}
 			if tc.wantError {
 				if err == nil || marker != 0 {
 					t.Fatalf("incomplete capability allowed: marker=%d err=%v", marker, err)
