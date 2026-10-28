@@ -90,9 +90,9 @@ func recordedShortcut(event ui.InputEvent) (string, bool) {
 	return value, err == nil
 }
 
-func (s *shell) shortcutRecorder(c *ui.Context, a appearance) {
+func (s *shell) shortcutRecorder(c *ui.Context, a appearance, width, height float32) {
 	field := ui.Box(c).Bind(&s.recorderFocus).Focusable().FocusRing(false).Role(ui.RoleButton).Label("录入快捷键").
-		Width(mappingChoiceWidth).Padding(controlInset, spaceSM).MinHeight(controlHeight).Justify(ui.Center).AlignItems(ui.Center).
+		Width(width).Padding(controlInset, spaceSM).MinHeight(height).Justify(ui.Center).AlignItems(ui.Center).
 		Radius(controlRadius).Border(lineWidth, a.theme.Focus).Background(a.theme.Background)
 	field.HandleInput(func(event ui.InputEvent) bool {
 		if event.Kind != ui.InputKeyDown {

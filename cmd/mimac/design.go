@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -50,13 +51,18 @@ const (
 	windowMinWidth               = windowWidth
 	windowMinHeight              = windowHeight
 	trafficLightInset            = 20
-	mappingFooterInset   float32 = (settingsRowHeight - controlHeight) / 2
 )
 
-func mappingReferenceFrameHeight(captionSize float32) float32 {
+func mappingReferenceFrameHeight(captionSize, rowHeight float32) float32 {
 	headerHeight := mappingHeaderHeight(captionSize)
-	rowsHeight := float32(mappingReferenceRows)*settingsRowHeight + float32(mappingReferenceRows-1)*mappingRowGap
+	rowsHeight := float32(mappingReferenceRows)*rowHeight + float32(mappingReferenceRows-1)*mappingRowGap
 	return headerHeight + spaceSM + rowsHeight
+}
+
+func mappingRowHeight(c *ui.Context, a appearance) float32 {
+	_, height := c.MeasureText(0, ui.Span{Text: "语音 Ag", Font: a.theme.Font, Size: a.fonts.body})
+	buttonHeight := max(controlHeight, float32(math.Ceil(float64(height+2*controlInset+2*lineWidth))))
+	return max(settingsRowHeight, buttonHeight+2*settingsRowPadding)
 }
 
 func mappingHeaderHeight(captionSize float32) float32 {
@@ -156,7 +162,19 @@ func appButton(c *ui.Context, a appearance, label string, disabled bool) ui.Elem
 }
 
 func appMenuButton(c *ui.Context, a appearance, label string, disabled bool, indicator *ui.Bitmap, build func(*ui.Menu)) ui.Element {
-	b := appButton(c, a, label, disabled).Justify(ui.Center)
+	b := styleAppButton(ui.ButtonBase(c), a, disabled).Padding(controlInset, spaceSM).Justify(ui.Center)
+	if indicator != nil {
+		b.MinWidth(appMenuButtonWidth(c, a, label))
+	}
+	b.Children(func() {
+		text := ui.Text(c, label).SingleLine().MinWidth(0).Shrink(1).FillWidth().
+			TextAlign(ui.Center).FontSize(a.fonts.body)
+		if indicator != nil {
+			// Reserve the same space on both sides so the label stays centered
+			// while the native indicator keeps its own hit-independent slot.
+			text.Margin(0, accessoryIconSize+spaceSM)
+		}
+	})
 	if indicator != nil {
 		b.Children(func() {
 			ui.Box(c).Absolute().Right(spaceSM).Top(0).Bottom(0).Width(accessoryIconSize).
@@ -166,6 +184,14 @@ func appMenuButton(c *ui.Context, a appearance, label string, disabled bool, ind
 		})
 	}
 	return b.Menu(build)
+}
+
+// Measure through MyGo's cached text layout, with the same font as the label.
+// The symmetric reserve keeps the label centered and the indicator separated.
+func appMenuButtonWidth(c *ui.Context, a appearance, label string) float32 {
+	width, _ := c.MeasureText(0, ui.Span{Text: label, Font: a.theme.Font, Size: a.fonts.body})
+	width += 2 * (spaceSM + accessoryIconSize + spaceSM + lineWidth)
+	return float32(math.Ceil(float64(width/spaceXS))) * spaceXS
 }
 
 func styleAppButton(b ui.Element, a appearance, disabled bool) ui.Element {

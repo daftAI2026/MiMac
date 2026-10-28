@@ -14,11 +14,19 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 			activeVoiceTools = append(activeVoiceTools, tool)
 		}
 	}
+	// Keep one column width across selection changes and all row states.
+	actionWidth := mappingChoiceWidth + mappingMenuWidth + spaceSM
+	for _, tool := range activeVoiceTools {
+		actionWidth = max(actionWidth, appMenuButtonWidth(c, a, tool.name))
+	}
+	choiceWidth := actionWidth - mappingMenuWidth - spaceSM
 	if s.selectedButton == "" {
 		s.selectedButton = profile.Model.DefaultSelectedButtonID
 	}
 	headerHeight := mappingHeaderHeight(a.fonts.caption)
-	frameHeight := mappingReferenceFrameHeight(a.fonts.caption)
+	rowHeight := mappingRowHeight(c, a)
+	buttonHeight := rowHeight - 2*settingsRowPadding
+	frameHeight := mappingReferenceFrameHeight(a.fonts.caption, rowHeight)
 	ui.Row(c).Fill().MinWidth(0).AlignItems(ui.Start).Gap(windowInset).Children(func() {
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Height(frameHeight).MaxHeightPercent(100).MinHeight(0).Role(ui.RoleGroup).Label("遥控器预览").Gap(sectionGap).AlignItems(ui.Center).Children(func() {
 			if len(s.deviceProfiles) > 1 {
@@ -47,7 +55,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				action:     s.remoteButtonLabel(),
 				busy:       s.remoteBusy(),
 			}
-			footer := ui.Column(c).Key("mapping-status-footer").FillWidth().Gap(spaceSM).Padding(0, 0, mappingFooterInset, 0).AlignItems(ui.Center)
+			footer := ui.Column(c).Key("mapping-status-footer").FillWidth().Gap(spaceSM).Padding(0, 0, settingsRowPadding, 0).AlignItems(ui.Center)
 			footer.Children(func() {
 				if s.deviceNeedsPermission || s.outputNeedsPermission {
 					if appButton(c, a, "打开系统设置", false).Clicked() {
@@ -63,7 +71,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				}
 				s.mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window, footer, footerState)
 				disabled := s.remoteBusy()
-				if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
+				if appButton(c, a, s.remoteButtonLabel(), disabled).MinHeight(buttonHeight).Clicked() && !disabled {
 					s.toggleRemote()
 				}
 			})
@@ -72,7 +80,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 			ui.Row(c).FillWidth().Height(headerHeight).Padding(0, settingsRowInset).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
 				ui.Text(c, "按键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Grow(1).MinWidth(0)
 				ui.Text(c, "设备键值").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingDefaultWidth)
-				ui.Text(c, "自定义").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingChoiceWidth + mappingMenuWidth + spaceSM)
+				ui.Text(c, "自定义").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(actionWidth)
 			})
 			ui.Scroll(c).Grow(1).Basis(0).FillWidth().MinHeight(0).Children(func() {
 				rows := ui.Column(c).Key("mapping-list/" + profile.ID).Gap(mappingRowGap).FillWidth().MinWidth(0)
@@ -80,7 +88,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				rows.Children(func() {
 					for _, button := range profile.Buttons {
 						id := button.ID
-						row := ui.Column(c).Key(profile.ID+"/row/"+id).Gap(spaceXS).MinHeight(settingsRowHeight).Padding(settingsRowPadding, settingsRowInset).FillWidth().MinWidth(0).Radius(settingsGroupRadius)
+						row := ui.Column(c).Key(profile.ID+"/row/"+id).Gap(spaceXS).MinHeight(rowHeight).Padding(settingsRowPadding, settingsRowInset).FillWidth().MinWidth(0).Radius(settingsGroupRadius)
 						if s.selectedButton == id {
 							selectedBounds = row.LayoutBounds()
 						}
@@ -89,10 +97,10 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 							s.revealButton = ""
 						}
 						row.Children(func() {
-							ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+							ui.Row(c).FillWidth().MinWidth(0).MinHeight(buttonHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
 								voiceButton := id == s.voiceButtonID()
 								selectLabel := "选择" + button.Label
-								selectButton := ui.ButtonBase(c).Label(selectLabel).Justify(ui.Start).Grow(1).MinWidth(0).MinHeight(controlHeight).Padding(0).FocusRing(false)
+								selectButton := ui.ButtonBase(c).Label(selectLabel).Justify(ui.Start).Grow(1).MinWidth(0).MinHeight(buttonHeight).Padding(0).FocusRing(false)
 								if selectButton.FocusVisible() {
 									selectButton.Border(lineWidth, a.theme.Focus)
 								}
@@ -104,21 +112,19 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 								}
 								ui.Text(c, button.DefaultLabel).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingDefaultWidth)
 								if voiceButton {
-									s.mappingVoiceSelection(c, a, activeVoiceTools)
+									s.mappingVoiceSelection(c, a, activeVoiceTools, actionWidth, buttonHeight)
 								} else if s.editButton == id {
-									s.shortcutRecorder(c, a)
+									s.shortcutRecorder(c, a, choiceWidth, buttonHeight)
 								} else {
 									label := s.mappingLabel(profile.ID, id)
-									field := appButton(c, a, label, s.mappingLoadFailed).Label(button.Label+"的快捷键").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+									field := appButton(c, a, label, s.mappingLoadFailed).Label(button.Label+"的快捷键").Width(choiceWidth).MinHeight(buttonHeight).Padding(controlInset, spaceSM)
 									if field.Clicked() {
 										s.beginShortcutRecording(id)
 										c.Invalidate()
 									}
 								}
-								if voiceButton {
-									ui.Box(c).Width(mappingMenuWidth).Height(controlHeight).Shrink(0)
-								} else {
-									menuButton := appButton(c, a, "…", s.mappingLoadFailed).Label(button.Label + "的预设").Role(ui.RoleMenuButton).Width(mappingMenuWidth).Padding(0)
+								if !voiceButton {
+									menuButton := appButton(c, a, "…", s.mappingLoadFailed).Label(button.Label + "的预设").Role(ui.RoleMenuButton).Width(mappingMenuWidth).MinHeight(buttonHeight).Padding(0)
 									if menuButton.Clicked() {
 										s.selectedButton = id
 										s.popupMenu(s.mappingMenu(id), menuButton.Bounds())
@@ -137,10 +143,10 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	})
 }
 
-func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voiceTool) {
+func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voiceTool, width, height float32) {
 	switch len(active) {
 	case 0:
-		button := appButton(c, a, "选择语音工具", false).Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+		button := appButton(c, a, "选择语音工具", false).Label("选择语音工具").Width(width).MinHeight(height).Padding(controlInset, spaceSM)
 		if button.Clicked() {
 			s.endShortcutRecording()
 			s.showPage(pageVoice)
@@ -148,11 +154,11 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 	case 1:
 		tool := active[0]
 		if tool.id == s.currentVoiceTool {
-			ui.Text(c, tool.name).FontSize(a.fonts.body).Width(mappingChoiceWidth).MinHeight(controlHeight)
+			ui.Text(c, tool.name).FontSize(a.fonts.body).Width(width).MinHeight(height)
 			return
 		}
 		button := appButton(c, a, "使用", s.toolLoadFailed).Label("使用："+tool.name).
-			Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+			Width(width).MinHeight(height).Padding(controlInset, spaceSM)
 		if button.Clicked() && !s.toolLoadFailed {
 			s.chooseMappingVoiceTool(c, tool)
 		}
@@ -164,7 +170,7 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 					s.chooseMappingVoiceTool(c, tool)
 				}
 			}
-		}).Label("选择语音工具").Width(mappingChoiceWidth).Padding(controlInset, spaceSM)
+		}).Label("选择语音工具").Width(width).MinHeight(height).Padding(controlInset, spaceSM)
 	}
 }
 
