@@ -12,6 +12,8 @@
 
 数值和浅深色来自 Go AST 对 `cmd/mimac/design.go` 的导出。图表以 `diagrams/*.mmd` 为源，清单记录对应产品源码；修改流程时一并更新。构建使用固定版本 Pele 生成 SVG，浏览器不加载图表引擎或 CDN。每个源码入口链接构建时的只读快照，内容哈希在 `dist/data.json` 中。源码变动后重新运行构建。
 
+语音入口图区分当前可执行路径与未来适配要求：实线跟随现有实现，虚线部分不代表已支持的能力。工具启用、当前工具选择、动作执行和目标提交是不同步骤。
+
 组件页是 token 和布局的 Web 样本，原生菜单、SwiftUI Form、系统绿色及 CoreAnimation 效果以实际 App 为准。它不会触发产品功能。正式设计契约见项目根目录 `DESIGN.md`。
 
 Pele 为 MIT 授权：[obsidianmd/pele](https://github.com/obsidianmd/pele)。构建输出保留其许可证。

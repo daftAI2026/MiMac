@@ -1,0 +1,14 @@
+flowchart TD
+    enabled["可启用多个插件"] --> current["Current 只选一个语音工具"]
+    current --> route{"当前目标路径"}
+    route -->|Apple 本机识别| apple["冻结当前文本目标"]
+    apple --> text["识别文字只尝试插入该目标一次"]
+    text --> noSubmit["不发送 Enter，不广播到其他入口"]
+    route -->|外部工具动作| contract{"动作合同是否可执行"}
+    contract -->|已验证 global 与 Control| freeze["按下冻结唯一动作和配置版本"]
+    freeze --> request["按冻结计划请求开始与结束"]
+    request --> outcome["请求已发送不等于识别或提交成功"]
+    contract -->|app 或 unknown 或缺 Control| blocked["拒绝绑定，不发送快捷键"]
+    blocked -.-> future["未来适配：先确认目标身份与动作语义"]
+    future -.-> intent["分别表达：听写、实时对话、语音消息、文字转语音"]
+    intent -.-> submit["分别核实目标提交规则；未知时不推断"]

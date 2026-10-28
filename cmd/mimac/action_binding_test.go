@@ -61,6 +61,91 @@ func TestActionReleaseUsesFrozenCandidateAfterRefresh(t *testing.T) {
 	}
 }
 
+func TestSwitchingVoiceToolCancelsHeldActionUntilExplicitRebind(t *testing.T) {
+	oldSnapshot := toolShortcutsTestSnapshot("Ctrl+K")
+	oldSnapshot.Actions[0].Control = &voicetools.Control{Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish}
+	s, mappingPath := newToolShortcutsTestShell(t, oldSnapshot)
+	oldTool := s.tools[0]
+
+	newSnapshot := toolShortcutsTestSnapshot("Ctrl+L")
+	newSnapshot.Actions[0].Control = &voicetools.Control{Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish}
+	newTool := &voiceTool{id: "voice-other", name: "Other", active: true, sequence: 9, snapshot: newSnapshot}
+	s.tools = append(s.tools, newTool)
+	s.toolPreferencesPath = mappingPath + ".voice-tools.json"
+	s.toolPreferences = toolPreferences{Version: 1, Enabled: []string{oldTool.id, newTool.id}, Current: oldTool.id}
+
+	oldRef := voicetools.ActionRef{ToolID: oldTool.id, ActionID: "dictationMode", CandidateRaw: "Ctrl+K"}
+	newRef := voicetools.ActionRef{ToolID: newTool.id, ActionID: "dictationMode", CandidateRaw: "Ctrl+L"}
+	s.saveToolAction(toolShortcutsTestButton, oldRef)
+
+	sink := &toolShortcutsTestSink{}
+	if err := s.coordinator.attachOutput(sink); err != nil {
+		t.Fatal(err)
+	}
+	device, err := bridge.NewDevice("tool-switch-test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver := func(edges ...devices.Edge) {
+		t.Helper()
+		accepted, err := s.coordinator.accept(devices.InputEvent{State: devices.InputStateConnected, Device: device, Edges: edges})
+		if err != nil || !accepted {
+			t.Fatalf("input edges rejected: accepted=%v err=%v", accepted, err)
+		}
+	}
+	press, err := bridge.NewPressToken(device, toolShortcutsTestButton, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver(devices.Edge{Kind: devices.EdgeDown, Press: press})
+	if want := []bridge.Effect{bridge.KeyDownEffect{Key: "Control"}, bridge.KeyDownEffect{Key: "K"}}; !reflect.DeepEqual(sink.effects, want) {
+		t.Fatalf("old tool hold did not start: %#v", sink.effects)
+	}
+
+	if err := s.selectVoiceTool(newTool); err != nil {
+		t.Fatal(err)
+	}
+	if s.currentVoiceTool != newTool.id {
+		t.Fatalf("current tool = %q, want %q", s.currentVoiceTool, newTool.id)
+	}
+	cancelled := []bridge.Effect{
+		bridge.KeyDownEffect{Key: "Control"}, bridge.KeyDownEffect{Key: "K"},
+		bridge.KeyUpEffect{Key: "K"}, bridge.KeyUpEffect{Key: "Control"},
+	}
+	if !reflect.DeepEqual(sink.effects, cancelled) {
+		t.Fatalf("switch did not release old hold: %#v", sink.effects)
+	}
+	deliver(devices.Edge{Kind: devices.EdgeUp, Press: press})
+	if !reflect.DeepEqual(sink.effects, cancelled) {
+		t.Fatalf("late physical release repeated old action output: %#v", sink.effects)
+	}
+
+	stalePress, err := bridge.NewPressToken(device, toolShortcutsTestButton, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver(devices.Edge{Kind: devices.EdgeDown, Press: stalePress}, devices.Edge{Kind: devices.EdgeUp, Press: stalePress})
+	if !reflect.DeepEqual(sink.effects, cancelled) {
+		t.Fatalf("old button binding started after tool switch: %#v", sink.effects)
+	}
+
+	s.saveToolAction(toolShortcutsTestButton, newRef)
+	newPress, err := bridge.NewPressToken(device, toolShortcutsTestButton, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver(devices.Edge{Kind: devices.EdgeDown, Press: newPress}, devices.Edge{Kind: devices.EdgeUp, Press: newPress})
+	want := []bridge.Effect{
+		bridge.KeyDownEffect{Key: "Control"}, bridge.KeyDownEffect{Key: "K"},
+		bridge.KeyUpEffect{Key: "K"}, bridge.KeyUpEffect{Key: "Control"},
+		bridge.KeyDownEffect{Key: "Control"}, bridge.KeyDownEffect{Key: "L"},
+		bridge.KeyUpEffect{Key: "L"}, bridge.KeyUpEffect{Key: "Control"},
+	}
+	if !reflect.DeepEqual(sink.effects, want) {
+		t.Fatalf("explicit new tool binding did not run its action: %#v", sink.effects)
+	}
+}
+
 func TestToolActionUnavailableDoesNotFallBackToOrdinaryKeys(t *testing.T) {
 	for _, reason := range []string{"disabled", "busy", "not-current", "not-ready", "app"} {
 		t.Run(reason, func(t *testing.T) {

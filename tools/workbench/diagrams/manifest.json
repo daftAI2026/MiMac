@@ -86,6 +86,24 @@
     ]
   },
   {
+    "id": "voice-entry-boundary",
+    "title": "语音入口与提交边界",
+    "summary": "当前每次只控制一个选定工具：Apple 路径冻结文本目标，外部动作冻结按键计划。虚线为未来适配要求，尚无 Intent/提交策略 API，也未接通 ChatGPT、微信聊天或 QQ 的应用内入口；微信输入法独立于微信聊天。",
+    "sourcePaths": [
+      "cmd/mimac/voice_tool_preferences.go",
+      "cmd/mimac/voice_tools.go",
+      "cmd/mimac/voice_binding.go",
+      "cmd/mimac/coordinator.go",
+      "cmd/mimac/apple_audio.go",
+      "internal/adapters/textoutput/textoutput.go",
+      "internal/voicetools/action.go",
+      "internal/bridge/action.go",
+      "internal/bridge/core.go",
+      "internal/adapters/chatgpt/discovery.go",
+      "internal/adapters/wetype/discovery.go"
+    ]
+  },
+  {
     "id": "power-quit-recovery",
     "title": "睡眠、关闭与恢复",
     "summary": "睡眠/锁屏先阻断输入再关闭设备与会话，恢复时仅尝试一次且不触发权限提示。关闭设置窗保留菜单栏宿主；退出时先完成音频清理，再关闭插件。",
