@@ -211,10 +211,16 @@ func TestLiveAudioHostFailedCleanupKeepsOriginalOwner(t *testing.T) {
 	if s.liveAudio.connection != prior || s.audioSession == nil || s.audioResourcesReady() || s.report.AudioError == "" {
 		t.Fatal("failed cleanup lost its owner or permitted a new press")
 	}
+	if !s.report.AudioCleanupFailed {
+		t.Fatal("failed cleanup did not report the retained owner")
+	}
 	s.refreshLiveAudio()
 	pumpLiveHost(t, q, func() bool { return s.audioSession == nil })
 	if s.liveAudio.connection != nil || s.coordinator.voiceAudioBinding == nil {
 		t.Fatal("retry did not clean connection and preserve fail-closed voice routing")
+	}
+	if s.report.AudioCleanupFailed {
+		t.Fatal("confirmed cleanup retained a stale failure report")
 	}
 }
 

@@ -316,6 +316,7 @@ func (s *shell) detachAudioSession(host *audioSessionHost) {
 	}
 	s.liveAudio.retiring = false
 	s.audioSession = nil
+	s.report.AudioCleanupFailed = false
 	if s.liveAudio.connection != nil {
 		s.liveAudio.connection = nil
 		s.audioResources, s.audioResourcesReady, s.audioResourcesClose = nil, nil, nil
