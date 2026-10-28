@@ -17,3 +17,5 @@ resources/darwin-amd64/libMiMacReadyIndicator.dylib
 
 __pycache__/
 *.py[cod]
+
+tools/workbench/node_modules/

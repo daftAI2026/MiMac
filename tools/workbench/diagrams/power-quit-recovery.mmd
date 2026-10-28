@@ -1,0 +1,14 @@
+flowchart TD
+    host["MyGo suspend/resume 与锁屏/解锁通知"] --> pause["首次暂停先关闭输入 gate，再取消会话"]
+    pause --> intent["符合条件时记住 remote 或 monitor 意图"]
+    intent --> stop["断开 Core 并停止/关闭活动路由 owner"]
+    stop --> waiting["等待进行中的清理，避免重复关闭同一 owner"]
+    waiting --> paused["睡眠/锁屏期间维持暂停"]
+    paused --> resume["唤醒/解锁只尝试恢复一次，不提示权限"]
+    resume --> success["恢复请求的 remote 或 monitor"]
+    resume --> failure["失败时保持设备停止并报告错误"]
+    stop -->|用户显式停止或退出| suppress["清除待恢复意图"]
+    settings["关闭设置窗口"] --> host
+    quit["OnBeforeQuit"] --> audio["在后台清理音频后再继续退出"]
+    audio -->|清理成功| modules["逆依赖序关闭插件并销毁 tray"]
+    audio -->|清理失败| retry["保留宿主并允许稍后重试关闭"]

@@ -1,0 +1,13 @@
+flowchart TD
+    press["Apple 语音按下前置检查"] --> capture["Capture 前台进程、可编辑焦点 AX 元素与选区"]
+    capture --> checks["检查辅助功能权限、安全输入与文本能力"]
+    checks --> confirm["复核进程、焦点和选区"]
+    confirm --> frozen["Target 只保留目标身份/选区，不读取输入框原文或剪贴板"]
+    frozen --> audio["准备 Apple Speech 会话并送入 PCM"]
+    audio --> final["成功 drain 后为匹配 session token 取得最终文本"]
+    final --> recheck["插入前复核捕获的进程、焦点与选区"]
+    recheck --> insert["使用捕获时选定的单一传输方式尝试插入一次"]
+    insert --> cleanup["关闭 target 并释放 AX 引用"]
+    checks -->|权限、安全输入或目标不支持| blocked["阻止本次按下并显示本地原因"]
+    recheck -->|目标已变化| noRetry["失败关闭；不重试转写文本"]
+    insert -->|原生错误可能发生在文本已接受之后| uncertain["结果可能不确定；不自动再次提交"]

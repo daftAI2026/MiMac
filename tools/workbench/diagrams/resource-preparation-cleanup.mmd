@@ -1,0 +1,17 @@
+flowchart TD
+    owner["Runtime 登记本次会话 owner"] --> prepare["取得 source/sink 租约并验证 PCM 格式"]
+    prepare --> start["启动可选会话接收器"]
+    start --> receiver["可选接收器就绪期限：2 秒"]
+    receiver --> ready["SourcePrepared，等待 Core gate"]
+    ready --> stop["Stop 后复制尾段并 drain sink"]
+    stop -->|Core 接受 SourceDrained 并结束会话| cleanup["关闭本会话 source/sink 租约"]
+    prepare -->|错误或取消| fail["取消并 join watcher/stop 工作"]
+    start -->|失败| fail
+    receiver -->|错误或取消| fail
+    stop -->|失败| fail
+    fail --> cleanup
+    cleanup -->|关闭成功| released["释放会话 owner；路由仍可预备下一轮"]
+    cleanup -->|关闭失败| retained["保留本次资源 owner，不转移给下一会话"]
+    retained -->|后续 Dispose/Close 重试| cleanup
+    quit["最终停用路由或退出"] --> runtimeClosed["等待 Runtime 所有会话资源关闭成功"]
+    runtimeClosed --> routeClosed["host.closeResources 关闭连接级路由 owner"]

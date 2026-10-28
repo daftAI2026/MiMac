@@ -1,0 +1,11 @@
+flowchart LR
+    prefs["tools.json：Enabled 列表与单个 Current id"] --> loaded["可同时加载多个已启用适配器"]
+    loaded --> discover["每次启用/刷新执行一次可取消发现"]
+    discover --> sequence["sequence 检查丢弃过期结果"]
+    sequence --> snapshots["Ready 快照提供已验证动作"]
+    snapshots --> selected["仅 Current 工具提供当前语音映射预设"]
+    selected --> resolve["解析唯一的 global hold-start/finish 或 toggle 动作"]
+    resolve --> freeze["Core 在物理按下时冻结动作计划"]
+    freeze --> release["物理松开沿用已冻结计划"]
+    selected -->|切换工具| cancel["持久化选择并取消旧工具仍按住的动作"]
+    cancel --> refresh["刷新映射/输出与音频路由"]

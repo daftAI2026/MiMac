@@ -1,0 +1,20 @@
+flowchart TD
+    idle["Idle"] -->|合法物理按下| admission["admission：configured、route 可用、无冲突且无活动会话"]
+    admission -->|通过：冻结 binding 与 session token| preparing["Preparing"]
+    admission -->|拒绝：不发语音效果| idle
+    preparing -->|准备回调到达| prepared["SourcePrepared(token, resourceID)"]
+    draining -->|允许尾段时准备回调到达| prepared
+    cancel -->|取消后的迟到回调| prepared
+    prepared -->|token 匹配且仍在 Preparing| capturing["Capturing：打开 PCM gate"]
+    prepared -->|token 匹配且 Draining 策略允许尾段| tail["打开 gate 并排空已捕获尾段"]
+    prepared -->|token 过期或会话已结束| dispose["Dispose late resource"]
+    preparing -->|ExactEdge 在资源就绪前松开| cancel["取消准备并释放本地按键租约"]
+    preparing -->|AfterDrain/Toggle/Audio 提前松开| draining["Draining：停止 source"]
+    capturing -->|物理松开| draining
+    draining -->|匹配 token 的 SourceDrained| finish["关闭 gate、释放资源并结束会话"]
+    tail -->|匹配 token 的 SourceDrained| finish
+    preparing -->|失败、断开或超时| cancel
+    capturing -->|失败、断开或超时| cancel
+    draining -->|失败、断开或超时| cancel
+    cancel --> idle
+    finish --> idle

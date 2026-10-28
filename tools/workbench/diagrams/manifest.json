@@ -1,0 +1,100 @@
+[
+  {
+    "id": "architecture-boundaries",
+    "title": "架构边界",
+    "summary": "MyGo 承担宿主主线程与事件循环；cmd/mimac 组合固定生命周期运行时、bridge 核心和设备/语音适配器。Siri 私有 ABI 接入未实现。",
+    "sourcePaths": [
+      "cmd/mimac/main.go",
+      "cmd/mimac/plugins.go",
+      "cmd/mimac/coordinator.go",
+      "internal/pluginrt/runtime.go",
+      "internal/bridge/core.go",
+      "internal/adapters/textoutput/textoutput.go"
+    ]
+  },
+  {
+    "id": "plugin-lifecycle",
+    "title": "插件依赖与生命周期",
+    "summary": "静态 manifests 声明模块依赖；Enable 按依赖顺序启动，Close 逆序停止，失败启动回滚。清理失败的模块保留资源并固定其依赖。",
+    "sourcePaths": [
+      "cmd/mimac/plugins.go",
+      "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/voice_tools.go",
+      "internal/pluginrt/runtime.go"
+    ]
+  },
+  {
+    "id": "key-and-pcm-paths",
+    "title": "物理按键与 PCM 双通路",
+    "summary": "HID 边沿进入协调器与 bridge；按键效果走系统按键输出，音频会话在路由就绪时准备 PCM 源和接收器。源被本地 drain 不证明目标已识别或提交文字；Siri 私有 ABI 输入/输出未实现。",
+    "sourcePaths": [
+      "cmd/mimac/device.go",
+      "cmd/mimac/coordinator.go",
+      "cmd/mimac/live_audio.go",
+      "cmd/mimac/apple_audio.go",
+      "internal/bridge/core.go",
+      "internal/audiosession/runtime.go"
+    ]
+  },
+  {
+    "id": "voice-session-state",
+    "title": "核心语音会话状态机",
+    "summary": "bridge 对按键会话执行 admission、Preparing、Capturing、Draining 和清理；回调按 token 匹配，过期准备资源会被释放。状态不代表外部语音工具的实际识别结果。",
+    "sourcePaths": [
+      "internal/bridge/core.go",
+      "cmd/mimac/coordinator.go",
+      "internal/audiosession/runtime.go"
+    ]
+  },
+  {
+    "id": "resource-preparation-cleanup",
+    "title": "资源准备、失败与清理",
+    "summary": "Runtime 持有每次会话的 source/sink 租约，关闭失败时保留原 owner 重试；连接级路由只在最终停用时由宿主等待会话全部关闭后释放。",
+    "sourcePaths": [
+      "internal/audiosession/runtime.go",
+      "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/live_audio.go",
+      "internal/pluginrt/runtime.go",
+      "cmd/mimac/prepared_audio.go",
+      "cmd/mimac/xiaomi_audio_route.go"
+    ]
+  },
+  {
+    "id": "apple-text-target",
+    "title": "Apple 文本目标冻结与投递",
+    "summary": "Apple 语音路径在按下时捕获并复核前台进程、焦点和选区；最终文本只对匹配会话尝试一次插入，不读取输入框原文或剪贴板，也不自动重试。",
+    "sourcePaths": [
+      "cmd/mimac/apple_audio.go",
+      "cmd/mimac/audio_sessions.go",
+      "internal/adapters/textoutput/textoutput.go",
+      "internal/adapters/textoutput/native_darwin.go",
+      "internal/adapters/applespeech/applespeech.go"
+    ]
+  },
+  {
+    "id": "voice-tool-selection",
+    "title": "语音工具启用与选择",
+    "summary": "多个语音工具可同时启用，Current 只选择一个工具提供当前语音映射；配置发现是可取消的一次性读取，选择切换会取消旧工具仍按住的动作。Core 当前不执行 app-scoped 快捷键。",
+    "sourcePaths": [
+      "cmd/mimac/voice_tools.go",
+      "cmd/mimac/voice_binding.go",
+      "cmd/mimac/voice_tool_preferences.go",
+      "cmd/mimac/settings_voice.go",
+      "cmd/mimac/coordinator.go",
+      "internal/voicetools/action.go",
+      "internal/voicetools/voicetools.go"
+    ]
+  },
+  {
+    "id": "power-quit-recovery",
+    "title": "睡眠、关闭与恢复",
+    "summary": "睡眠/锁屏先阻断输入再关闭设备与会话，恢复时仅尝试一次且不触发权限提示。关闭设置窗保留菜单栏宿主；退出时先完成音频清理，再关闭插件。",
+    "sourcePaths": [
+      "cmd/mimac/power.go",
+      "cmd/mimac/remote.go",
+      "cmd/mimac/main.go",
+      "cmd/mimac/audio_sessions.go",
+      "internal/pluginrt/runtime.go"
+    ]
+  }
+]
