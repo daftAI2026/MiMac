@@ -53,7 +53,7 @@ func rendererParameters(revision uint64, visible bool, db float32) glassParamete
 		Visible:                 visible,
 		Content:                 "clear",
 		Layers:                  3,
-		ReferencePhaseAnimation: false,
+		ReferencePhaseAnimation: true,
 	}
 }
 
@@ -61,7 +61,7 @@ type nativeAPI struct {
 	library   uintptr // Deliberately retained until process exit.
 	version   func() uint32
 	create    func(unsafe.Pointer, int32) uint64
-	attach    func(uint64, uintptr, float64, float64, float64, float64) int32
+	attach    func(uint64, uintptr, float64, float64, float64, float64, int32) int32
 	update    func(uint64, unsafe.Pointer, int32) int32
 	destroy   func(uint64) int32
 	lastError func(unsafe.Pointer, int32) int32
@@ -128,7 +128,7 @@ func Open(window uintptr) (*Renderer, error) {
 		}
 
 		candidate := &Renderer{api: api, handle: handle, revision: 1, db: initialDB}
-		if api.attach(handle, window, 0, 0, attachWidth, attachHeight) != 1 {
+		if api.attach(handle, window, 0, 0, attachWidth, attachHeight, 0) != 1 {
 			attachErr := fmt.Errorf("siriglass: attach renderer: %s", api.errorText())
 			if api.destroy(handle) == 1 {
 				candidate.handle = 0
@@ -274,7 +274,7 @@ func loadNativeAPI() (*nativeAPI, error) {
 		}{
 			{"mimac_siri_glass_abi_version", &api.version},
 			{"mimac_siri_glass_create", &api.create},
-			{"mimac_siri_glass_attach_rect", &api.attach},
+			{"mimac_siri_glass_attach_rect_with_clip", &api.attach},
 			{"mimac_siri_glass_update", &api.update},
 			{"mimac_siri_glass_destroy", &api.destroy},
 			{"mimac_siri_glass_last_error", &api.lastError},

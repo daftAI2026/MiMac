@@ -10,6 +10,9 @@ import (
 )
 
 const voiceOverlaySlot = 160
+// The native material's shadow extends beyond its layout slot. Reserve a
+// transparent tail; it is not a second surface or a caption container.
+const voiceOverlayHeight = voiceOverlaySlot + int(2*windowInset)
 const voiceOverlayFrameInterval = time.Second / 30
 
 // MyGo owns the nonactivating panel and frame scheduling. The native adapter
@@ -19,17 +22,16 @@ type mygoVoiceOverlay struct {
 	renderer        *siriglass.Renderer
 	read            func() voiceOverlayFrame
 	failed          func(error)
-	appearance      func() appearance
 	frame           voiceOverlayFrame
 	visible, closed bool
 }
 
-func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error), appearance func() appearance) (voiceOverlayView, error) {
-	view := &mygoVoiceOverlay{read: read, failed: failed, appearance: appearance, frame: voiceOverlayFrame{DB: -60}}
+func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
+	view := &mygoVoiceOverlay{read: read, failed: failed, frame: voiceOverlayFrame{DB: -60}}
 	view.window = mygo.NewWindow(mygo.WindowOptions{
-		Title: "MiMac 语音状态", Width: voiceOverlaySlot, Height: voiceOverlaySlot + int(spaceSM+controlHeight),
+		Title: "MiMac 语音状态", Width: voiceOverlaySlot, Height: voiceOverlayHeight,
 		UseContentSize: true, Hidden: true, DisableResize: true, DisableShadow: true,
-		Transparent: true, Panel: true, TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true,
+		Transparent: true, Panel: true, Frameless: true,
 		Content: ui.View(view.draw),
 	})
 	view.window.SetIgnoreMouseEvents(true)
@@ -66,7 +68,7 @@ func (v *mygoVoiceOverlay) Update(frame voiceOverlayFrame) error {
 }
 
 func voiceOverlayBounds(area mygo.Rectangle) mygo.Rectangle {
-	width, height := voiceOverlaySlot, voiceOverlaySlot+int(spaceSM+controlHeight)
+	width, height := voiceOverlaySlot, voiceOverlayHeight
 	return mygo.Rectangle{X: area.X + max(0, (area.Width-width)/2), Y: area.Y + max(0, area.Height-height-int(windowInset)), Width: width, Height: height}
 }
 
@@ -98,6 +100,8 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 }
 
 func (v *mygoVoiceOverlay) draw(c *ui.Context) {
+	// Transparent NSWindow does not clear MyGo's theme-backed content root.
+	c.Root().Background(ui.Transparent)
 	if v.closed || !v.visible {
 		return
 	}
@@ -108,14 +112,6 @@ func (v *mygoVoiceOverlay) draw(c *ui.Context) {
 	if !v.visible {
 		return
 	}
-	a := v.appearance()
-	c.SetTheme(&a.theme)
-	ui.Column(c).Fill().AlignItems(ui.Center).Gap(spaceSM).Children(func() {
-		ui.Box(c).Width(voiceOverlaySlot).Height(voiceOverlaySlot)
-		ui.Text(c, v.frame.Label).FontSize(a.fonts.caption).TextColor(a.theme.Text).
-			Padding(controlInset, spaceSM).MinHeight(controlHeight).Radius(controlRadius).
-			Background(a.theme.Surface).Border(lineWidth, a.theme.Border).Role(ui.RoleStatus)
-	})
 	c.After(voiceOverlayFrameInterval)
 }
 

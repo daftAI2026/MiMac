@@ -130,13 +130,13 @@ private let referenceThinkingWaveAnimation = Animation
         )
     }
 
-    func attach(to window: NSWindow, contentRect: ContentRect? = nil) -> Bool {
+    func attach(to window: NSWindow, contentRect: ContentRect? = nil, clipToRect: Bool = true) -> Bool {
         guard view.superview == nil, let content = window.contentView else { return false }
         if let contentRect {
             guard let frame = contentRect.appKitFrame(in: content) else { return false }
             view.frame = frame
             view.autoresizingMask = []
-            view.layer?.masksToBounds = true
+            view.layer?.masksToBounds = clipToRect
         } else {
             view.frame = content.bounds
             view.autoresizingMask = [.width, .height]
@@ -291,7 +291,26 @@ public func siriGlassAttachRect(
     _ width: Double,
     _ height: Double
 ) -> Int32 {
+    siriGlassAttachRectWithClip(handle, nativeWindow, x, y, width, height, 1)
+}
+
+// Embedded slots keep their original clipping contract; a dedicated transparent
+// overlay lets the system material draw its shadow beyond the layout rectangle.
+@_cdecl("mimac_siri_glass_attach_rect_with_clip")
+public func siriGlassAttachRectWithClip(
+    _ handle: UInt64,
+    _ nativeWindow: UInt,
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double,
+    _ clipToRect: Int32
+) -> Int32 {
     return onMain(Int32(0)) {
+        guard clipToRect == 0 || clipToRect == 1 else {
+            recordError("attach_rect clip flag must be zero or one")
+            return 0
+        }
         guard let entry = GlassRegistry.entries[handle] else {
             recordError("attach_rect received an unknown handle")
             return 0
@@ -301,7 +320,7 @@ public func siriGlassAttachRect(
             return 0
         }
         let window = Unmanaged<NSWindow>.fromOpaque(rawWindow).takeUnretainedValue()
-        guard entry.attach(to: window, contentRect: ContentRect(x: x, y: y, width: width, height: height)) else {
+        guard entry.attach(to: window, contentRect: ContentRect(x: x, y: y, width: width, height: height), clipToRect: clipToRect == 1) else {
             recordError("attach_rect requires an unattached handle and a finite positive rect inside content bounds")
             return 0
         }

@@ -133,7 +133,7 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 		return
 	}
 	s.voiceOverlay.open = func(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
-		return newVoiceOverlayView(read, failed, func() appearance { return appAppearance(mygo.Theme.IsDark(), s.preferencesState.value.TextSize) })
+		return newVoiceOverlayView(read, failed)
 	}
 	s.watchPower()
 	s.loadMappings()

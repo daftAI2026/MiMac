@@ -45,6 +45,7 @@ for symbol in \
 	mimac_siri_glass_abi_version \
 	mimac_siri_glass_create \
 	mimac_siri_glass_attach_rect \
+	mimac_siri_glass_attach_rect_with_clip \
 	mimac_siri_glass_update \
 	mimac_siri_glass_destroy \
 	mimac_siri_glass_last_error; do
