@@ -12,9 +12,10 @@ type Layout struct {
 
 // State is the host's source of truth. Appearance is system, light, or dark.
 type State struct {
-	Login      bool
-	Dock       bool
-	Appearance string
+	Login        bool
+	Dock         bool
+	VoiceOverlay bool
+	Appearance   string
 	// Dark is the effective theme state and does not select the Appearance segment.
 	Dark bool
 	// TextSize is -1 for small, 0 for standard, and 1 for large.
@@ -29,8 +30,9 @@ type State struct {
 // Callbacks report user changes to the host. The host applies changes and
 // calls Update with the actual resulting state.
 type Callbacks struct {
-	Login      func(bool)
-	Dock       func(bool)
-	Appearance func(string)
-	TextSize   func(int)
+	Login        func(bool)
+	Dock         func(bool)
+	VoiceOverlay func(bool)
+	Appearance   func(string)
+	TextSize     func(int)
 }

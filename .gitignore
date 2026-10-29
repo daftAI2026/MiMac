@@ -13,6 +13,7 @@ resources/darwin-amd64/libMiMacProcessTap.dylib
 resources/darwin-arm64/libMiMacSpeech.dylib
 resources/darwin-amd64/libMiMacSpeech.dylib
 resources/darwin-arm64/libMiMacReadyIndicator.dylib
+resources/darwin-arm64/libSiriGlassBridge.dylib
 resources/darwin-amd64/libMiMacReadyIndicator.dylib
 
 __pycache__/

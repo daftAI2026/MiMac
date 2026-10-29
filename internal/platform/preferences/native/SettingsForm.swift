@@ -6,6 +6,7 @@ import SwiftUI
 private struct PreferencesState: Decodable {
     var Login = false
     var Dock = false
+    var VoiceOverlay = true
     var Appearance = "system"
     var Dark = false
     var TextSize = 0
@@ -42,6 +43,9 @@ private struct SettingsForm: View {
             }
 
             Section {
+                Toggle("显示语音状态", isOn: toggle(state.VoiceOverlay, kind: 5))
+                    .accessibilityIdentifier("voice-overlay-row")
+
                 HStack(alignment: .center) {
                     Text("外观")
                     Spacer()

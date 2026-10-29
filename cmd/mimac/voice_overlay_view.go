@@ -1,0 +1,152 @@
+package main
+
+import (
+	"errors"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"mimac.local/mimac/internal/platform/siriglass"
+)
+
+const voiceOverlaySlot = 160
+const voiceOverlayFrameInterval = time.Second / 30
+
+// MyGo owns the nonactivating panel and frame scheduling. The native adapter
+// owns only the material view inside it, never microphone or session state.
+type mygoVoiceOverlay struct {
+	window          *mygo.Window
+	renderer        *siriglass.Renderer
+	read            func() voiceOverlayFrame
+	failed          func(error)
+	appearance      func() appearance
+	frame           voiceOverlayFrame
+	visible, closed bool
+}
+
+func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error), appearance func() appearance) (voiceOverlayView, error) {
+	view := &mygoVoiceOverlay{read: read, failed: failed, appearance: appearance, frame: voiceOverlayFrame{DB: -60}}
+	view.window = mygo.NewWindow(mygo.WindowOptions{
+		Title: "MiMac 语音状态", Width: voiceOverlaySlot, Height: voiceOverlaySlot + int(spaceSM+controlHeight),
+		UseContentSize: true, Hidden: true, DisableResize: true, DisableShadow: true,
+		Transparent: true, Panel: true, TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true,
+		Content: ui.View(view.draw),
+	})
+	view.window.SetIgnoreMouseEvents(true)
+	renderer, err := siriglass.Open(view.window.NativeHandle())
+	view.renderer = renderer
+	if err != nil {
+		return view, err
+	}
+	view.window.OnClose(func(event *mygo.CloseEvent) {
+		view.visible = false
+		if view.closed {
+			return
+		}
+		if err := view.renderer.Close(); err != nil {
+			event.PreventDefault()
+			view.window.Hide()
+			view.failed(err)
+			return
+		}
+		view.closed = true
+	})
+	view.window.OnClosed(func() { view.visible = false })
+	return view, nil
+}
+
+func (v *mygoVoiceOverlay) Update(frame voiceOverlayFrame) error {
+	if err := v.render(frame); err != nil {
+		return err
+	}
+	if frame.Visible {
+		v.window.Invalidate()
+	}
+	return nil
+}
+
+func voiceOverlayBounds(area mygo.Rectangle) mygo.Rectangle {
+	width, height := voiceOverlaySlot, voiceOverlaySlot+int(spaceSM+controlHeight)
+	return mygo.Rectangle{X: area.X + max(0, (area.Width-width)/2), Y: area.Y + max(0, area.Height-height-int(windowInset)), Width: width, Height: height}
+}
+
+func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
+	if v.closed || v.window == nil || v.window.IsDestroyed() || v.renderer == nil {
+		return errors.New("voice overlay: view is closed")
+	}
+	if !frame.Visible {
+		return v.Hide()
+	}
+	if err := v.renderer.Update(true, frame.DB); err != nil {
+		return err
+	}
+	if !v.visible || v.frame.Token != frame.Token {
+		area := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
+		if area.Width > 0 && area.Height > 0 {
+			v.window.SetBounds(voiceOverlayBounds(area))
+		}
+	}
+	if !v.visible {
+		v.window.ShowInactive()
+	}
+	if v.frame.Label != frame.Label {
+		v.window.SetTitle(frame.Label)
+	}
+	v.visible = true
+	v.frame = frame
+	return nil
+}
+
+func (v *mygoVoiceOverlay) draw(c *ui.Context) {
+	if v.closed || !v.visible {
+		return
+	}
+	if err := v.render(v.read()); err != nil {
+		v.failed(err)
+		return
+	}
+	if !v.visible {
+		return
+	}
+	a := v.appearance()
+	c.SetTheme(&a.theme)
+	ui.Column(c).Fill().AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+		ui.Box(c).Width(voiceOverlaySlot).Height(voiceOverlaySlot)
+		ui.Text(c, v.frame.Label).FontSize(a.fonts.caption).TextColor(a.theme.Text).
+			Padding(controlInset, spaceSM).MinHeight(controlHeight).Radius(controlRadius).
+			Background(a.theme.Surface).Border(lineWidth, a.theme.Border).Role(ui.RoleStatus)
+	})
+	c.After(voiceOverlayFrameInterval)
+}
+
+func (v *mygoVoiceOverlay) Hide() error {
+	v.visible = false
+	v.frame = voiceOverlayFrame{DB: -60}
+	if v.window != nil && !v.window.IsDestroyed() {
+		v.window.Hide()
+	}
+	if !v.closed && v.renderer != nil {
+		return v.renderer.Update(false, -60)
+	}
+	return nil
+}
+
+func (v *mygoVoiceOverlay) Close() error {
+	if v.closed {
+		return nil
+	}
+	v.visible = false
+	if v.window != nil && !v.window.IsDestroyed() {
+		v.window.Hide()
+	}
+	if v.renderer != nil {
+		if err := v.renderer.Close(); err != nil {
+			return err
+		}
+	}
+	v.closed = true
+	if v.window != nil && !v.window.IsDestroyed() {
+		v.window.Close()
+	}
+	return nil
+}

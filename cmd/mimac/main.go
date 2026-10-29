@@ -40,6 +40,7 @@ type hostReport struct {
 	LastButtonAt        string                `json:"last_button_at,omitempty"`
 	MonitorSamples      []xiaomi.MonitorStats `json:"monitor_samples,omitempty"`
 	Core                coreReport            `json:"core"`
+	VoiceOverlayError   string                `json:"voice_overlay_error,omitempty"`
 	AudioError          string                `json:"audio_error,omitempty"`
 	AudioCleanupFailed  bool                  `json:"audio_cleanup_failed,omitempty"`
 }
@@ -49,6 +50,7 @@ type shell struct {
 	preferencesState
 	voiceToolsState
 	remoteState
+	voiceOverlay                     voiceOverlayState
 	readyIndicator                   readyIndicatorState
 	powerState                       powerState
 	liveAudio                        liveAudioState
@@ -129,6 +131,9 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 		s.report.Error = fmt.Sprintf("plugins: %v", err)
 		mygo.App.Quit()
 		return
+	}
+	s.voiceOverlay.open = func(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
+		return newVoiceOverlayView(read, failed, func() appearance { return appAppearance(mygo.Theme.IsDark(), s.preferencesState.value.TextSize) })
 	}
 	s.watchPower()
 	s.loadMappings()
@@ -219,6 +224,7 @@ func main() {
 		}
 	})
 	mygo.Theme.OnUpdated(func() {
+		s.syncVoiceOverlay()
 		if s.generalControls != nil {
 			s.syncGeneralControls()
 		}
@@ -234,6 +240,7 @@ func main() {
 	// A settings window is disposable; closing it must leave the menu bar host running.
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
+		s.closeVoiceOverlay()
 		s.cancelPowerResume()
 		if s.deferAudioQuit(event.PreventDefault, mygo.RunOnMain, func() {
 			if s.audioQuitReady && !s.report.AudioCleanupFailed && s.audioSession != nil {
@@ -259,6 +266,7 @@ func main() {
 		}
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+		s.closeVoiceOverlay()
 		s.report.QuitCallbacks++
 		if s.tray != nil {
 			s.tray.Destroy()

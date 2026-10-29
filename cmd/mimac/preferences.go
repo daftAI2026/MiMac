@@ -14,10 +14,11 @@ import (
 const preferencesVersion = 1
 
 type hostPreferences struct {
-	Version    int              `json:"version"`
-	ShowInDock bool             `json:"show_in_dock"`
-	Appearance mygo.ThemeSource `json:"appearance"`
-	TextSize   int              `json:"text_size,omitempty"`
+	Version          int              `json:"version"`
+	ShowInDock       bool             `json:"show_in_dock"`
+	ShowVoiceOverlay bool             `json:"show_voice_overlay"`
+	Appearance       mygo.ThemeSource `json:"appearance"`
+	TextSize         int              `json:"text_size,omitempty"`
 }
 
 type preferencesState struct {
@@ -31,14 +32,15 @@ type preferencesState struct {
 }
 
 type preferencesDocument struct {
-	Version    int               `json:"version"`
-	ShowInDock *bool             `json:"show_in_dock"`
-	Appearance *mygo.ThemeSource `json:"appearance"`
-	TextSize   int               `json:"text_size,omitempty"`
+	Version          int               `json:"version"`
+	ShowInDock       *bool             `json:"show_in_dock"`
+	ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
+	Appearance       *mygo.ThemeSource `json:"appearance"`
+	TextSize         int               `json:"text_size,omitempty"`
 }
 
 func defaultHostPreferences() hostPreferences {
-	return hostPreferences{Version: preferencesVersion, Appearance: mygo.ThemeSystem}
+	return hostPreferences{Version: preferencesVersion, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}
 }
 
 func hostPreferencesPath() (string, error) {
@@ -91,10 +93,14 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	if doc.Appearance != nil {
 		appearance = *doc.Appearance
 	}
+	showVoiceOverlay := true
+	if doc.ShowVoiceOverlay != nil {
+		showVoiceOverlay = *doc.ShowVoiceOverlay
+	}
 	if !validAppearance(appearance) || !validTextSize(doc.TextSize) {
 		return hostPreferences{}, errors.New("unsupported appearance preference")
 	}
-	return hostPreferences{Version: preferencesVersion, ShowInDock: *doc.ShowInDock, Appearance: appearance, TextSize: doc.TextSize}, nil
+	return hostPreferences{Version: preferencesVersion, ShowInDock: *doc.ShowInDock, ShowVoiceOverlay: showVoiceOverlay, Appearance: appearance, TextSize: doc.TextSize}, nil
 }
 
 func saveHostPreferences(path string, value hostPreferences) error {
@@ -236,6 +242,18 @@ func (s *shell) applyAppearancePreference(source mygo.ThemeSource) error {
 		return err
 	}
 	mygo.Theme.SetSource(source)
+	return nil
+}
+
+// applyVoiceOverlayPreference persists before changing the optional display.
+// A failed save leaves both the stored preference and visible state untouched.
+func (s *shell) applyVoiceOverlayPreference(enabled bool) error {
+	next := s.preferencesState.value
+	next.ShowVoiceOverlay = enabled
+	if err := s.savePreferences(next); err != nil {
+		return err
+	}
+	s.syncVoiceOverlay()
 	return nil
 }
 

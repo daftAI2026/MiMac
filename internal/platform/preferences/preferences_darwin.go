@@ -268,6 +268,10 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 			if value >= -1 && value <= 1 && c.callbacks.TextSize != nil {
 				c.callbacks.TextSize(int(value))
 			}
+		case 5:
+			if callback, ok := boolCallback(c.callbacks.VoiceOverlay, value); ok {
+				callback()
+			}
 		}
 	})
 }

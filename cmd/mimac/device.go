@@ -144,6 +144,7 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 }
 
 func (s *shell) invalidateDeviceView() {
+	s.syncVoiceOverlay()
 	s.updateTrayMenu()
 	if s.window != nil && !s.window.IsDestroyed() {
 		s.window.Invalidate()

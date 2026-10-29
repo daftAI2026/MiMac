@@ -45,6 +45,7 @@ if owned():
 PY
 
 "$ROOT_DIR/script/build_native_settings.sh"
+"$ROOT_DIR/script/build_voice_overlay.sh"
 
 BUILD_ARGS=(-platform "darwin/$ARCH" -skip-dmg -skip-notarize)
 if [[ -n "${MIMAC_SIGN_IDENTITY:-}" ]]; then

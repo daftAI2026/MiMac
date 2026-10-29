@@ -18,7 +18,7 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 		errorText = p.loginError
 	}
 	a := appAppearance(mygo.Theme.IsDark(), p.value.TextSize)
-	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption)}
+	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoiceOverlay: p.value.ShowVoiceOverlay, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption)}
 }
 
 func (s *shell) syncGeneralControls() {
@@ -44,6 +44,10 @@ func (s *shell) syncGeneralControls() {
 			s.syncGeneralControls()
 		},
 		Dock: func(enabled bool) { _ = s.applyDockPreference(enabled); s.syncGeneralControls() },
+		VoiceOverlay: func(enabled bool) {
+			_ = s.applyVoiceOverlayPreference(enabled)
+			s.syncGeneralControls()
+		},
 		Appearance: func(source string) {
 			_ = s.applyAppearancePreference(mygo.ThemeSource(source))
 			s.syncGeneralControls()
