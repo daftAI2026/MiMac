@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/devices"
 	"mimac.local/mimac/internal/voicetools"
@@ -34,18 +35,19 @@ type deviceCoordinator struct {
 }
 
 type coreReport struct {
-	Steps             uint64 `json:"steps"`
-	ReceivedEdges     uint64 `json:"received_edges"`
-	PeakPressed       int    `json:"peak_pressed"`
-	Pressed           int    `json:"pressed"`
-	Connected         bool   `json:"connected"`
-	Generation        uint64 `json:"generation"`
-	Configured        bool   `json:"configured"`
-	UnexpectedEffects uint64 `json:"unexpected_effects"`
-	SubmittedEffects  uint64 `json:"submitted_effects"`
-	OutputFailureID   uint64 `json:"output_failure_id"`
-	AudioSessionID    uint64 `json:"audio_session_id,omitempty"`
-	AudioPhase        string `json:"audio_phase,omitempty"`
+	Steps             uint64                   `json:"steps"`
+	ReceivedEdges     uint64                   `json:"received_edges"`
+	PeakPressed       int                      `json:"peak_pressed"`
+	Pressed           int                      `json:"pressed"`
+	Connected         bool                     `json:"connected"`
+	Generation        uint64                   `json:"generation"`
+	Configured        bool                     `json:"configured"`
+	UnexpectedEffects uint64                   `json:"unexpected_effects"`
+	SubmittedEffects  uint64                   `json:"submitted_effects"`
+	OutputFailureID   uint64                   `json:"output_failure_id"`
+	AudioSessionID    uint64                   `json:"audio_session_id,omitempty"`
+	AudioPhase        string                   `json:"audio_phase,omitempty"`
+	AudioInput        *audiosession.InputLevel `json:"audio_input,omitempty"`
 }
 
 func newDeviceCoordinator() *deviceCoordinator {
@@ -149,6 +151,7 @@ func (d *deviceCoordinator) report() coreReport {
 		UnexpectedEffects: d.unexpected,
 		SubmittedEffects:  d.submitted, OutputFailureID: s.OutputFailureID,
 		AudioSessionID: voice.id, AudioPhase: voice.phase,
+		AudioInput: presentVoiceInput(s, d.audio),
 	}
 }
 

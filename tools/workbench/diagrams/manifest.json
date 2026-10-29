@@ -106,7 +106,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "当前状态文案与诊断直接投影 Core 的 session/token/phase，不维护第二状态机；既有权限、故障和切换状态优先。收音阶段不证明已有非零 PCM，结束阶段不证明目标已提交。虚线为尚未接入的电平通道、统一语音条与 Siri 渲染器。",
+    "summary": "状态文案与诊断投影 Core 的 session/token/phase；Runtime 仅保留当前源 PCM 的 RMS、peak 与观察时间，按完整 token 读取，取消/失败/EOF 清零。无新轮询、无样本留存。源电平不证明对端收到或识别成功；虚线为尚未接入的统一语音条、显示偏好与 Siri 渲染器。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/coordinator.go",
@@ -115,7 +115,8 @@
       "cmd/mimac/live_audio.go",
       "cmd/mimac/audio_sessions.go",
       "internal/bridge/core.go",
-      "internal/audiosession/runtime.go"
+      "internal/audiosession/runtime.go",
+      "internal/audiosession/level.go"
     ]
   },
   {

@@ -6,7 +6,7 @@ flowchart TD
     exists -->|是| phases["Preparing / Capturing / Draining"]
     phases --> project["纯投影：正在准备语音 / 正在收音 / 正在结束语音"]
     exists -->|否| idle["空会话投影；不推断完成、取消或提交"]
-    project --> report["诊断：当前 session ID 与 phase"]
+    project --> report["诊断：当前 session ID、phase 与可选源电平"]
     idle --> report
     project --> priority["权限、故障、切换状态优先"]
     idle --> priority
@@ -14,7 +14,11 @@ flowchart TD
     owner --> refresh["沿用现有事件后的刷新；空闲不轮询"]
     refresh --> status
     project -.-> renderer["未来：可替换呈现适配器与统一语音条"]
-    pcm["Runtime 现有 PCM 通路"] -.-> meter["未来：带 token 的有界电平通道"]
+    pcm["Runtime 现有 PCM worker"] --> meter["单份 RMS / peak / 观察时间；无样本留存"]
+    meter --> match["当前完整 token 校验；取消、失败、EOF 清零"]
+    snapshot --> match
+    match --> report
+    meter --> meaning["源数据幅度不代表对端收到或识别成功"]
     meter -.-> renderer
     siri["独立 Siri 原版研究组件"] -.-> renderer
     renderer -.-> settings["未来：用户显示偏好；厂商原生条按插件能力处理"]

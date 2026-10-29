@@ -1,10 +1,60 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"mimac.local/mimac/internal/bridge"
 )
+
+func TestVoiceInputReportUsesCurrentRuntimeWithoutCreatingAConsumer(t *testing.T) {
+	for _, finish := range []string{"drain", "runtime-close"} {
+		t.Run(finish, func(t *testing.T) {
+			s, tasks, source, sink := newSessionHostTest(t)
+			press := beginHostVoice(t, s)
+			if got := s.coordinator.report(); got.AudioPhase != "preparing" || got.AudioInput != nil {
+				t.Fatalf("preparation invented input: %+v", got)
+			}
+			runHostTask(t, tasks)
+			source.samples <- []int16{-32768, 0, 0, 0}
+			select {
+			case <-sink.writes:
+			case <-time.After(time.Second):
+				t.Fatal("PCM was not forwarded")
+			}
+			got := s.coordinator.report()
+			if got.AudioPhase != "capturing" || got.AudioInput == nil || got.AudioInput.RMS != .5 || got.AudioInput.Peak != 1 || got.AudioInput.Samples != 4 {
+				t.Fatalf("missing actual source level: %+v, level=%+v", got, got.AudioInput)
+			}
+			// Input observations use the existing worker and read-only snapshot;
+			// they must never enqueue a new main-thread completion per block.
+			select {
+			case <-tasks:
+				t.Fatal("meter queued a UI/control completion")
+			default:
+			}
+			if finish == "drain" {
+				if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+					t.Fatal(err)
+				}
+				runHostTask(t, tasks)
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := s.audioSession.runtime.Close(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if s.coordinator.report().AudioPhase != "capturing" {
+					t.Fatal("test did not preserve a stale Core phase")
+				}
+			}
+			if s.coordinator.report().AudioInput != nil {
+				t.Fatal("closed input survived the presentation boundary")
+			}
+		})
+	}
+}
 
 func TestVoicePresentationFollowsCoreSessionAndRetiresOldResults(t *testing.T) {
 	s, _ := liveHostFixture(t, nil)

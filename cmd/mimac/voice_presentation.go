@@ -1,6 +1,9 @@
 package main
 
-import "mimac.local/mimac/internal/bridge"
+import (
+	"mimac.local/mimac/internal/audiosession"
+	"mimac.local/mimac/internal/bridge"
+)
 
 // voiceSessionPresentation is a read-only projection, not a second state
 // machine. Capture means the local gate opened, not that speech was recognized;
@@ -26,4 +29,23 @@ func presentVoiceSession(snapshot bridge.Snapshot) voiceSessionPresentation {
 		return voiceSessionPresentation{}
 	}
 	return view
+}
+
+// Input metering is optional and independent of Core's business state. Read
+// only the current token, without starting a poller or posting PCM/UI events.
+func presentVoiceInput(snapshot bridge.Snapshot, audio audioEffectSink) *audiosession.InputLevel {
+	if !snapshot.HasSession || (snapshot.Session.Phase != bridge.PhaseCapturing && snapshot.Session.Phase != bridge.PhaseDraining) {
+		return nil
+	}
+	reader, ok := audio.(interface {
+		InputLevel(bridge.SessionToken) (audiosession.InputLevel, bool)
+	})
+	if !ok {
+		return nil
+	}
+	level, ok := reader.InputLevel(snapshot.Session.Token)
+	if !ok {
+		return nil
+	}
+	return &level
 }

@@ -114,6 +114,7 @@ type resource struct {
 	cause       error
 	finished    bool
 	cleanupErr  error
+	inputLevel  InputLevel // Protected by Runtime.mu; never contains PCM.
 }
 
 type receiverWatch struct {
@@ -348,6 +349,7 @@ func (r *Runtime) run(s *resource) {
 }
 
 func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
+	defer r.clearInputLevel(s)
 	var storage [320]int16
 	pcm := storage[:s.resources.SampleRate/50]
 	for {
@@ -359,11 +361,14 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 			return errors.New("audiosession: invalid PCM block length")
 		}
 		if n > 0 {
+			r.recordInputLevel(s, pcm[:n])
 			if err := writePCM(s.ctx, s.resources.Sink, pcm[:n]); err != nil {
 				return err
 			}
 		}
 		if readErr == io.EOF {
+			// The source has ended even if the output still needs time to drain.
+			r.clearInputLevel(s)
 			r.mu.Lock()
 			stopDone, stopCtx := s.stopDone, s.stopCtx
 			r.mu.Unlock()
