@@ -5,10 +5,27 @@ flowchart LR
     core --> keyfx["按键按下/释放或原子 tap 效果"]
     keyfx --> keyout["系统按键输出适配器"]
     keyout --> target["当前外部语音工具"]
+
     core --> prepare["音频路由就绪时发出 PrepareSource"]
-    prepare --> session["audio-session runtime 持有准备资源"]
-    session --> source["已验证的设备 PCM 源"]
-    source --> pcm["有界的 20 ms PCM 块"]
-    pcm --> sink["已配置 sink：Apple Speech 或受支持的豆包路由"]
+    prepare --> session["audio-session Runtime 持有本次会话资源"]
+    session --> source["设备 PCM Source"]
+    source --> pcm["有界 PCM 块"]
+    pcm --> sink["配置的 sink：Apple Speech 或受支持的豆包路由"]
     sink --> drain["本地 drain 与可选最终转写"]
-    drain --> text["Apple 路由可投递到已捕获文本目标"]
+    drain --> text["Apple 路由可投递到按下时捕获的文本目标"]
+
+    source --> meter["Runtime latest RMS / peak / ObservedAt\n只保留当前 token 标量，不保存样本"]
+    core --> snapshot["当前 Core Snapshot 与完整 SessionToken"]
+    meter --> projection["Host 语音呈现投影\n仅 Preparing / Capturing / Draining"]
+    snapshot --> projection
+    projection --> preference["show_voice_overlay 偏好"]
+    preference --> panel["MyGo 非激活 Panel\n鼠标穿透；可见时 30 Hz"]
+    panel --> gate{"arm64 macOS 27.0.1 build 26A434？"}
+    gate -->|是| renderer["siriglass 可选原版材质 renderer"]
+    gate -->|否| unsupported["不支持：只关闭显示"]
+    renderer --> operation{"native 显示操作成功？"}
+    operation -->|是| material["呈现当前会话材质"]
+    operation -->|否| failure["只记录显示故障；音频会话继续"]
+
+    renderer -.-> vendor["未来：厂商语音条接管"]
+    renderer -.-> siri["未来：完整 Siri 前景、thinking 与业务语义"]

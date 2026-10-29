@@ -55,7 +55,7 @@ function renderComponents() {
 }
 function renderArchitecture() {
   selectedDiagram ||= data.diagrams[0].id;
-  main.innerHTML = `<p class="intro muted">MyGo 宿主，最小通用核心，独立设备与语音适配器。图表对应当前源码，研究中的 Siri 私有接口不属于产品依赖。</p><div class="diagram-list"><div class="diagram-nav" role="group" aria-label="选择流程图">${data.diagrams.map(d=>`<button data-diagram="${escape(d.id)}" aria-pressed="false">${escape(d.title)}</button>`).join('')}</div><section class="diagram-panel" id="diagram-panel" aria-live="polite"></section></div>`;
+  main.innerHTML = `<p class="intro muted">MyGo 宿主，最小通用核心，独立设备与语音适配器。Siri 材质作为可选显示适配器，仅在已验证的系统版本加载。</p><div class="diagram-list"><div class="diagram-nav" role="group" aria-label="选择流程图">${data.diagrams.map(d=>`<button data-diagram="${escape(d.id)}" aria-pressed="false">${escape(d.title)}</button>`).join('')}</div><section class="diagram-panel" id="diagram-panel" aria-live="polite"></section></div>`;
   document.querySelectorAll('[data-diagram]').forEach(button=>button.addEventListener('click',()=>{selectedDiagram=button.dataset.diagram;scale=1;renderDiagram();}));
   renderDiagram();
 }

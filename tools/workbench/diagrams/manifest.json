@@ -2,14 +2,22 @@
   {
     "id": "architecture-boundaries",
     "title": "架构边界",
-    "summary": "MyGo 承担宿主主线程与事件循环；cmd/mimac 组合固定生命周期运行时、bridge 核心和设备/语音适配器。Siri 私有 ABI 接入未实现。",
+    "summary": "MyGo 承担宿主主线程与事件循环；cmd/mimac 组合 bridge、设备/语音适配器和可选语音呈现。siriglass 仅在 arm64 macOS 27.0.1 build 26A434 启用；失败只关闭显示。厂商语音条接管与完整 Siri 前景/业务语义仍为未来边界。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
       "cmd/mimac/coordinator.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_overlay_view.go",
+      "cmd/mimac/voice_presentation.go",
+      "cmd/mimac/preferences.go",
+      "cmd/mimac/native_preferences.go",
       "internal/pluginrt/runtime.go",
       "internal/bridge/core.go",
-      "internal/adapters/textoutput/textoutput.go"
+      "internal/adapters/textoutput/textoutput.go",
+      "internal/platform/siriglass/siriglass.go",
+      "internal/platform/siriglass/siriglass_other.go",
+      "internal/platform/siriglass/siriglass_darwin_arm64.go"
     ]
   },
   {
@@ -26,14 +34,27 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "HID 边沿进入协调器与 bridge；按键效果走系统按键输出，音频会话在路由就绪时准备 PCM 源和接收器。源被本地 drain 不证明目标已识别或提交文字；Siri 私有 ABI 输入/输出未实现。",
+    "summary": "HID 边沿进入协调器与 bridge；路由就绪后 Runtime 持有 PCM 会话。当前 RMS/peak 按完整 token 投影到可选 siriglass 材质显示，不保存样本；精确 OS gate 外或显示失败都不停止音频。PCM drain 不证明目标已识别或提交文字；厂商语音条接管与 Siri 业务前景仍未接入。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
       "cmd/mimac/live_audio.go",
       "cmd/mimac/apple_audio.go",
+      "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_overlay_view.go",
+      "cmd/mimac/voice_presentation.go",
       "internal/bridge/core.go",
-      "internal/audiosession/runtime.go"
+      "internal/audiosession/runtime.go",
+      "internal/audiosession/level.go",
+      "cmd/mimac/preferences.go",
+      "cmd/mimac/native_preferences.go",
+      "internal/platform/preferences/preferences.go",
+      "internal/platform/preferences/preferences_darwin.go",
+      "internal/platform/preferences/native/SettingsForm.swift",
+      "internal/platform/siriglass/siriglass.go",
+      "internal/platform/siriglass/siriglass_other.go",
+      "internal/platform/siriglass/siriglass_darwin_arm64.go"
     ]
   },
   {
@@ -106,17 +127,36 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "状态文案与诊断投影 Core 的 session/token/phase；Runtime 仅保留当前源 PCM 的 RMS、peak 与观察时间，按完整 token 读取，取消/失败/EOF 清零。无新轮询、无样本留存。源电平不证明对端收到或识别成功；虚线为尚未接入的统一语音条、显示偏好与 Siri 渲染器。",
+    "summary": "当前可选语音状态适配器：Core 当前完整 token/phase 与 Runtime latest RMS/peak 进入 host 投影，再由 MyGo 非激活 Panel 在可见期 30 Hz 呈现 siriglass 材质。偏好默认开启但关闭只停显示；仅 arm64 macOS 27.0.1 build 26A434 可加载 native renderer，失败只关闭呈现。无样本留存；电平不证明对端收到或识别成功。虚线仍表示厂商语音条接管及完整 Siri 前景/业务语义。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_overlay_view.go",
       "cmd/mimac/coordinator.go",
       "cmd/mimac/device.go",
       "cmd/mimac/remote.go",
       "cmd/mimac/live_audio.go",
       "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/preferences.go",
+      "cmd/mimac/native_preferences.go",
       "internal/bridge/core.go",
       "internal/audiosession/runtime.go",
-      "internal/audiosession/level.go"
+      "internal/audiosession/level.go",
+      "internal/platform/preferences/preferences.go",
+      "internal/platform/preferences/preferences_darwin.go",
+      "internal/platform/preferences/native/SettingsForm.swift",
+      "internal/platform/siriglass/siriglass.go",
+      "internal/platform/siriglass/siriglass_darwin_arm64.go",
+      "internal/platform/siriglass/siriglass_other.go",
+      "internal/platform/siriglass/native/Package.swift",
+      "internal/platform/siriglass/native/Sources/SiriGlassBridge/GlassBridge.swift",
+      "internal/platform/siriglass/native/Sources/SiriGlassRenderer/SiriGlassOrb.swift",
+      "internal/platform/siriglass/native/Sources/SiriGlassNativeABI/PrivateGlassAdapter.swift",
+      "internal/platform/siriglass/native/Sources/SiriGlassModel/GlassParameters.swift",
+      "internal/platform/siriglass/native/Sources/CGlassCompatibility/Compatibility.m",
+      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_abi.S",
+      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_explicit.S",
+      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_make.m"
     ]
   },
   {
