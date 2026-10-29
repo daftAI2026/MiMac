@@ -17,21 +17,18 @@ import (
 )
 
 const (
-	bundleIdentifier           = "cn.shandianshuo.desktop"
-	verifiedShortVersion       = "0.8.0"
-	verifiedBuildVersion       = "0.8.0"
-	bundleName                 = "闪电说.app"
-	configRelativePath         = "Library/Application Support/Shandianshuo/config.json"
-	maxConfigBytes       int64 = 1 << 20
-	verifiedSchema             = 3
+	bundleIdentifier         = "cn.shandianshuo.desktop"
+	bundleName               = "闪电说.app"
+	configRelativePath       = "Library/Application Support/Shandianshuo/config.json"
+	maxConfigBytes     int64 = 1 << 20
+	verifiedSchema           = 3
 )
 
 var (
 	ErrUnsupportedPlatform = errors.New("shandian config: macOS bundle metadata is required")
 	ErrHomeUnavailable     = errors.New("shandian config: home directory unavailable")
-	ErrBundleUnavailable   = errors.New("shandian config: verified bundle unavailable")
+	ErrBundleUnavailable   = errors.New("shandian config: matching bundle unavailable")
 	ErrAmbiguousBundle     = errors.New("shandian config: multiple matching bundles")
-	ErrUnverifiedBundle    = errors.New("shandian config: bundle version is unverified")
 	ErrConfigMissing       = errors.New("shandian config: configuration file missing")
 	ErrConfigRead          = errors.New("shandian config: configuration file read failed")
 	ErrConfigChanged       = errors.New("shandian config: configuration changed during read")
@@ -59,7 +56,7 @@ type Candidate struct {
 	LongPressAction  string        `json:"long_press_action"`
 }
 
-// ReadInstalled verifies the exact Shandianshuo bundle before reading one
+// ReadInstalled matches the Shandianshuo bundle identity before reading one
 // bounded, regular config file beneath locator.Home. It never launches the app.
 func ReadInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, error) {
 	candidate, _, _, err := readInstalled(ctx, locator)
@@ -90,10 +87,8 @@ func readInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, 
 	if err != nil || state != voicetools.Ready {
 		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}
-	if bundle.Identifier != bundleIdentifier ||
-		bundle.Version != verifiedShortVersion ||
-		bundle.Build != verifiedBuildVersion {
-		return Candidate{}, bundle, state, ErrUnverifiedBundle
+	if bundle.Identifier != bundleIdentifier {
+		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}
 
 	configPath := configPath(locator)

@@ -16,6 +16,11 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
+const (
+	fixtureBundleShortVersion = "99.0.0"
+	fixtureBundleBuildVersion = "99999"
+)
+
 type testEntry struct {
 	key   string
 	value []byte
@@ -162,28 +167,24 @@ func TestReadStoreReadsStableSyntheticSnapshot(t *testing.T) {
 	assertFieldJSON(t, candidate, "voicePTTShortcut_keyCodes", "[5]")
 }
 
-func TestBundleIdentityMustMatchVerifiedVersion(t *testing.T) {
+func TestBundleIdentityMatchesAcrossReleases(t *testing.T) {
 	bundlePath := filepath.Join(t.TempDir(), bundleName)
 	infoPath := filepath.Join(bundlePath, "Contents", "Info.plist")
 	if err := os.MkdirAll(filepath.Dir(infoPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleInfo(t, infoPath, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	writeBundleInfo(t, infoPath, bundleIdentifier, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 
 	bundle, state, err := voicetools.FindBundle(context.Background(), []string{bundlePath}, bundleIdentifier)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state != voicetools.Ready || !isVerifiedBundle(bundle) {
-		t.Fatalf("verified bundle identity rejected: state=%q bundle=%#v", state, bundle)
+	if state != voicetools.Ready || !matchesBundleIdentity(bundle) {
+		t.Fatalf("future release with matching identity rejected: state=%q bundle=%#v", state, bundle)
 	}
-	writeBundleInfo(t, infoPath, bundleIdentifier, verifiedShortVersion, "671")
-	bundle, state, err = voicetools.FindBundle(context.Background(), []string{bundlePath}, bundleIdentifier)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state != voicetools.Ready || isVerifiedBundle(bundle) {
-		t.Fatalf("unexpectedly accepted unverified build: state=%q bundle=%#v", state, bundle)
+	bundle.Identifier = "wrong.identifier"
+	if matchesBundleIdentity(bundle) {
+		t.Fatalf("wrong bundle identity accepted: %#v", bundle)
 	}
 }
 

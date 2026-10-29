@@ -12,15 +12,20 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
-func TestDiscoverUsesVerifiedDefaultsWhenKeymapIsMissing(t *testing.T) {
+const (
+	fixtureBundleShortVersion = "99.0.0"
+	fixtureBundleBuildVersion = "99999"
+)
+
+func TestDiscoverUsesDefaultsForFutureReleaseWhenKeymapIsMissing(t *testing.T) {
 	locator, appPath := chatGPTFixtureLocator(t, bundleIdentifier)
 
 	got := discoverFixture(context.Background(), locator)
 	if got.State != voicetools.Ready {
 		t.Fatalf("state = %q, want ready: %#v", got.State, got)
 	}
-	if got.AppPath != appPath || got.Version != "26.1007.71326 (20398)" {
-		t.Fatalf("verified app metadata = %#v", got)
+	if got.AppPath != appPath || got.Version != fixtureBundleShortVersion+" ("+fixtureBundleBuildVersion+")" {
+		t.Fatalf("app identity and diagnostic release = %#v", got)
 	}
 	if got.SettingsPath != filepath.Join(filepath.Join(locator.Home, ".codex"), "keybindings.json") || len(got.Actions) != 2 {
 		t.Fatalf("missing keymap result = %#v", got)
@@ -38,7 +43,7 @@ func TestDiscoverUsesVerifiedDefaultsWhenKeymapIsMissing(t *testing.T) {
 	}
 }
 
-func TestDiscoverReadsAllowlistedKeymapRowsOnly(t *testing.T) {
+func TestDiscoverForFutureReleaseReadsAllowlistedKeymapRowsOnly(t *testing.T) {
 	locator, appPath := chatGPTFixtureLocator(t, bundleIdentifier)
 	if err := os.MkdirAll(filepath.Join(locator.Home, ".codex"), 0o700); err != nil {
 		t.Fatal(err)
@@ -120,8 +125,8 @@ func chatGPTFixtureLocator(t *testing.T, identifier string) (voicetools.Locator,
 		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
 		"<plist version=\"1.0\"><dict>" +
 		"<key>CFBundleIdentifier</key><string>" + identifier + "</string>" +
-		"<key>CFBundleShortVersionString</key><string>26.1007.71326</string>" +
-		"<key>CFBundleVersion</key><string>20398</string>" +
+		"<key>CFBundleShortVersionString</key><string>" + fixtureBundleShortVersion + "</string>" +
+		"<key>CFBundleVersion</key><string>" + fixtureBundleBuildVersion + "</string>" +
 		"</dict></plist>"
 	if err := os.WriteFile(filepath.Join(infoDir, "Info.plist"), []byte(plist), 0o600); err != nil {
 		t.Fatal(err)

@@ -37,7 +37,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	if bundle.Version == "" {
 		result.Version = ""
 	}
-	if bundleState == voicetools.Ready && isVerifiedBundle(bundle) {
+	if bundleState == voicetools.Ready && matchesBundleIdentity(bundle) {
 		result.SettingsPath = settingsPath(locator)
 	}
 	if err != nil {
@@ -48,9 +48,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		}
 		result.State = discoveryErrorState(err, bundleState)
 		result.Source = "WeType MMKV discovery or read failed"
-		if errors.Is(err, ErrUnverifiedBundle) {
-			result.Source = "unverified WeType version"
-		} else if bundleState == voicetools.NotFound {
+		if bundleState == voicetools.NotFound {
 			result.Source = "WeType.app bundle identity"
 		} else if errors.Is(err, voicetools.ErrFileMissing) {
 			result.Source = "wetype.settings MMKV store"
@@ -77,7 +75,7 @@ func discoveryErrorState(err error, bundleState voicetools.State) voicetools.Sta
 	switch {
 	case bundleState == voicetools.Ambiguous, errors.Is(err, ErrAmbiguousBundle):
 		return voicetools.Ambiguous
-	case errors.Is(err, ErrUnsupportedPlatform), errors.Is(err, ErrUnverifiedBundle),
+	case errors.Is(err, ErrUnsupportedPlatform),
 		errors.Is(err, ErrUnsupportedFormat), errors.Is(err, ErrEncryptedStore),
 		errors.Is(err, ErrMalformedValue), errors.Is(err, ErrMalformedRecord),
 		errors.Is(err, voicetools.ErrUnsupportedFile), errors.Is(err, voicetools.ErrFileTooLarge):

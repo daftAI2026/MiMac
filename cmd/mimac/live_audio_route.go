@@ -107,8 +107,8 @@ func defaultCompatAudioRouteDependencies() compatAudioRouteDependencies {
 	}
 }
 
-// openLiveXiaomiRoute is deliberately restricted to the verified Doubao 1.0.2
-// input method and the single MiMac HAL UID. The request API is a one-way
+// openLiveXiaomiRoute is restricted to the Doubao input method contract and
+// the single MiMac HAL UID. The request API is a one-way
 // distributed notification with no ACK; success below means only that the
 // local post completed. Source and sink are prepared ahead of the session;
 // receiver readiness is independently checked against the captured PID and

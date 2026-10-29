@@ -14,8 +14,6 @@ import (
 const (
 	bundleIdentifier         = "now.typeless.desktop"
 	bundleName               = "Typeless.app"
-	verifiedShortVersion     = "2.8.3"
-	verifiedBuildVersion     = "2.8.3.132"
 	typelessSettingsRelative = "Library/Application Support/Typeless/app-settings.json"
 )
 
@@ -55,11 +53,6 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	}
 	result.AppPath = bundle.Path
 	result.Version = formatBundleVersion(bundle.Version, bundle.Build)
-	if bundle.Version != verifiedShortVersion || bundle.Build != verifiedBuildVersion {
-		result.State = voicetools.Unsupported
-		result.Source = "unverified Typeless version"
-		return result
-	}
 
 	settingsPath := filepath.Join(locator.Home, typelessSettingsRelative)
 	result.SettingsPath = settingsPath

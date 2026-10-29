@@ -52,7 +52,7 @@ func (request MicrophoneSelectionRequest) UserInfo() map[string]string {
 type microphoneRequestVerifier func(context.Context, voicetools.Locator) error
 type microphoneRequestPoster func(context.Context, MicrophoneSelectionRequest) error
 
-// RequestMicrophoneSelection validates the Doubao 1.0.2 (1) bundle in locator
+// RequestMicrophoneSelection validates the Doubao application identity in locator
 // and posts its selectedMicrophoneId distributed notification. A nil return
 // means the local post call completed; the notification has no target ACK and
 // does not confirm that the in-memory value or effective route changed.
@@ -116,8 +116,8 @@ func verifyMicrophoneRequestTarget(ctx context.Context, locator voicetools.Locat
 	if err != nil {
 		return fmt.Errorf("verify Doubao bundle: %w", err)
 	}
-	if state != voicetools.Ready || bundle.Identifier != bundleIdentifier || bundle.Version != verifiedShortVersion || bundle.Build != verifiedBuildVersion {
-		return fmt.Errorf("%w: expected Doubao %s (%s)", ErrMicrophoneSelectionUnsupported, verifiedShortVersion, verifiedBuildVersion)
+	if state != voicetools.Ready || bundle.Identifier != bundleIdentifier {
+		return ErrMicrophoneSelectionUnsupported
 	}
 	return ctx.Err()
 }

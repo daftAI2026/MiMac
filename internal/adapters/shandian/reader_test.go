@@ -14,6 +14,11 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
+const (
+	fixtureBundleShortVersion = "99.0.0"
+	fixtureBundleBuildVersion = "99999"
+)
+
 func TestDecodeConfigRetainsOnlyShortcutAndActionAllowlist(t *testing.T) {
 	data := []byte(`{
 		"config_version": 3,
@@ -125,17 +130,17 @@ func TestDecodeConfigRejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
-func TestReadInstalledUsesVerifiedBundleAndLocatorHome(t *testing.T) {
+func TestReadInstalledUsesFutureReleaseBundleAndLocatorHome(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, appPath := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, appPath := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	writeConfig(t, configPath, []byte(validConfig))
 
 	got, err := ReadInstalled(context.Background(), locator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BundleIdentifier != bundleIdentifier || got.BundleVersion != verifiedShortVersion || got.BundleBuild != verifiedBuildVersion {
-		t.Fatalf("verified bundle identity = %#v", got)
+	if got.BundleIdentifier != bundleIdentifier || got.BundleVersion != fixtureBundleShortVersion || got.BundleBuild != fixtureBundleBuildVersion {
+		t.Fatalf("bundle identity and diagnostic release = %#v", got)
 	}
 	if got.ConfigVersion != verifiedSchema || got.ShortPressAction != "VoiceInput" || got.LongPressAction != "VoiceAssistant" ||
 		!reflect.DeepEqual(got.UnifiedHotkey, UnifiedHotkey{Keys: []string{"RCmd"}, BlockKeys: true}) {
@@ -146,16 +151,28 @@ func TestReadInstalledUsesVerifiedBundleAndLocatorHome(t *testing.T) {
 	}
 }
 
-func TestReadInstalledReportsMissingConfigAndUnverifiedVersion(t *testing.T) {
+func TestReadInstalledReportsMissingConfig(t *testing.T) {
 	requireDarwin(t)
-	locator, _, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, _, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	if got, err := ReadInstalled(context.Background(), locator); !errors.Is(err, ErrConfigMissing) || !reflect.DeepEqual(got, Candidate{}) {
 		t.Fatalf("missing config result = %#v, %v", got, err)
 	}
+}
 
-	locator, _, _ = shandianFixture(t, verifiedShortVersion, "future-build")
-	if got, err := ReadInstalled(context.Background(), locator); !errors.Is(err, ErrUnverifiedBundle) || !reflect.DeepEqual(got, Candidate{}) {
-		t.Fatalf("unverified build result = %#v, %v", got, err)
+func TestReadInstalledRejectsWrongBundleIdentifier(t *testing.T) {
+	requireDarwin(t)
+	locator, _, appPath := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
+	infoPath := filepath.Join(appPath, "Contents", "Info.plist")
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongIdentity := strings.Replace(string(data), bundleIdentifier, "wrong.identifier", 1)
+	if err := os.WriteFile(infoPath, []byte(wrongIdentity), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadInstalled(context.Background(), locator); !errors.Is(err, ErrBundleUnavailable) || !reflect.DeepEqual(got, Candidate{}) {
+		t.Fatalf("wrong bundle identity result = %#v, %v", got, err)
 	}
 }
 
@@ -164,8 +181,8 @@ func TestReadInstalledRejectsAmbiguousBundle(t *testing.T) {
 	home := t.TempDir()
 	first := filepath.Join(home, "first")
 	second := filepath.Join(home, "second")
-	writeBundle(t, filepath.Join(first, bundleName), verifiedShortVersion, verifiedBuildVersion)
-	writeBundle(t, filepath.Join(second, bundleName), verifiedShortVersion, verifiedBuildVersion)
+	writeBundle(t, filepath.Join(first, bundleName), fixtureBundleShortVersion, fixtureBundleBuildVersion)
+	writeBundle(t, filepath.Join(second, bundleName), fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	locator := voicetools.Locator{Home: home, ApplicationDirs: []string{first, second}}
 
 	if got, err := ReadInstalled(context.Background(), locator); !errors.Is(err, ErrAmbiguousBundle) || !reflect.DeepEqual(got, Candidate{}) {
@@ -176,7 +193,7 @@ func TestReadInstalledRejectsAmbiguousBundle(t *testing.T) {
 func TestReadInstalledRejectsUnstableFileTypesAndOversize(t *testing.T) {
 	requireDarwin(t)
 	t.Run("symlink", func(t *testing.T) {
-		locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+		locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		target := filepath.Join(t.TempDir(), "target.json")
 		writeConfig(t, target, []byte(validConfig))
 		if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
@@ -191,7 +208,7 @@ func TestReadInstalledRejectsUnstableFileTypesAndOversize(t *testing.T) {
 	})
 
 	t.Run("oversized", func(t *testing.T) {
-		locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+		locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 			t.Fatal(err)
 		}

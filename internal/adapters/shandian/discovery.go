@@ -9,7 +9,7 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
-// Discover reads only the verified Shandianshuo config fields exposed by the
+// Discover reads only the supported Shandianshuo config fields exposed by the
 // typed reader. The stored actions can be named, but their press timing and
 // execution contract remain unknown until independently verified.
 func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapshot {
@@ -37,8 +37,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	if bundle.Version == "" {
 		result.Version = ""
 	}
-	if bundleState == voicetools.Ready && bundle.Identifier == bundleIdentifier &&
-		bundle.Version == verifiedShortVersion && bundle.Build == verifiedBuildVersion {
+	if bundleState == voicetools.Ready && bundle.Identifier == bundleIdentifier {
 		result.SettingsPath = configPath(locator)
 	}
 	if err != nil {
@@ -52,8 +51,6 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		switch {
 		case bundleState == voicetools.NotFound:
 			result.Source = "闪电说.app bundle identity"
-		case errors.Is(err, ErrUnverifiedBundle):
-			result.Source = "unverified Shandianshuo version"
 		case errors.Is(err, ErrConfigMissing):
 			result.Source = "Shandianshuo config.json"
 		case errors.Is(err, ErrUnsupportedSchema):
@@ -75,7 +72,7 @@ func discoveryErrorState(err error, bundleState voicetools.State) voicetools.Sta
 	switch {
 	case bundleState == voicetools.Ambiguous, errors.Is(err, ErrAmbiguousBundle):
 		return voicetools.Ambiguous
-	case errors.Is(err, ErrUnsupportedPlatform), errors.Is(err, ErrUnverifiedBundle),
+	case errors.Is(err, ErrUnsupportedPlatform),
 		errors.Is(err, ErrUnsupportedConfig), errors.Is(err, ErrUnsupportedSchema),
 		errors.Is(err, ErrMalformedConfig), errors.Is(err, voicetools.ErrUnsupportedFile),
 		errors.Is(err, voicetools.ErrFileTooLarge):

@@ -11,7 +11,7 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
-var ErrMicrophoneSelectionUnsupported = errors.New("doubao microphone selection: unverified platform or bundle")
+var ErrMicrophoneSelectionUnsupported = errors.New("doubao microphone selection: unsupported platform or application identity")
 
 // MicrophoneSelection describes only the persisted selectedMicrophoneId field.
 // Automatic preserves the route/display classification for nil or empty values;
@@ -26,7 +26,7 @@ type MicrophoneSelection struct {
 }
 
 // ReadMicrophoneSelection reads only the exact selectedMicrophoneId field from
-// the verified Doubao 1.0.2 (1) MMKV key d. It uses the same fixed locator as
+// the CRC-verified Doubao MMKV key d. It uses the same fixed locator as
 // shortcut discovery and never writes configuration or returns other fields.
 // Automatic retains the route display meaning for nil and empty values;
 // SelectedMicrophoneID preserves the original optional string for restoration.
@@ -49,8 +49,8 @@ func ReadMicrophoneSelection(ctx context.Context, locator voicetools.Locator) (M
 	if err != nil {
 		return MicrophoneSelection{}, fmt.Errorf("doubao microphone selection: verify bundle: %w", err)
 	}
-	if state != voicetools.Ready || bundle.Version != verifiedShortVersion || bundle.Build != verifiedBuildVersion {
-		return MicrophoneSelection{}, fmt.Errorf("%w: expected Doubao %s (%s)", ErrMicrophoneSelectionUnsupported, verifiedShortVersion, verifiedBuildVersion)
+	if state != voicetools.Ready || bundle.Identifier != bundleIdentifier {
+		return MicrophoneSelection{}, ErrMicrophoneSelectionUnsupported
 	}
 	if err := ctx.Err(); err != nil {
 		return MicrophoneSelection{}, err

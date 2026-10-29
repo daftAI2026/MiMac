@@ -28,7 +28,7 @@ func TestReadMicrophoneSelectionNarrowFieldValues(t *testing.T) {
 		{name: "explicit", fields: map[string]interface{}{"selectedMicrophoneId": "com.example.device.42"}, deviceUID: "com.example.device.42", selectedIDPresent: true, selectedMicrophoneID: "com.example.device.42"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+			locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 			writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 				key:   []byte("d"),
 				value: keyedArchiveFixture(t, test.fields),
@@ -100,7 +100,7 @@ func TestMicrophoneSelectionOptionalStates(t *testing.T) {
 
 func TestReadMicrophoneSelectionRejectsInvalidFieldType(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key:   []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{"selectedMicrophoneId": uint64(42)}),
@@ -113,7 +113,7 @@ func TestReadMicrophoneSelectionRejectsInvalidFieldType(t *testing.T) {
 
 func TestReadMicrophoneSelectionRequiresVerifiedCRC(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	settingsPath := doubaoMMKVPath(locator.Home)
 	writeMMKVFixture(t, settingsPath, []mmkvEntry{{
 		key:   []byte("d"),
@@ -134,19 +134,9 @@ func TestReadMicrophoneSelectionRequiresVerifiedCRC(t *testing.T) {
 	}
 }
 
-func TestReadMicrophoneSelectionRequiresExactVersionAndLocatorPath(t *testing.T) {
+func TestReadMicrophoneSelectionRequiresLocatorPath(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, "1.0.3", verifiedBuildVersion)
-	if _, err := ReadMicrophoneSelection(context.Background(), locator); !errors.Is(err, ErrMicrophoneSelectionUnsupported) {
-		t.Fatalf("unsupported short version error = %v", err)
-	}
-
-	locator, _ = doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, "2")
-	if _, err := ReadMicrophoneSelection(context.Background(), locator); !errors.Is(err, ErrMicrophoneSelectionUnsupported) {
-		t.Fatalf("unsupported build error = %v", err)
-	}
-
-	locator, _ = doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	wrongPath := filepath.Join(locator.Home, "Library", "Application Support", "DoubaoIme", "UserSettings.plist")
 	if err := os.MkdirAll(filepath.Dir(wrongPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -161,7 +151,7 @@ func TestReadMicrophoneSelectionRequiresExactVersionAndLocatorPath(t *testing.T)
 
 func TestMicrophoneAllowlistDoesNotChangeShortcutDiscovery(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key: []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{
@@ -183,7 +173,7 @@ func TestMicrophoneAllowlistDoesNotChangeShortcutDiscovery(t *testing.T) {
 
 func TestReadMicrophoneSelectionDoesNotExposeShortcutFields(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key: []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{
@@ -210,7 +200,7 @@ func TestReadMicrophoneSelectionDoesNotExposeShortcutFields(t *testing.T) {
 
 func TestReadMicrophoneSelectionTombstoneMeansAutomatic(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{key: []byte("d"), value: nil}})
 	if got, err := ReadMicrophoneSelection(context.Background(), locator); err != nil || !got.Automatic || got.DeviceUID != "" || got.SelectedMicrophoneID != nil {
 		t.Fatalf("tombstone selection = (%#v, %v), want automatic", got, err)

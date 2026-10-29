@@ -13,10 +13,8 @@ import (
 )
 
 const (
-	bundleIdentifier     = "com.openai.codex"
-	verifiedShortVersion = "26.1007.71326"
-	verifiedBuildVersion = "20398"
-	keybindingsLimit     = 1 << 20
+	bundleIdentifier = "com.openai.codex"
+	keybindingsLimit = 1 << 20
 )
 
 type commandDescriptor struct {
@@ -78,11 +76,6 @@ func discover(ctx context.Context, locator voicetools.Locator, resolveHome confi
 	}
 	result.AppPath = bundle.Path
 	result.Version = formatBundleVersion(bundle.Version, bundle.Build)
-	if bundle.Version != verifiedShortVersion || bundle.Build != verifiedBuildVersion {
-		result.State = voicetools.Unsupported
-		result.Source = "unverified ChatGPT version"
-		return result
-	}
 
 	codexHome, state, err := resolveHome(ctx, bundle.Path)
 	if err != nil || state != voicetools.Ready {

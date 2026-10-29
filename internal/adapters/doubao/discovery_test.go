@@ -24,7 +24,7 @@ func TestDiscoverReturnsCancelledBeforeFilesystemAccess(t *testing.T) {
 
 func TestDiscoverFindsVerifiedBundleAndMissingMMKV(t *testing.T) {
 	requireDarwin(t)
-	locator, appPath := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, appPath := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	settingsPath := doubaoMMKVPath(locator.Home)
 
 	got := Discover(context.Background(), locator)
@@ -41,7 +41,7 @@ func TestDiscoverFindsVerifiedBundleAndMissingMMKV(t *testing.T) {
 
 func TestDiscoverPreservesOnlyWhitelistedShortcutValues(t *testing.T) {
 	requireDarwin(t)
-	locator, appPath := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, appPath := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	settingsPath := doubaoMMKVPath(locator.Home)
 	writeMMKVFixture(t, settingsPath, []mmkvEntry{{
 		key: []byte("d"),
@@ -98,7 +98,7 @@ func TestDiscoverPreservesOnlyWhitelistedShortcutValues(t *testing.T) {
 
 func TestDiscoverNormalizesVerifiedRawShortcutTuples(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key: []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{
@@ -131,7 +131,7 @@ func TestDiscoverNormalizesVerifiedRawShortcutTuples(t *testing.T) {
 
 func TestDiscoverIgnoresObsoletePlistLocations(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeBundleTestFile(t, filepath.Join(locator.Home, "Library", "Application Support", "DoubaoIme", "UserSettings.plist"),
 		[]byte("<plist><dict><key>asrShortcutKeyCode</key><integer>49</integer></dict></plist>"))
 	writeBundleTestFile(t, filepath.Join(locator.Home, "Library", "Application Support", "OceanIme", "UserSettings.plist"),
@@ -145,7 +145,7 @@ func TestDiscoverIgnoresObsoletePlistLocations(t *testing.T) {
 
 func TestDiscoverDoesNotInferShortcutFieldsWhenMMKVValueDiffers(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key: []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{
@@ -167,31 +167,13 @@ func TestDiscoverDoesNotInferShortcutFieldsWhenMMKVValueDiffers(t *testing.T) {
 	}
 }
 
-func TestDiscoverRejectsUnverifiedBundleVersion(t *testing.T) {
-	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, "1.0.3", verifiedBuildVersion)
-	got := Discover(context.Background(), locator)
-	if got.State != voicetools.Unsupported || len(got.Actions) != 0 || got.SettingsPath != "" {
-		t.Fatalf("unverified bundle version = %#v", got)
-	}
-}
-
-func TestDiscoverRejectsUnverifiedBundleBuild(t *testing.T) {
-	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, "2")
-	got := Discover(context.Background(), locator)
-	if got.State != voicetools.Unsupported || len(got.Actions) != 0 || got.SettingsPath != "" {
-		t.Fatalf("unverified bundle build = %#v", got)
-	}
-}
-
 func TestDiscoverRejectsMultipleInstalledBundles(t *testing.T) {
 	requireDarwin(t)
 	home := t.TempDir()
 	userDir := filepath.Join(home, "Library", "Input Methods")
 	systemDir := filepath.Join(t.TempDir(), "Input Methods")
-	writeBundle(t, filepath.Join(userDir, bundleName), bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
-	writeBundle(t, filepath.Join(systemDir, bundleName), bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	writeBundle(t, filepath.Join(userDir, bundleName), bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
+	writeBundle(t, filepath.Join(systemDir, bundleName), bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	locator := voicetools.Locator{Home: home, InputMethodDirs: []string{userDir, systemDir}}
 
 	got := Discover(context.Background(), locator)
@@ -202,7 +184,7 @@ func TestDiscoverRejectsMultipleInstalledBundles(t *testing.T) {
 
 func TestDiscoverRejectsWrongBundleIdentifier(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, "wrong.identifier", verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, "wrong.identifier", fixtureShortVersion, fixtureBuildVersion)
 	got := Discover(context.Background(), locator)
 	if got.State != voicetools.Unsupported || len(got.Actions) != 0 {
 		t.Fatalf("wrong bundle identity = %#v", got)
@@ -211,7 +193,7 @@ func TestDiscoverRejectsWrongBundleIdentifier(t *testing.T) {
 
 func TestDiscoverRejectsMalformedMMKV(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVRawFixture(t, doubaoMMKVPath(locator.Home), []byte("not an MMKV archive"))
 
 	got := Discover(context.Background(), locator)
@@ -222,7 +204,7 @@ func TestDiscoverRejectsMalformedMMKV(t *testing.T) {
 
 func TestDiscoverRejectsUnexpectedWhitelistFieldType(t *testing.T) {
 	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, fixtureShortVersion, fixtureBuildVersion)
 	writeMMKVFixture(t, doubaoMMKVPath(locator.Home), []mmkvEntry{{
 		key: []byte("d"),
 		value: keyedArchiveFixture(t, map[string]interface{}{

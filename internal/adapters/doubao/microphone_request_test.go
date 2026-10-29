@@ -128,11 +128,3 @@ func TestNewMicrophoneSelectionRequestRejectsInvalidUTF8AndNUL(t *testing.T) {
 		}
 	}
 }
-
-func TestVerifyMicrophoneRequestTargetRejectsUnverifiedVersion(t *testing.T) {
-	requireDarwin(t)
-	locator, _ := doubaoFixtureLocator(t, bundleIdentifier, "1.0.3", verifiedBuildVersion)
-	if err := verifyMicrophoneRequestTarget(context.Background(), locator); !errors.Is(err, ErrMicrophoneSelectionUnsupported) {
-		t.Fatalf("target validation error = %v, want ErrMicrophoneSelectionUnsupported", err)
-	}
-}

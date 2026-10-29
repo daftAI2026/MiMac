@@ -22,14 +22,14 @@ func TestDiscoverReturnsCancelledStatusWithoutReading(t *testing.T) {
 
 func TestDiscoverReadsKnownActionsWithoutInferringPressTiming(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, appPath := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, appPath := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	writeConfig(t, configPath, []byte(strings.ReplaceAll(validConfig,
 		`"long_press_action":"VoiceAssistant"`,
 		`"long_press_action":"VoiceAssistant","future_secret":"LEAK_ME"`,
 	)))
 
 	got := Discover(context.Background(), locator)
-	if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != "0.8.0" || got.SettingsPath != configPath {
+	if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != fixtureBundleShortVersion+" ("+fixtureBundleBuildVersion+")" || got.SettingsPath != configPath {
 		t.Fatalf("discovery metadata = %#v", got)
 	}
 	if len(got.Actions) != 2 || got.Actions[0].ID != "short_press_action" ||
@@ -65,7 +65,7 @@ func TestDiscoverReadsKnownActionsWithoutInferringPressTiming(t *testing.T) {
 
 func TestDiscoverPreservesUnknownActionNames(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	unknownConfig := strings.ReplaceAll(validConfig, "VoiceInput", "FutureMode")
 	unknownConfig = strings.ReplaceAll(unknownConfig, "VoiceAssistant", "NextFutureMode")
 	writeConfig(t, configPath, []byte(unknownConfig))
@@ -83,7 +83,7 @@ func TestDiscoverPreservesUnknownActionNames(t *testing.T) {
 
 func TestDiscoverCandidateRawChangesWhenConfiguredActionChanges(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	writeConfig(t, configPath, []byte(validConfig))
 	first := Discover(context.Background(), locator)
 	firstRaw := first.Actions[0].Candidates[0].Raw
@@ -100,7 +100,7 @@ func TestDiscoverCandidateRawChangesWhenConfiguredActionChanges(t *testing.T) {
 
 func TestDiscoverOmitsCandidatesForExplicitlyEmptyHotkey(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	emptyHotkeyConfig := strings.Replace(validConfig, `"keys":["RCmd"]`, `"keys":[]`, 1)
 	writeConfig(t, configPath, []byte(emptyHotkeyConfig))
 
@@ -127,14 +127,14 @@ func TestDiscoverMapsMissingAndUnsupportedConfiguration(t *testing.T) {
 		}
 	})
 	t.Run("configuration file missing", func(t *testing.T) {
-		locator, configPath, appPath := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+		locator, configPath, appPath := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		got := Discover(context.Background(), locator)
 		if got.State != voicetools.ConfigMissing || got.AppPath != appPath || got.SettingsPath != configPath {
 			t.Fatalf("missing config result = %#v", got)
 		}
 	})
 	t.Run("schema unverified", func(t *testing.T) {
-		locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+		locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		writeConfig(t, configPath, []byte(strings.Replace(validConfig, `"config_version":3`, `"config_version":4`, 1)))
 		got := Discover(context.Background(), locator)
 		if got.State != voicetools.Unsupported || len(got.Actions) != 0 {
@@ -143,20 +143,21 @@ func TestDiscoverMapsMissingAndUnsupportedConfiguration(t *testing.T) {
 	})
 }
 
-func TestDiscoverPreservesUnverifiedBundleAndAmbiguousStates(t *testing.T) {
+func TestDiscoverAcceptsFutureReleaseAndPreservesAmbiguousStates(t *testing.T) {
 	requireDarwin(t)
-	t.Run("unverified bundle version", func(t *testing.T) {
-		locator, _, appPath := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	t.Run("future release with supported schema", func(t *testing.T) {
+		locator, configPath, appPath := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
+		writeConfig(t, configPath, []byte(validConfig))
 		writeBundle(t, appPath, "0.8.1", "future-build")
 		got := Discover(context.Background(), locator)
-		if got.State != voicetools.Unsupported || got.AppPath != appPath || got.Version != "0.8.1 (future-build)" {
-			t.Fatalf("unverified version result = %#v", got)
+		if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != "0.8.1 (future-build)" || got.SettingsPath != configPath || len(got.Actions) != 2 {
+			t.Fatalf("future release with supported schema result = %#v", got)
 		}
 	})
 	t.Run("ambiguous bundles", func(t *testing.T) {
-		locator, _, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+		locator, _, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		secondDir := filepath.Join(locator.Home, "other-applications")
-		writeBundle(t, filepath.Join(secondDir, bundleName), verifiedShortVersion, verifiedBuildVersion)
+		writeBundle(t, filepath.Join(secondDir, bundleName), fixtureBundleShortVersion, fixtureBundleBuildVersion)
 		locator.ApplicationDirs = append(locator.ApplicationDirs, secondDir)
 		got := Discover(context.Background(), locator)
 		if got.State != voicetools.Ambiguous || len(got.Actions) != 0 {
@@ -178,7 +179,6 @@ func TestDiscoveryErrorStateMapsReaderErrors(t *testing.T) {
 		{name: "wrong bundle", err: ErrBundleUnavailable, state: voicetools.Unsupported, want: voicetools.Unsupported},
 		{name: "bundle read error", err: ErrBundleUnavailable, state: voicetools.ReadError, want: voicetools.ReadError},
 		{name: "ambiguous bundle", err: ErrAmbiguousBundle, state: voicetools.Ambiguous, want: voicetools.Ambiguous},
-		{name: "unverified version", err: ErrUnverifiedBundle, want: voicetools.Unsupported},
 		{name: "config missing", err: ErrConfigMissing, want: voicetools.ConfigMissing},
 		{name: "unverified schema", err: ErrUnsupportedSchema, want: voicetools.Unsupported},
 		{name: "malformed config", err: ErrMalformedConfig, want: voicetools.Unsupported},
@@ -196,7 +196,7 @@ func TestDiscoveryErrorStateMapsReaderErrors(t *testing.T) {
 
 func TestReadInstalledUsesLocatorHomePathForDiscovery(t *testing.T) {
 	requireDarwin(t)
-	locator, configPath, _ := shandianFixture(t, verifiedShortVersion, verifiedBuildVersion)
+	locator, configPath, _ := shandianFixture(t, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	writeConfig(t, configPath, []byte(validConfig))
 	got := Discover(context.Background(), locator)
 	if got.SettingsPath != filepath.Join(locator.Home, filepath.FromSlash(configRelativePath)) ||

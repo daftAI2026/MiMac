@@ -12,6 +12,11 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
+const (
+	fixtureBundleShortVersion = "99.0.0"
+	fixtureBundleBuildVersion = "99999"
+)
+
 func TestDiscoverReturnsCancelledStatusWithoutReading(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -21,7 +26,7 @@ func TestDiscoverReturnsCancelledStatusWithoutReading(t *testing.T) {
 	}
 }
 
-func TestDiscoverFindsConfigMissingForVerifiedApp(t *testing.T) {
+func TestDiscoverFindsConfigMissingForFutureReleaseApp(t *testing.T) {
 	requireDarwin(t)
 	locator, appPath := typelessFixtureLocator(t, "now.typeless.desktop")
 
@@ -29,15 +34,15 @@ func TestDiscoverFindsConfigMissingForVerifiedApp(t *testing.T) {
 	if got.State != voicetools.ConfigMissing {
 		t.Fatalf("state = %q, want config_missing: %#v", got.State, got)
 	}
-	if got.AppPath != appPath || got.Version != "2.8.3 (2.8.3.132)" {
-		t.Fatalf("verified app metadata = %#v", got)
+	if got.AppPath != appPath || got.Version != fixtureBundleShortVersion+" ("+fixtureBundleBuildVersion+")" {
+		t.Fatalf("app identity and diagnostic release = %#v", got)
 	}
 	if got.SettingsPath != filepath.Join(locator.Home, typelessSettingsRelative) || len(got.Actions) != 0 {
 		t.Fatalf("missing settings result = %#v", got)
 	}
 }
 
-func TestDiscoverReadsOnlyKnownActionsAndDoesNotUseDefaults(t *testing.T) {
+func TestDiscoverReadsOnlyKnownActionsForFutureReleaseWithoutDefaults(t *testing.T) {
 	requireDarwin(t)
 	locator, appPath := typelessFixtureLocator(t, "now.typeless.desktop")
 	settingsPath := filepath.Join(locator.Home, typelessSettingsRelative)
@@ -105,8 +110,8 @@ func typelessFixtureLocator(t *testing.T, identifier string) (voicetools.Locator
 		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
 		"<plist version=\"1.0\"><dict>" +
 		"<key>CFBundleIdentifier</key><string>" + identifier + "</string>" +
-		"<key>CFBundleShortVersionString</key><string>2.8.3</string>" +
-		"<key>CFBundleVersion</key><string>2.8.3.132</string>" +
+		"<key>CFBundleShortVersionString</key><string>" + fixtureBundleShortVersion + "</string>" +
+		"<key>CFBundleVersion</key><string>" + fixtureBundleBuildVersion + "</string>" +
 		"</dict></plist>"
 	if err := os.WriteFile(filepath.Join(infoDir, "Info.plist"), []byte(plist), 0o600); err != nil {
 		t.Fatal(err)

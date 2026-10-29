@@ -21,7 +21,7 @@ func TestDiscoverReturnsCancelledStatusWithoutReading(t *testing.T) {
 	}
 }
 
-func TestDiscoverReadsAllowlistedFieldsWithoutExecutablePlan(t *testing.T) {
+func TestDiscoverReadsAllowlistedFieldsForFutureReleaseWithoutExecutablePlan(t *testing.T) {
 	requireDarwin(t)
 	locator, appPath, settingsPath := wetypeDiscoveryFixture(t, []testEntry{
 		{key: "voicePTTShortcut_keyCodes", value: mmkvStringValue("[63,49]")},
@@ -32,7 +32,7 @@ func TestDiscoverReadsAllowlistedFieldsWithoutExecutablePlan(t *testing.T) {
 	})
 
 	got := Discover(context.Background(), locator)
-	if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != "3.0.0 (670)" || got.SettingsPath != settingsPath {
+	if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != fixtureBundleShortVersion+" ("+fixtureBundleBuildVersion+")" || got.SettingsPath != settingsPath {
 		t.Fatalf("discovery metadata = %#v", got)
 	}
 	if len(got.Actions) != 2 {
@@ -95,17 +95,25 @@ func TestDiscoverReportsMissingBundleStoreFieldsAndConfiguration(t *testing.T) {
 			t.Fatalf("missing store result = %#v", got)
 		}
 	})
+	t.Run("wrong bundle identity", func(t *testing.T) {
+		locator, appPath, _ := wetypeDiscoveryFixture(t, nil)
+		writeBundleInfo(t, filepath.Join(appPath, "Contents", "Info.plist"), "wrong.identifier", fixtureBundleShortVersion, fixtureBundleBuildVersion)
+		got := Discover(context.Background(), locator)
+		if got.State != voicetools.Unsupported || len(got.Actions) != 0 {
+			t.Fatalf("wrong bundle identity result = %#v", got)
+		}
+	})
 }
 
-func TestDiscoverMapsUnverifiedVersionAndReadErrors(t *testing.T) {
+func TestDiscoverAcceptsFutureReleaseAndMapsReadErrors(t *testing.T) {
 	requireDarwin(t)
-	t.Run("unverified bundle version", func(t *testing.T) {
-		locator, appPath, _ := wetypeDiscoveryFixture(t, nil)
-		infoPath := filepath.Join(appPath, "Contents", "Info.plist")
-		writeBundleInfo(t, infoPath, bundleIdentifier, verifiedShortVersion, "future-build")
+	t.Run("future release with valid MMKV v3 store", func(t *testing.T) {
+		locator, appPath, settingsPath := wetypeDiscoveryFixture(t, []testEntry{{
+			key: "voicePTTShortcut_keyCodes", value: mmkvStringValue("[63]"),
+		}})
 		got := Discover(context.Background(), locator)
-		if got.State != voicetools.Unsupported || got.AppPath != appPath || got.Version != "3.0.0 (future-build)" {
-			t.Fatalf("unverified bundle result = %#v", got)
+		if got.State != voicetools.Ready || got.AppPath != appPath || got.Version != fixtureBundleShortVersion+" ("+fixtureBundleBuildVersion+")" || got.SettingsPath != settingsPath || len(got.Actions) != 2 {
+			t.Fatalf("future release with valid MMKV v3 result = %#v", got)
 		}
 	})
 	t.Run("integrity failure", func(t *testing.T) {
@@ -160,7 +168,7 @@ func wetypeDiscoveryFixture(t *testing.T, entries []testEntry) (voicetools.Locat
 	if err := os.MkdirAll(filepath.Dir(infoPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleInfo(t, infoPath, bundleIdentifier, verifiedShortVersion, verifiedBuildVersion)
+	writeBundleInfo(t, infoPath, bundleIdentifier, fixtureBundleShortVersion, fixtureBundleBuildVersion)
 	settingsPath := filepath.Join(home, "Library", "Application Support", storeDirectory, storeName)
 	metadata, data := makeStoreFixture(entries)
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {

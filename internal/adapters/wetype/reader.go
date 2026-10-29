@@ -17,12 +17,10 @@ import (
 )
 
 const (
-	bundleIdentifier     = "com.tencent.inputmethod.wetype"
-	verifiedShortVersion = "3.0.0"
-	verifiedBuildVersion = "670"
-	bundleName           = "WeType.app"
-	storeDirectory       = "WeType/mmkv"
-	storeName            = "wetype.settings"
+	bundleIdentifier = "com.tencent.inputmethod.wetype"
+	bundleName       = "WeType.app"
+	storeDirectory   = "WeType/mmkv"
+	storeName        = "wetype.settings"
 
 	maxStoreDataBytes     int64 = 1 << 20
 	maxStoreMetadataBytes int64 = 64 << 10
@@ -37,8 +35,7 @@ const (
 
 var (
 	ErrUnsupportedPlatform = errors.New("wetype config: unsupported platform")
-	ErrBundleUnavailable   = errors.New("wetype config: verified bundle unavailable")
-	ErrUnverifiedBundle    = errors.New("wetype config: bundle version is unverified")
+	ErrBundleUnavailable   = errors.New("wetype config: matching bundle unavailable")
 	ErrAmbiguousBundle     = errors.New("wetype config: multiple matching bundles")
 	ErrUnsupportedFormat   = errors.New("wetype config: unsupported MMKV format")
 	ErrEncryptedStore      = errors.New("wetype config: encrypted MMKV store is unsupported")
@@ -70,7 +67,7 @@ type FieldCandidate struct {
 	Value  json.RawMessage `json:"value,omitempty"`
 }
 
-// Candidate includes the verified bundle identity and only the six
+// Candidate includes the matched bundle identity and only the six
 // allowlisted MMKV fields. Paths and unrelated MMKV records are not exposed.
 type Candidate struct {
 	BundleIdentifier string                    `json:"bundleIdentifier"`
@@ -107,14 +104,11 @@ func readInstalled(ctx context.Context, locator voicetools.Locator) (Candidate, 
 	if err != nil {
 		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}
-	if !isVerifiedBundle(bundle) {
-		if state == voicetools.Ambiguous {
-			return Candidate{}, bundle, state, ErrAmbiguousBundle
-		}
-		if state != voicetools.Ready {
-			return Candidate{}, bundle, state, ErrBundleUnavailable
-		}
-		return Candidate{}, bundle, state, ErrUnverifiedBundle
+	if state == voicetools.Ambiguous {
+		return Candidate{}, bundle, state, ErrAmbiguousBundle
+	}
+	if state != voicetools.Ready || !matchesBundleIdentity(bundle) {
+		return Candidate{}, bundle, state, ErrBundleUnavailable
 	}
 
 	dataPath := settingsPath(locator)
@@ -132,8 +126,8 @@ func settingsPath(locator voicetools.Locator) string {
 	return filepath.Join(locator.Home, "Library", "Application Support", storeDirectory, storeName)
 }
 
-func isVerifiedBundle(bundle voicetools.Bundle) bool {
-	return bundle.Identifier == bundleIdentifier && bundle.Version == verifiedShortVersion && bundle.Build == verifiedBuildVersion
+func matchesBundleIdentity(bundle voicetools.Bundle) bool {
+	return bundle.Identifier == bundleIdentifier
 }
 
 func readStore(ctx context.Context, dataPath string) (Candidate, error) {

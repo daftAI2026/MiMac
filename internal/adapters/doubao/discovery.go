@@ -13,12 +13,10 @@ import (
 )
 
 const (
-	bundleIdentifier     = "com.bytedance.inputmethod.doubaoime"
-	verifiedShortVersion = "1.0.2"
-	verifiedBuildVersion = "1"
-	bundleName           = "DoubaoIme.app"
-	mmkvDirectorySuffix  = "Library/Application Support/DoubaoIme/.com.apple.xpc.activityd"
-	mmkvDataName         = "com.apple.xpc.activity"
+	bundleIdentifier    = "com.bytedance.inputmethod.doubaoime"
+	bundleName          = "DoubaoIme.app"
+	mmkvDirectorySuffix = "Library/Application Support/DoubaoIme/.com.apple.xpc.activityd"
+	mmkvDataName        = "com.apple.xpc.activity"
 )
 
 type fieldSpec struct {
@@ -40,8 +38,9 @@ var microphoneSelectionField = fieldSpec{name: "selectedMicrophoneId", plistType
 var errShortcutFieldType = errors.New("doubao config: shortcut field type unsupported")
 var errMicrophoneFieldType = errors.New("doubao config: selectedMicrophoneId must be a string or null")
 
-// Discover requires the exact verified Doubao bundle and its one observed
-// MMKV path. It never consults plist fallbacks or bundled defaults.
+// Discover verifies application identity and the actual MMKV schema. Release
+// versions are diagnostic metadata; unknown shortcut tuples stay non-executable.
+// It never consults plist fallbacks or bundled defaults.
 func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapshot {
 	if ctx == nil {
 		ctx = context.Background()
@@ -76,11 +75,6 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	}
 	result.AppPath = bundle.Path
 	result.Version = formatBundleVersion(bundle.Version, bundle.Build)
-	if bundle.Version != verifiedShortVersion || bundle.Build != verifiedBuildVersion {
-		result.State = voicetools.Unsupported
-		result.Source = "unverified Doubao version"
-		return result
-	}
 
 	settingsPath := doubaoMMKVPath(locator.Home)
 	result.SettingsPath = settingsPath
@@ -120,7 +114,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 	}
 
 	result.State = voicetools.Ready
-	result.Source = "Doubao MMKV key d; exact 1.0.2 (1) shortcut tuples; host TIS preflight required"
+	result.Source = "Doubao MMKV key d; validated shortcut tuples; host TIS preflight required"
 	result.Actions = []voicetools.Action{
 		candidate.action("asrShortcut", "听写快捷键", "asrShortcut"),
 		candidate.action("asrLongPressShortcut", "听写长按快捷键", "asrLongPressShortcut"),
