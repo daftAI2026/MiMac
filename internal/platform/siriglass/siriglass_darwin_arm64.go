@@ -21,10 +21,12 @@ import (
 const (
 	nativeLibraryName = "libSiriGlassBridge.dylib"
 	nativeABIVersion  = 1
-	glassDiameter     = 96.0
-	attachWidth       = 160.0
-	attachHeight      = 160.0
-	initialDB         = -60.0
+	// Captured ChatInputView.listeningOrbSize, separate from the host slot and
+	// the native renderer's 1.04 phase expansion.
+	glassDiameter = 100.0
+	attachWidth   = 160.0
+	attachHeight  = 160.0
+	initialDB     = -60.0
 )
 
 type glassParameters struct {
