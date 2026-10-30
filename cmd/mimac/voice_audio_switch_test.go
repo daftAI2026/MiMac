@@ -25,7 +25,7 @@ func TestSelectVoiceToolRetiresAppleSessionBeforeNewAudioRoute(t *testing.T) {
 	newSnapshot.AppPath = "/Applications/TestDoubao.app"
 	newTool := &voiceTool{
 		id: "voice-doubao", name: "Doubao", kind: voiceInputMethod,
-		active: true, sequence: 9, snapshot: newSnapshot,
+		active: true, sequence: 9, snapshot: newSnapshot, audioRouteFactory: testAudioRouteFactory,
 	}
 	s.tools = append(s.tools, newTool)
 	s.toolPreferencesPath = filepath.Join(t.TempDir(), "tools.json")

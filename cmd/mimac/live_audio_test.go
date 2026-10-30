@@ -6,6 +6,7 @@ import (
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/devices"
 	"mimac.local/mimac/internal/pluginrt"
+	"mimac.local/mimac/internal/voicetools"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ func liveHostFixture(t *testing.T, outputStartErr error) (*shell, chan func()) {
 	snapshot.AppPath = "/Applications/TestDoubao.app"
 	s, _ := newToolShortcutsTestShell(t, snapshot)
 	s.tools[0].id = "voice-doubao"
+	s.tools[0].audioRouteFactory = testAudioRouteFactory
 	s.currentVoiceTool = "voice-doubao"
 	s.deviceProfiles[0].VoiceButtonID = toolShortcutsTestButton
 	device, _ := bridge.NewDevice("live-host", 1)
@@ -53,6 +55,10 @@ func liveHostFixture(t *testing.T, outputStartErr error) (*shell, chan func()) {
 		}
 	})
 	return s, queue
+}
+
+func testAudioRouteFactory(context.Context, audioRouteConfig) (liveAudioRoute, error) {
+	return newLiveAudioConnectionTestRoute(), nil
 }
 
 func pumpLiveHost(t *testing.T, queue <-chan func(), until func() bool) {
@@ -228,6 +234,7 @@ func TestLiveAudioHostUnsupportedTargetDoesNotOpenOrFallback(t *testing.T) {
 	s, _ := liveHostFixture(t, nil)
 	s.currentVoiceTool = "voice-typeless"
 	s.tools[0].id = "voice-typeless"
+	s.tools[0].audioRouteFactory = nil
 	s.liveAudio.factory = func(context.Context, uint64, string) (liveAudioRoute, error) {
 		t.Error("unsupported target opened native resources")
 		return nil, nil
@@ -238,5 +245,84 @@ func TestLiveAudioHostUnsupportedTargetDoesNotOpenOrFallback(t *testing.T) {
 	}
 	if _, _, applies := s.liveAudioStatus(s.coordinator.core.Snapshot()); !applies {
 		t.Fatal("missing unsupported-target status")
+	}
+}
+
+func TestAudioRouteFactoryDispatchesForDifferentToolID(t *testing.T) {
+	s, _ := liveHostFixture(t, nil)
+	tool := s.tools[0]
+	tool.id = "voice-test-route"
+	tool.kind = voiceInputMethod
+	tool.snapshot.AppPath = "/Applications/TestRecognizer.app"
+	s.currentVoiceTool = tool.id
+	s.toolLocator = voicetools.Locator{Home: "/Users/test", InputMethodDirs: []string{"/Users/test/Applications"}}
+
+	route := newLiveAudioConnectionTestRoute()
+	called := make(chan audioRouteConfig, 1)
+	tool.audioRouteFactory = func(ctx context.Context, config audioRouteConfig) (liveAudioRoute, error) {
+		if ctx == nil {
+			return nil, errors.New("audio route factory received nil context")
+		}
+		called <- config
+		return route, nil
+	}
+	if !s.plugins.Active(outputPlugin) {
+		t.Fatal("output plugin is not active in the dispatch fixture")
+	}
+	if _, err := s.selectedVoiceAction(); err != nil {
+		t.Fatalf("dispatch fixture has no executable selected voice action: %v", err)
+	}
+	if got := s.desiredLiveAudioTool(); got != tool {
+		t.Fatalf("desired live audio tool = %v, want factory-capable tool %q", got, tool.id)
+	}
+
+	generation := s.coordinator.core.Snapshot().Generation
+	factory := bindAudioRouteFactory(tool.audioRouteFactory, "/test/resources", s.toolLocator)
+	connection := newLiveAudioConnection(func(ctx context.Context) (liveAudioRoute, error) {
+		return factory(ctx, generation, tool.snapshot.AppPath)
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := connection.Close(ctx); err != nil {
+			t.Errorf("cleanup factory-backed route: %v", err)
+		}
+	})
+	select {
+	case config := <-called:
+		if config.Generation != generation || config.AppPath != tool.snapshot.AppPath || config.ResourcesPath != "/test/resources" || config.Locator.Home != "/Users/test" {
+			t.Fatalf("route factory config = %+v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("selected tool's route factory was not called")
+	}
+	select {
+	case <-connection.Done():
+	case <-time.After(time.Second):
+		t.Fatal("route connection did not finish construction")
+	}
+	if err := connection.Err(); err != nil || !connection.Ready() {
+		t.Fatalf("factory-backed test route readiness = %t, error = %v", connection.Ready(), err)
+	}
+	if starts, _, _ := route.calls(); starts != 1 {
+		t.Fatalf("factory-backed route Start calls = %d, want 1", starts)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := connection.Close(ctx); err != nil {
+		t.Fatalf("close factory-backed test route: %v", err)
+	}
+}
+
+func TestBuiltInAudioRouteFactoriesAreExplicit(t *testing.T) {
+	factories := make(map[string]bool)
+	for _, tool := range builtInVoiceTools() {
+		factories[tool.id] = tool.audioRouteFactory != nil
+	}
+	if !factories[appleSpeechToolID] || !factories["voice-doubao"] {
+		t.Fatalf("Apple/Doubao route capabilities = %+v", factories)
+	}
+	if factories["voice-wetype"] {
+		t.Fatal("WeType received an audio route before its input protocol was verified")
 	}
 }

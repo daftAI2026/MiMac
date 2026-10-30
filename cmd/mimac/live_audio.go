@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"path/filepath"
 
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/bridge"
@@ -12,6 +11,17 @@ import (
 )
 
 const compatibilityAudioBackend = "mimac-compat"
+
+// audioRouteConfig carries host-verified identity and resources into one
+// voice tool's route adapter. It deliberately contains no device or Core state.
+type audioRouteConfig struct {
+	Generation    uint64
+	AppPath       string
+	Locator       voicetools.Locator
+	ResourcesPath string
+}
+
+type audioRouteFactory func(context.Context, audioRouteConfig) (liveAudioRoute, error)
 
 type liveAudioState struct {
 	backend         string
@@ -36,7 +46,7 @@ func (s *shell) desiredLiveAudioTool() *voiceTool {
 		return nil
 	}
 	for _, tool := range s.tools {
-		if tool.id == s.currentVoiceTool && (tool.id == "voice-doubao" || tool.id == appleSpeechToolID) && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready {
+		if tool.id == s.currentVoiceTool && tool.audioRouteFactory != nil && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready {
 			if tool.id != appleSpeechToolID && !s.plugins.Active(outputPlugin) {
 				return nil
 			}
@@ -69,17 +79,15 @@ func (s *shell) refreshLiveAudio() {
 	appPath, locator := tool.snapshot.AppPath, s.toolLocator
 	factory := s.liveAudio.factory
 	if factory == nil {
-		resources, err := mygo.App.Path(mygo.PathResources)
+		resourcesPath, err := mygo.App.Path(mygo.PathResources)
 		if err != nil {
 			s.report.AudioError = err.Error()
 			return
 		}
-		library := filepath.Join(resources, "libMiMacATVV.dylib")
-		factory = func(ctx context.Context, generation uint64, appPath string) (liveAudioRoute, error) {
-			if tool.id == appleSpeechToolID {
-				return openAppleAudioRoute(generation, library, filepath.Join(resources, "libMiMacSpeech.dylib"))
-			}
-			return openLiveXiaomiRoute(ctx, generation, library, "com.bytedance.inputmethod.doubaoime", filepath.Join(appPath, "Contents/MacOS/DoubaoIme"), locator)
+		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator)
+		if factory == nil {
+			s.report.AudioError = "selected voice tool has no audio route factory"
+			return
 		}
 	}
 	// Do not borrow a target preference or open a device until the session host
@@ -198,7 +206,7 @@ func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, b
 		return "音频连接失败，请重新启用遥控器", toneError, true
 	}
 	if s.liveAudio.connection == nil {
-		if s.currentVoiceTool != "voice-doubao" && s.currentVoiceTool != appleSpeechToolID {
+		if s.selectedAudioRouteTool() == nil {
 			return "此工具尚不支持遥控器音频", toneNeutral, true
 		}
 		return "正在准备音频", toneNeutral, true
@@ -228,4 +236,27 @@ func (s *shell) logAudioCompletion(event bridge.Event, failed bool, err error) {
 
 func (s *shell) audioRequested() bool {
 	return s.liveAudio.backend != "" || s.currentVoiceTool == appleSpeechToolID
+}
+
+func (s *shell) selectedAudioRouteTool() *voiceTool {
+	if s == nil {
+		return nil
+	}
+	for _, tool := range s.tools {
+		if tool.id == s.currentVoiceTool && tool.audioRouteFactory != nil {
+			return tool
+		}
+	}
+	return nil
+}
+
+func bindAudioRouteFactory(routeFactory audioRouteFactory, resourcesPath string, locator voicetools.Locator) func(context.Context, uint64, string) (liveAudioRoute, error) {
+	if routeFactory == nil {
+		return nil
+	}
+	return func(ctx context.Context, generation uint64, appPath string) (liveAudioRoute, error) {
+		return routeFactory(ctx, audioRouteConfig{
+			Generation: generation, AppPath: appPath, Locator: locator, ResourcesPath: resourcesPath,
+		})
+	}
 }

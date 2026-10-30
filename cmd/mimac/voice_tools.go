@@ -26,6 +26,7 @@ type voiceTool struct {
 	kind                voiceToolKind
 	discover            func(context.Context, voicetools.Locator) voicetools.Snapshot
 	locateApplication   func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
+	audioRouteFactory   audioRouteFactory
 	fallbackIconPNG     []byte
 	systemArtwork       string
 	prepareAssets       func(context.Context, voicetools.Locator) voicetools.Snapshot
@@ -202,8 +203,8 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, systemArtwork: "apple.logo"},
-		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, requiredInputSource: doubao.RequiredInputSourceID},
+		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo"},
+		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
 		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, fallbackIconPNG: wetype.IconPNG},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},

@@ -14,6 +14,14 @@ import (
 
 const appleSpeechToolID = "voice-apple-speech"
 
+func appleSpeechAudioRouteFactory(_ context.Context, config audioRouteConfig) (liveAudioRoute, error) {
+	return openAppleAudioRoute(
+		config.Generation,
+		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
+		filepath.Join(config.ResourcesPath, "libMiMacSpeech.dylib"),
+	)
+}
+
 // Discovery retains a partial owner if native cancellation has not joined.
 // A later explicit check retries cleanup before preparing another model.
 var appleModelProbe struct {

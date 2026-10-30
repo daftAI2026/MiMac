@@ -6,6 +6,8 @@ flowchart LR
     keyfx --> keyout["系统按键输出适配器"]
     keyout --> target["当前外部语音工具"]
 
+    tool["已选工具注册的 audioRouteFactory"] --> route["liveAudioConnection 准备与持有路由"]
+    route --> prepare
     core --> prepare["音频路由就绪时发出 PrepareSource"]
     prepare --> session["audio-session Runtime 持有本次会话资源"]
     session --> source["设备 PCM Source"]

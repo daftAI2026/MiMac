@@ -21,7 +21,7 @@ func TestSelectVoiceToolDuringCaptureCancelsOldSessionBeforeReplacement(t *testi
 
 	newSnapshot := toolShortcutsTestSnapshot("Ctrl+L")
 	newSnapshot.AppPath = "/Applications/TestDoubao.app"
-	newTool := &voiceTool{id: "voice-doubao", name: "Doubao", kind: voiceInputMethod, active: true, sequence: 9, snapshot: newSnapshot}
+	newTool := &voiceTool{id: "voice-doubao", name: "Doubao", kind: voiceInputMethod, active: true, sequence: 9, snapshot: newSnapshot, audioRouteFactory: testAudioRouteFactory}
 	s.tools = append(s.tools, newTool)
 	s.toolPreferencesPath = filepath.Join(t.TempDir(), "tools.json")
 	s.toolPreferences = toolPreferences{Version: 1, Enabled: []string{oldTool.id, newTool.id}, Current: oldTool.id}

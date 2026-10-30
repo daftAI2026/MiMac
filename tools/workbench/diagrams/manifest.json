@@ -2,7 +2,7 @@
   {
     "id": "architecture-boundaries",
     "title": "架构边界",
-    "summary": "MyGo 承担宿主主线程与事件循环；cmd/mimac 组合 bridge、设备/语音适配器和可选语音呈现。siriglass 仅在 arm64 macOS 27.0.1 build 26A434 启用；失败只关闭显示。厂商语音条接管与完整 Siri 前景/业务语义仍为未来边界。",
+    "summary": "MyGo 承担宿主主线程与事件循环；cmd/mimac 组合 bridge、设备/语音适配器和可选语音呈现。siriglass 仅在 arm64 macOS 27.0.1 build 26A434 启用；失败只关闭显示。厂商语音条接管与完整 Siri 前景/业务语义仍为未来边界。 音频入口由各工具注册 audioRouteFactory，连接与关闭仍共用现有生命周期；微信未注册音频能力。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
@@ -20,7 +20,12 @@
       "internal/platform/siriglass/siriglass_darwin_arm64.go",
       "cmd/mimac/voice_meter.go",
       "internal/audiometer/audiometer.go",
-      "internal/platform/siriglass/meters.go"
+      "internal/platform/siriglass/meters.go",
+      "cmd/mimac/voice_tools.go",
+      "cmd/mimac/live_audio.go",
+      "cmd/mimac/live_audio_connection.go",
+      "cmd/mimac/apple_voice_tool.go",
+      "cmd/mimac/doubao_voice_tool.go"
     ]
   },
   {
@@ -37,7 +42,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "HID 边沿进入协调器与 bridge；路由就绪后 Runtime 持有 PCM 会话。同次读取的电平与可选频谱按完整 token 投影到 siriglass 数组入口，不保存录音、不修改输出样本；显示故障不停止音频。PCM drain 不证明目标已识别或提交文字。",
+    "summary": "HID 边沿进入协调器与 bridge；路由就绪后 Runtime 持有 PCM 会话。同次读取的电平与可选频谱按完整 token 投影到 siriglass 数组入口，不保存录音、不修改输出样本；显示故障不停止音频。PCM drain 不证明目标已识别或提交文字。 音频入口由各工具注册 audioRouteFactory，连接与关闭仍共用现有生命周期；微信未注册音频能力。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -60,7 +65,11 @@
       "internal/platform/siriglass/siriglass_darwin_arm64.go",
       "cmd/mimac/voice_meter.go",
       "internal/audiometer/audiometer.go",
-      "internal/platform/siriglass/meters.go"
+      "internal/platform/siriglass/meters.go",
+      "cmd/mimac/voice_tools.go",
+      "cmd/mimac/live_audio_connection.go",
+      "cmd/mimac/apple_voice_tool.go",
+      "cmd/mimac/doubao_voice_tool.go"
     ]
   },
   {
