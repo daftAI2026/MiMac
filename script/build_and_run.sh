@@ -52,6 +52,11 @@ if [[ -n "${MIMAC_SIGN_IDENTITY:-}" ]]; then
   BUILD_ARGS+=(-sign "$MIMAC_SIGN_IDENTITY")
 fi
 "$GO_BIN" tool mygo build "${BUILD_ARGS[@]}"
+VERIFY_ARGS=("$APP_BUNDLE" --arch "$ARCH")
+if [[ -f "$ROOT_DIR/resources/darwin-$ARCH/libSiriGlassBridge.dylib" ]]; then
+  VERIFY_ARGS+=(--require-siri)
+fi
+python3 "$ROOT_DIR/script/verify_app_bundle.py" "${VERIFY_ARGS[@]}"
 case "$MODE" in
   run) /usr/bin/open -n "$APP_BUNDLE" --args "${APP_ARGS[@]}" ;;
   --debug) /usr/bin/lldb -- "$APP_BINARY" ;;

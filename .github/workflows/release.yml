@@ -66,6 +66,11 @@ jobs:
       - name: Build macOS amd64 app
         run: go tool mygo build -platform darwin/amd64 -skip-dmg -skip-notarize
 
+      - name: Verify native bundle contents
+        run: |
+          python3 script/verify_app_bundle.py dist/darwin-arm64/MiMac.app --arch arm64
+          python3 script/verify_app_bundle.py dist/darwin-amd64/MiMac.app --arch amd64
+
       - name: Package apps and checksums
         env:
           ASSET_STEM: ${{ steps.version.outputs.asset_stem }}
