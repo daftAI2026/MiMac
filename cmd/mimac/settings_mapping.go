@@ -17,7 +17,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	// Keep one column width across selection changes and all row states.
 	actionWidth := mappingChoiceWidth + mappingMenuWidth + spaceSM
 	for _, tool := range activeVoiceTools {
-		actionWidth = max(actionWidth, appMenuButtonWidth(c, a, tool.name))
+		actionWidth = max(actionWidth, appMenuButtonWidth(c, a, tool.name)+mappingMenuWidth+spaceSM)
 	}
 	choiceWidth := actionWidth - mappingMenuWidth - spaceSM
 	if s.selectedButton == "" {
@@ -112,7 +112,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 								}
 								ui.Text(c, button.DefaultLabel).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Width(mappingDefaultWidth)
 								if voiceButton {
-									s.mappingVoiceSelection(c, a, activeVoiceTools, actionWidth, buttonHeight)
+									s.mappingVoiceSelection(c, a, activeVoiceTools, choiceWidth, buttonHeight)
 								} else if s.editButton == id {
 									s.shortcutRecorder(c, a, choiceWidth, buttonHeight)
 								} else {
@@ -123,8 +123,34 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 										c.Invalidate()
 									}
 								}
-								if !voiceButton {
-									menuButton := appButton(c, a, "…", s.mappingLoadFailed).Label(button.Label + "的预设").Role(ui.RoleMenuButton).Width(mappingMenuWidth).MinHeight(buttonHeight).Padding(0)
+								if voiceButton {
+									ui.Box(c).Width(mappingMenuWidth).MinHeight(buttonHeight).Shrink(0).PassThrough()
+								} else {
+									menuButton := styleAppButton(ui.ButtonBase(c), a, s.mappingLoadFailed).
+										Label(button.Label + "的预设").Role(ui.RoleMenuButton).
+										Width(mappingMenuWidth).MinHeight(buttonHeight).Padding(0).Center()
+									icon := s.systemSymbol("ellipsis", a.theme.Dark, accessoryIconSize)
+									menuButton.Children(func() {
+										ui.Box(c).Width(accessoryIconSize).Height(accessoryIconSize).
+											AlignItems(ui.Center).Justify(ui.Center).PassThrough().Children(func() {
+												if icon != nil {
+												image := ui.Image(c, icon).Width(accessoryIconSize).Height(accessoryIconSize).Fit(ui.Contain).Shrink(0)
+												if s.mappingLoadFailed {
+													image.Opacity(0.55)
+												}
+											} else {
+												dotColor := a.theme.Text
+												if s.mappingLoadFailed {
+													dotColor = a.disabled
+												}
+												ui.Row(c).Center().Gap(2).PassThrough().Children(func() {
+													for range 3 {
+														ui.Box(c).Size(2, 2).Radius(1).Background(dotColor).PassThrough()
+													}
+												})
+											}
+										})
+									})
 									if menuButton.Clicked() {
 										s.selectedButton = id
 										s.popupMenu(s.mappingMenu(id), menuButton.Bounds())
