@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log"
 
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/inputsource"
@@ -15,7 +16,16 @@ var (
 // This runs only at a physical action start, not while drawing settings or on
 // key-up. Discovery and readiness UI remain free of input-source polling.
 func (s *shell) preflightToolAction(plan bridge.ActionPlan) error {
-	err := checkActionInputSource(s.tools, plan, inputsource.CurrentID)
+	var actual string
+	err := checkActionInputSource(s.tools, plan, func() (string, error) {
+		id, readErr := inputsource.CurrentID()
+		actual = id
+		return id, readErr
+	})
+	if err != nil {
+		spec := plan.Spec()
+		log.Printf("voice action blocked: tool=%q action=%q input_source=%q error=%v", spec.ToolID, spec.ActionID, actual, err)
+	}
 	s.voiceStartBlocked = ""
 	if errors.Is(err, errActionInputSourceRead) {
 		s.voiceStartBlocked = "无法读取当前输入法，请重试"
