@@ -27,6 +27,12 @@ const (
 	attachWidth   = 160.0
 	attachHeight  = 160.0
 	initialDB     = -60.0
+	// The host meter already floors source levels at -60 dBFS. The legacy
+	// renderer saturates at -20 dB, so its useful display range ends there.
+	sourceMeterFloorDBFS   float32 = -60.0
+	sourceMeterCeilingDBFS float32 = -20.0
+	nativeDisplayFloorDB   float32 = -40.0
+	nativeDisplayCeilingDB float32 = -20.0
 )
 
 type glassParameters struct {
@@ -44,19 +50,39 @@ type glassParameters struct {
 }
 
 func rendererParameters(revision uint64, visible bool, db float32) glassParameters {
+	displayDB := float32(initialDB)
+	if visible {
+		displayDB = nativeDisplayDBFromSourceDBFS(db)
+	}
 	return glassParameters{
 		SchemaVersion:           1,
 		Revision:                revision,
 		Kind:                    3,
 		Personality:             1,
 		Variant:                 "listening",
-		AudioPowerDB:            db,
+		AudioPowerDB:            displayDB,
 		Diameter:                glassDiameter,
 		Visible:                 visible,
 		Content:                 "clear",
 		Layers:                  3,
 		ReferencePhaseAnimation: true,
 	}
+}
+
+// nativeDisplayDBFromSourceDBFS maps the host's visible meter range into the
+// legacy scalar renderer's responsive range. It affects only presentation;
+// Runtime.InputLevel and the PCM sent to the voice tool keep their source dBFS.
+func nativeDisplayDBFromSourceDBFS(sourceDBFS float32) float32 {
+	if sourceDBFS < sourceMeterFloorDBFS {
+		sourceDBFS = sourceMeterFloorDBFS
+	} else if sourceDBFS > sourceMeterCeilingDBFS {
+		sourceDBFS = sourceMeterCeilingDBFS
+	}
+
+	sourceRangeDB := sourceMeterCeilingDBFS - sourceMeterFloorDBFS
+	nativeRangeDB := nativeDisplayCeilingDB - nativeDisplayFloorDB
+	position := (sourceDBFS - sourceMeterFloorDBFS) / sourceRangeDB
+	return nativeDisplayFloorDB + position*nativeRangeDB
 }
 
 type nativeAPI struct {
