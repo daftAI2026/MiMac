@@ -34,6 +34,7 @@ let package = Package(
         .target(
             name: "SiriGlassBridge",
             dependencies: ["SiriGlassModel", "SiriGlassNativeABI", "SiriGlassRenderer"]
-        )
+        ),
+        .testTarget(name: "SiriGlassModelTests", dependencies: ["SiriGlassModel"])
     ]
 )

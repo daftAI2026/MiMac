@@ -276,8 +276,8 @@ static int validate_meter_values(const void *amplitudesStorage,
     for (uint64_t index = 0; index < amplitudeCount; index++) {
         float amplitude = amplitudes[index];
         float frequency = frequencies[index];
-        if (!isfinite(amplitude) || amplitude < 0.0f || amplitude > 1.0f) {
-            snprintf(g_error, sizeof g_error, "audio meter amplitudes must be finite and between 0 and 1");
+        if (!isfinite(amplitude) || amplitude < 0.0f) {
+            snprintf(g_error, sizeof g_error, "audio meter amplitudes must be finite and nonnegative");
             return 0;
         }
         if (!isfinite(frequency) || frequency <= previous) {

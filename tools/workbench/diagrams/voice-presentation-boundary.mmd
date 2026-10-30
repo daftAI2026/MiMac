@@ -9,8 +9,8 @@ flowchart TD
     runtime["audio-session Runtime：现有 PCM worker"] --> source["当前会话 Source 输入块"]
     source --> meter["当前 token latest RMS / peak / ObservedAt；不留样本"]
     source --> observer["可选 PCMObserver：同一 worker 只读观测"]
-    observer --> spectrum["audiometer：固定窗 band RMS；不修改 PCM"]
-    snapshot --> match["完整 SessionToken 匹配；仅取新鲜电平（≤100 ms）"]
+    observer --> spectrum["Siri适配器：128样本 Hamming / 频点幅值求和；不改PCM"]
+    snapshot --> match["完整 SessionToken 匹配；仅取新鲜频带（≤100 ms），读取时平滑"]
     meter --> match
     spectrum --> match
     phase --> frame["voiceOverlayFrame：phase + 当前频谱快照"]
@@ -22,7 +22,7 @@ flowchart TD
     enabled -->|否| hidden["隐藏并停止频谱分析；丢弃部分窗口"]
     enabled -->|是| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
     panel --> gate{"仅 arm64 macOS 27.0.1 build 26A434？"}
-    gate -->|是| renderer["siriglass：原生 audioMeters 数组入口"]
+    gate -->|是| renderer["siriglass：显示倍率×5一次 → 原生 audioMeters 数组入口"]
     gate -->|否| unsupported["不支持：仅关闭呈现"]
     renderer --> operation{"创建 / 更新 / 关闭成功？"}
     operation -->|是| material["显示当前会话材质"]

@@ -6,8 +6,8 @@ import (
 	"math"
 	"time"
 
-	"mimac.local/mimac/internal/audiometer"
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/platform/siriglass"
 )
 
 // This is a render snapshot. Core and the existing PCM owner remain the only
@@ -17,7 +17,7 @@ type voiceOverlayFrame struct {
 	Token    bridge.SessionToken
 	Label    string
 	DB       float32
-	Spectrum audiometer.Spectrum
+	Spectrum siriglass.Spectrum
 }
 
 type voiceOverlayView interface {

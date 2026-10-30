@@ -15,8 +15,8 @@ public struct AudioMetersInput: Codable, Equatable, Sendable {
               normalizedPowerAmplitudes.count == stopFrequenciesHz.count else {
             return "audioMeters requires 1...64 equal-length amplitude and frequency values"
         }
-        guard normalizedPowerAmplitudes.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
-            return "audioMeters amplitudes must be finite and between 0 and 1"
+        guard normalizedPowerAmplitudes.allSatisfy({ $0.isFinite && $0 >= 0 }) else {
+            return "audioMeters amplitudes must be finite and nonnegative"
         }
         var previous: Float = 0
         for frequency in stopFrequenciesHz {
