@@ -22,6 +22,9 @@ ARCH="$($GO_BIN env GOARCH)"
 APP_BUNDLE="$ROOT_DIR/dist/darwin-$ARCH/MiMac.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/MiMac"
 
+# Refuse stale same-ID bundles before stopping, building, or launching anything.
+python3 "$ROOT_DIR/script/check_app_identity.py" --project-root "$ROOT_DIR" --arch "$ARCH"
+
 # Only stop the executable belonging to this checkout, never a name match.
 python3 - "$APP_BINARY" <<'PY'
 import os, pathlib, signal, subprocess, sys, time
