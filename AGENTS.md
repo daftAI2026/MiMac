@@ -16,6 +16,7 @@
 
 ## 已复发问题的执行检查
 
+- 第三方语音工具按 Bundle 身份、实际配置 schema 和已确认动作语义识别，不再用观察到的应用版本/构建号锁死启用。版本写入证据；显式设置优先于 schema 默认，配置缺失与初始化失败分开判断。Siri 私有 ABI 的精确系统构建兼容门仍单独保留。
 - 构建不能止于 `go tool mygo build` 成功。正式 App 使用 `script/build_and_run.sh`；独立诊断副本也必须带齐 Settings、ATVV、ProcessTap、ReadyIndicator、Speech 五个原生库，Siri 验收另需 SiriGlassBridge。启动前运行 `script/verify_app_bundle.py`；核对实际运行路径、PID、源码版本、可执行文件及原生库身份。复制正式库的诊断包必须逐个比对 SHA，不把缺库误判为权限或硬件故障。
 - 构建入口先运行 `script/check_app_identity.py`，拒绝产品及相邻研究目录内除当前 dist 外的同 Bundle ID App，改名的 `.app` 也必须检查。诊断包使用独立 ID；旧同 ID 包核对私人证据和 SHA 后及时注销、删除，保留源码即可。系统“退出并重新打开”后先核对实际 PID、完整路径、参数及单实例，再继续；不要盲目 `open -n` 启动第二份。
 - 权限故障先区分输入监控与辅助功能，核对系统设置实际页面，不能只相信跳转 URL 或开关。macOS 27 的辅助功能页可能显示为 Device Control and Data Access。重新添加 App 时用 AX 设置并回读绝对路径，不在中文输入法下模拟键入文件路径。授权后只重启同一固定二进制并复查实际能力，不用反复重建或重置全部隐私权限。

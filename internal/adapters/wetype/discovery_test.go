@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/voicetools"
 )
 
@@ -38,7 +39,7 @@ func TestDiscoverReadsAllowlistedFieldsForFutureReleaseWithoutExecutablePlan(t *
 	if len(got.Actions) != 2 {
 		t.Fatalf("actions = %#v, want both known WeType shortcut groups", got.Actions)
 	}
-	if got.Actions[0].Name != "按住说话" || got.Actions[1].Name != "切换听写" {
+	if got.Actions[0].Name != "按住说话" || got.Actions[1].Name != voiceToggleActionName {
 		t.Fatalf("WeType action labels = %#v", got.Actions)
 	}
 	for _, action := range got.Actions {
@@ -65,6 +66,98 @@ func TestDiscoverReadsAllowlistedFieldsForFutureReleaseWithoutExecutablePlan(t *
 	if _, err := json.Marshal(got); err != nil {
 		t.Fatalf("snapshot is not serializable: %v", err)
 	}
+}
+
+func TestDiscoverMapsOnlyConfirmedFnPTTAndSchemaGlobalDefault(t *testing.T) {
+	requireDarwin(t)
+	t.Run("missing global flag uses observed default when all six shortcut fields exist", func(t *testing.T) {
+		locator, appPath, _ := wetypeDiscoveryFixture(t, completeShortcutEntries())
+		writeBundleInfo(t, filepath.Join(appPath, "Contents", "Info.plist"), bundleIdentifier, "3.0.0", "670")
+		got := Discover(context.Background(), locator)
+		if got.State != voicetools.Ready || len(got.Actions) != 2 {
+			t.Fatalf("discovery = %#v", got)
+		}
+		ptt, toggle := got.Actions[0], got.Actions[1]
+		if ptt.Scope != "global" || ptt.Gesture != string(bridge.ActionHold) || ptt.Control == nil ||
+			ptt.Control.Trigger != bridge.ActionHold || ptt.Control.Request != bridge.RequestStart ||
+			ptt.Control.ReleaseRequest != bridge.RequestFinish || !ptt.Control.AllowFnKey {
+			t.Fatalf("PTT contract = %#v", ptt)
+		}
+		if candidate := ptt.Candidates[0]; candidate.Shortcut != "Fn" || !candidate.Supported {
+			t.Fatalf("PTT candidate = %#v", candidate)
+		}
+		plan, err := voicetools.ResolveAction(voicetools.ActionRef{
+			ToolID: "wetype", ActionID: ptt.ID, CandidateRaw: ptt.Candidates[0].Raw,
+		}, 1, got)
+		if err != nil || len(plan.Keys()) != 1 || plan.Keys()[0] != "Fn" {
+			t.Fatalf("PTT action plan = %#v, %v", plan, err)
+		}
+		if toggle.Name != voiceToggleActionName || toggle.Control != nil || toggle.Candidates[0].Supported {
+			t.Fatalf("Fn+Space action became executable or kept misleading name: %#v", toggle)
+		}
+	})
+
+	t.Run("missing global flag uses the same schema default on a future release", func(t *testing.T) {
+		locator, _, _ := wetypeDiscoveryFixture(t, completeShortcutEntries())
+		got := Discover(context.Background(), locator)
+		ptt := got.Actions[0]
+		if ptt.Scope != "global" || !ptt.Candidates[0].Supported || !toolActionResolves(t, got, ptt) {
+			t.Fatalf("future release with the complete shortcut schema did not resolve: %#v", ptt)
+		}
+	})
+
+	t.Run("missing global flag with incomplete shortcut schema remains unknown", func(t *testing.T) {
+		locator, _, _ := wetypeDiscoveryFixture(t, completePTTEntries())
+		got := Discover(context.Background(), locator)
+		ptt := got.Actions[0]
+		if ptt.Scope != "unknown" || ptt.Control == nil || !ptt.Candidates[0].Supported {
+			t.Fatalf("incomplete global schema produced wrong PTT metadata: %#v", ptt)
+		}
+		if _, err := voicetools.ResolveAction(voicetools.ActionRef{
+			ToolID: "wetype", ActionID: ptt.ID, CandidateRaw: ptt.Candidates[0].Raw,
+		}, 1, got); err == nil {
+			t.Fatal("PTT resolved while missing global flag lacked six-field schema evidence")
+		}
+	})
+
+	t.Run("explicit true permits configured PTT even if toggle fields are absent", func(t *testing.T) {
+		entries := append(completePTTEntries(), testEntry{key: voiceShortcutGlobalEnabledField, value: encodeVarint(1)})
+		locator, _, _ := wetypeDiscoveryFixture(t, entries)
+		got := Discover(context.Background(), locator)
+		ptt := got.Actions[0]
+		if ptt.Scope != "global" || !toolActionResolves(t, got, ptt) {
+			t.Fatalf("explicit true did not enable configured PTT: %#v", ptt)
+		}
+	})
+
+	t.Run("explicit false is not executable", func(t *testing.T) {
+		entries := append(completeShortcutEntries(), testEntry{key: voiceShortcutGlobalEnabledField, value: encodeVarint(0)})
+		locator, _, _ := wetypeDiscoveryFixture(t, entries)
+		got := Discover(context.Background(), locator)
+		ptt := got.Actions[0]
+		if ptt.Scope == "global" || toolActionResolves(t, got, ptt) {
+			t.Fatalf("explicit false enabled PTT: %#v", ptt)
+		}
+	})
+
+	t.Run("global true cannot replace all missing shortcut fields", func(t *testing.T) {
+		locator, _, _ := wetypeDiscoveryFixture(t, []testEntry{{key: voiceShortcutGlobalEnabledField, value: encodeVarint(1)}})
+		got := Discover(context.Background(), locator)
+		if got.State != voicetools.ConfigMissing || len(got.Actions) != 0 {
+			t.Fatalf("empty shortcut schema became executable: %#v", got)
+		}
+	})
+
+	t.Run("Fn plus Space is never claimed as PTT", func(t *testing.T) {
+		entries := completeShortcutEntries()
+		entries[0].value = mmkvStringValue("[63,49]")
+		locator, _, _ := wetypeDiscoveryFixture(t, entries)
+		got := Discover(context.Background(), locator)
+		ptt := got.Actions[0]
+		if ptt.Control != nil || ptt.Candidates[0].Supported || ptt.Candidates[0].Shortcut != "" {
+			t.Fatalf("non-PTT Fn+Space sequence became executable: %#v", ptt)
+		}
+	})
 }
 
 func TestDiscoverReportsMissingBundleStoreFieldsAndConfiguration(t *testing.T) {
@@ -181,6 +274,33 @@ func wetypeDiscoveryFixture(t *testing.T, entries []testEntry) (voicetools.Locat
 		t.Fatal(err)
 	}
 	return voicetools.Locator{Home: home, InputMethodDirs: []string{applications}}, appPath, settingsPath
+}
+
+func completePTTEntries() []testEntry {
+	return []testEntry{
+		{key: pttKeyCodesField, value: mmkvStringValue("[63]")},
+		{key: pttModifiersField, value: mmkvInt32Value(0)},
+		{key: pttTapCountField, value: mmkvInt32Value(1)},
+	}
+}
+
+func completeShortcutEntries() []testEntry {
+	return append(completePTTEntries(),
+		testEntry{key: toggleKeyCodesField, value: mmkvStringValue("[63,49]")},
+		testEntry{key: toggleModifiersField, value: mmkvInt32Value(0)},
+		testEntry{key: toggleTapCountField, value: mmkvInt32Value(1)},
+	)
+}
+
+func toolActionResolves(t *testing.T, snapshot voicetools.Snapshot, action voicetools.Action) bool {
+	t.Helper()
+	if len(action.Candidates) != 1 {
+		return false
+	}
+	_, err := voicetools.ResolveAction(voicetools.ActionRef{
+		ToolID: "wetype", ActionID: action.ID, CandidateRaw: action.Candidates[0].Raw,
+	}, 1, snapshot)
+	return err == nil
 }
 
 func requireDarwin(t *testing.T) {

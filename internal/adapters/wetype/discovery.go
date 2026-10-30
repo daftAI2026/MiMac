@@ -6,12 +6,28 @@ import (
 	"errors"
 	"runtime"
 
+	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/voicetools"
 )
 
+const (
+	pttActionID           = "voicePTTShortcut"
+	toggleActionID        = "voiceToggleShortcut"
+	pttKeyCodesField      = "voicePTTShortcut_keyCodes"
+	pttModifiersField     = "voicePTTShortcut_modifiers"
+	pttTapCountField      = "voicePTTShortcut_tapCount"
+	toggleKeyCodesField   = "voiceToggleShortcut_keyCodes"
+	toggleModifiersField  = "voiceToggleShortcut_modifiers"
+	toggleTapCountField   = "voiceToggleShortcut_tapCount"
+	keyCodeArrayValueType = "MMKV string containing JSON [Int]"
+	int32ValueType        = "MMKV Int32"
+	boolValueType         = "MMKV Bool"
+	voiceToggleActionName = "启动语音输入（任意键结束）"
+)
+
 // Discover reads only the installed WeType reader's allowlisted MMKV fields.
-// It reports shortcut data for display, but does not infer scope, gesture,
-// key names, or a command contract from the stored values.
+// It exposes Fn PTT only for the confirmed [63]/0/1 tuple and uses the
+// observed schema default only when every shortcut field is present.
 func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapshot {
 	if ctx == nil {
 		ctx = context.Background()
@@ -56,16 +72,17 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		return result
 	}
 
-	result.Source = "wetype.settings#voicePTTShortcut_* and voiceToggleShortcut_*"
-	if allFieldsMissing(candidate) {
+	result.Source = "wetype.settings#voicePTTShortcut_*, voiceToggleShortcut_* and voiceShortcutGlobalEnabled"
+	if allShortcutFieldsMissing(candidate) {
 		result.State = voicetools.ConfigMissing
 		result.Source = "WeType MMKV store has no stored shortcut fields"
 		return result
 	}
 
+	scope := shortcutScope(candidate)
 	result.Actions = []voicetools.Action{
-		wetypeAction(candidate, "voicePTTShortcut", "按住说话", "voicePTTShortcut_keyCodes", "voicePTTShortcut_modifiers", "voicePTTShortcut_tapCount"),
-		wetypeAction(candidate, "voiceToggleShortcut", "切换听写", "voiceToggleShortcut_keyCodes", "voiceToggleShortcut_modifiers", "voiceToggleShortcut_tapCount"),
+		wetypeAction(candidate, scope, pttActionID, "按住说话", pttKeyCodesField, pttModifiersField, pttTapCountField),
+		wetypeAction(candidate, scope, toggleActionID, voiceToggleActionName, toggleKeyCodesField, toggleModifiersField, toggleTapCountField),
 	}
 	result.State = voicetools.Ready
 	return result
@@ -91,34 +108,104 @@ func discoveryErrorState(err error, bundleState voicetools.State) voicetools.Sta
 	}
 }
 
-func allFieldsMissing(candidate Candidate) bool {
-	if len(candidate.Fields) != len(allowlistedFields) {
-		return false
-	}
-	for _, field := range candidate.Fields {
-		if field.Status != "missing" {
+func allShortcutFieldsMissing(candidate Candidate) bool {
+	for _, name := range []string{
+		pttKeyCodesField, pttModifiersField, pttTapCountField,
+		toggleKeyCodesField, toggleModifiersField, toggleTapCountField,
+	} {
+		field, ok := candidate.Fields[name]
+		if !ok || field.Status != "missing" {
 			return false
 		}
 	}
 	return true
 }
 
-func wetypeAction(candidate Candidate, actionID, name, keyCodes, modifiers, tapCount string) voicetools.Action {
+func wetypeAction(candidate Candidate, scope, actionID, name, keyCodes, modifiers, tapCount string) voicetools.Action {
 	shortcut := map[string]FieldCandidate{
 		keyCodes:  candidate.Fields[keyCodes],
 		modifiers: candidate.Fields[modifiers],
 		tapCount:  candidate.Fields[tapCount],
 	}
 	raw, _ := json.Marshal(shortcut)
-	return voicetools.Action{
-		ID:      actionID,
-		Name:    name,
-		Scope:   "unknown",
-		Gesture: "unknown",
-		Candidates: []voicetools.Candidate{{
-			Raw: string(raw),
-		}},
+	action := voicetools.Action{
+		ID:         actionID,
+		Name:       name,
+		Scope:      scope,
+		Gesture:    "unknown",
+		Candidates: []voicetools.Candidate{{Raw: string(raw)}},
 	}
+	if actionID == pttActionID && isFnPTT(candidate, keyCodes, modifiers, tapCount) {
+		action.Gesture = string(bridge.ActionHold)
+		action.Control = &voicetools.Control{
+			Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish,
+			AllowFnKey: true,
+		}
+		action.Candidates[0].Shortcut = "Fn"
+		action.Candidates[0].Supported = true
+	}
+	return action
+}
+
+func shortcutScope(candidate Candidate) string {
+	field, ok := candidate.Fields[voiceShortcutGlobalEnabledField]
+	if ok && field.Status == "present" {
+		if field.Type != boolValueType {
+			return "unknown"
+		}
+		var enabled bool
+		if len(field.Value) == 0 || json.Unmarshal(field.Value, &enabled) != nil || !enabled {
+			return "unknown"
+		}
+		return "global"
+	}
+	if ok && field.Status == "missing" && allSixShortcutFieldsPresentAndWellFormed(candidate) {
+		// WeType 3.0.0/670 reads this MMKV Bool with native default true.
+		// The observed native default is evidence for the missing-key schema;
+		// missing shortcut fields must never inherit the default scope.
+		return "global"
+	}
+	return "unknown"
+}
+
+func allSixShortcutFieldsPresentAndWellFormed(candidate Candidate) bool {
+	for _, spec := range allowlistedFields {
+		if spec.name == voiceShortcutGlobalEnabledField {
+			continue
+		}
+		field, ok := candidate.Fields[spec.name]
+		if !ok || field.Status != "present" || field.Type != spec.valueType || len(field.Value) == 0 {
+			return false
+		}
+		if spec.jsonInts {
+			var codes []int
+			if json.Unmarshal(field.Value, &codes) != nil || codes == nil {
+				return false
+			}
+		} else {
+			var value int32
+			if json.Unmarshal(field.Value, &value) != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isFnPTT(candidate Candidate, keyCodesKey, modifiersKey, tapCountKey string) bool {
+	codesField, codesOK := candidate.Fields[keyCodesKey]
+	modifiersField, modifiersOK := candidate.Fields[modifiersKey]
+	tapCountField, tapCountOK := candidate.Fields[tapCountKey]
+	if !codesOK || !modifiersOK || !tapCountOK ||
+		codesField.Status != "present" || modifiersField.Status != "present" || tapCountField.Status != "present" ||
+		codesField.Type != keyCodeArrayValueType || modifiersField.Type != int32ValueType || tapCountField.Type != int32ValueType {
+		return false
+	}
+	var codes []int
+	var modifiers, tapCount int32
+	return json.Unmarshal(codesField.Value, &codes) == nil && len(codes) == 1 && codes[0] == 63 &&
+		json.Unmarshal(modifiersField.Value, &modifiers) == nil && modifiers == 0 &&
+		json.Unmarshal(tapCountField.Value, &tapCount) == nil && tapCount == 1
 }
 
 func formatBundleVersion(version, build string) string {

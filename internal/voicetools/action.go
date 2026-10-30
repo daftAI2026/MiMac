@@ -33,6 +33,7 @@ type Control struct {
 	Trigger        bridge.ActionTrigger
 	Request        bridge.TargetRequest
 	ReleaseRequest bridge.TargetRequest
+	AllowFnKey     bool // Adapter-specific opt-in; the zero value keeps Fn unsupported.
 }
 
 // ResolveAction copies the selected command into an immutable press plan.
@@ -67,11 +68,11 @@ func ResolveAction(ref ActionRef, revision uint64, snapshot Snapshot) (bridge.Ac
 	if candidate == nil || !candidate.Supported {
 		return bridge.ActionPlan{}, unavailable
 	}
-	keys, err := keyoutput.ParseShortcut(candidate.Shortcut)
+	control := *selected.Control
+	keys, err := keyoutput.ParseShortcutWithOptions(candidate.Shortcut, keyoutput.ParseOptions{AllowFnKey: control.AllowFnKey})
 	if err != nil {
 		return bridge.ActionPlan{}, unavailable
 	}
-	control := *selected.Control
 	return bridge.NewActionPlan(bridge.ActionSpec{
 		ToolID: ref.ToolID, ActionID: ref.ActionID, CandidateRaw: ref.CandidateRaw, Revision: revision,
 		Scope: bridge.ActionGlobal, Trigger: control.Trigger, Request: control.Request, ReleaseRequest: control.ReleaseRequest,

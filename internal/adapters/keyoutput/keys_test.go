@@ -32,15 +32,39 @@ func TestParseAndFormatShortcut(t *testing.T) {
 }
 
 func TestParseShortcutRejectsUnsupportedAndMalformedKeys(t *testing.T) {
-	for _, text := range []string{"", "Fn", "VolumeUp", "A+Command", "Control++C", "Command+Command+C", "Control+Unknown", "control+C", "F01"} {
+	for _, text := range []string{"", "Fn", "Fn+Space", "VolumeUp", "A+Command", "Control++C", "Command+Command+C", "Control+Unknown", "control+C", "F01"} {
 		if _, err := ParseShortcut(text); !errors.Is(err, ErrInvalidShortcut) {
 			t.Errorf("ParseShortcut(%q) error = %v, want ErrInvalidShortcut", text, err)
+		}
+	}
+	for _, keys := range [][]bridge.Key{{"Fn"}, {"Fn", "Space"}} {
+		if _, err := FormatShortcut(keys); !errors.Is(err, ErrInvalidShortcut) {
+			t.Errorf("FormatShortcut(%v) error = %v, want ErrInvalidShortcut", keys, err)
+		}
+	}
+}
+
+func TestParseShortcutFnRequiresExplicitOption(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		keys []bridge.Key
+	}{
+		{text: "Fn", keys: []bridge.Key{"Fn"}},
+		{text: "Fn+Space", keys: []bridge.Key{"Fn", "Space"}},
+	} {
+		keys, err := ParseShortcutWithOptions(test.text, ParseOptions{AllowFnKey: true})
+		if err != nil {
+			t.Fatalf("ParseShortcutWithOptions(%q): %v", test.text, err)
+		}
+		if !reflect.DeepEqual(keys, test.keys) {
+			t.Fatalf("parsed keys = %v, want %v", keys, test.keys)
 		}
 	}
 }
 
 func TestPlanKeysMapsCommonVirtualKeys(t *testing.T) {
 	want := map[bridge.Key]uint16{
+		"Fn": 0x3F,
 		"Up": 0x7E, "Down": 0x7D, "Left": 0x7B, "Right": 0x7C,
 		"Return": 0x24, "Escape": 0x35, "Space": 0x31,
 		"Tab": 0x30, "Backspace": 0x33, "Delete": 0x75,
@@ -66,13 +90,27 @@ func TestPlanKeysMapsCommonVirtualKeys(t *testing.T) {
 	}
 }
 
+func TestPlanKeysFnPressReleaseFlags(t *testing.T) {
+	strokes, held, err := PlanKeys(nil, []bridge.Effect{
+		bridge.KeyDownEffect{Key: "Fn"},
+		bridge.KeyUpEffect{Key: "Fn"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strokes) != 2 || strokes[0].Code != 0x3F || strokes[1].Code != 0x3F ||
+		!strokes[0].Down || strokes[1].Down || strokes[0].Flags != 1<<23 || strokes[1].Flags != 0 || len(held) != 0 {
+		t.Fatalf("Fn press/release plan = %#v held=%v", strokes, held)
+	}
+}
+
 func TestPlanKeysRejectsWholeBatchWithoutPartialOutput(t *testing.T) {
 	tests := []struct {
 		name    string
 		effects []bridge.Effect
 	}{
 		{
-			name: "unknown second key",
+			name: "unheld second key",
 			effects: []bridge.Effect{
 				bridge.KeyDownEffect{Key: "C"},
 				bridge.KeyUpEffect{Key: "Fn"},

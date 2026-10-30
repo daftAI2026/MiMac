@@ -344,6 +344,41 @@ func TestToolShortcutCopyRequiresGlobalScopeAndValidKey(t *testing.T) {
 	}
 }
 
+func TestFnShortcutRequiresActionControlOptIn(t *testing.T) {
+	action := voicetools.Action{
+		ID: "wetype-ptt", Name: "按住说话", Scope: "global", Gesture: "hold",
+		Control: &voicetools.Control{
+			Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish, AllowFnKey: true,
+		},
+		Candidates: []voicetools.Candidate{{Raw: "ptt", Shortcut: "Fn", Supported: true}},
+	}
+	candidate := action.Candidates[0]
+	if !canBindToolAction(action, candidate) {
+		t.Fatal("Fn candidate rejected despite explicit AllowFnKey opt-in")
+	}
+
+	withoutOptIn := action
+	control := *action.Control
+	control.AllowFnKey = false
+	withoutOptIn.Control = &control
+	if canBindToolAction(withoutOptIn, candidate) {
+		t.Fatal("Fn candidate accepted without explicit AllowFnKey opt-in")
+	}
+
+	snapshot := voicetools.Snapshot{State: voicetools.Ready, Actions: []voicetools.Action{action}}
+	s, _ := newToolShortcutsTestShell(t, snapshot)
+	item := findToolMenuItem(s.toolShortcutMenuItem(s.tools[0], legacyXiaomiProfileID, toolShortcutsTestButton).Submenu, "按住说话  Fn")
+	if item == nil || item.Disabled || item.Click == nil {
+		t.Fatalf("Fn PTT menu entry is not selectable: %#v", item)
+	}
+
+	s.tools[0].snapshot.Actions[0].Control.AllowFnKey = false
+	item = findToolMenuItemPrefix(s.toolShortcutMenuItem(s.tools[0], legacyXiaomiProfileID, toolShortcutsTestButton).Submenu, "按住说话：暂不支持此快捷键")
+	if item == nil || !item.Disabled || item.Click != nil {
+		t.Fatalf("Fn menu entry remained selectable without opt-in: %#v", item)
+	}
+}
+
 func TestGestureTextAloneCannotAuthorizeToolRouting(t *testing.T) {
 	snapshot := toolShortcutsTestSnapshot("Ctrl+K")
 	snapshot.Actions[0].Gesture = "tap-to-start-stop"

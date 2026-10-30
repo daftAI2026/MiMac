@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/egoist/mygo"
-	"mimac.local/mimac/internal/adapters/keyoutput"
 	"mimac.local/mimac/internal/voicetools"
 )
 
@@ -96,14 +95,9 @@ func (s *shell) toolCandidateIsCurrent(tool *voiceTool, profileID, buttonID stri
 	return false
 }
 
-// Candidate syntax alone is insufficient: a tool must declare its command.
+// ResolveAction is the sole binding validator for scope, candidate syntax,
+// and the adapter's explicit command contract.
 func canBindToolAction(action voicetools.Action, candidate voicetools.Candidate) bool {
-	if action.Disabled || action.Scope != "global" || !candidate.Supported || action.Control == nil {
-		return false
-	}
-	if _, err := keyoutput.ParseShortcut(candidate.Shortcut); err != nil {
-		return false
-	}
 	_, err := voicetools.ResolveAction(voicetools.ActionRef{ToolID: "candidate", ActionID: action.ID, CandidateRaw: candidate.Raw}, 1,
 		voicetools.Snapshot{State: voicetools.Ready, Actions: []voicetools.Action{action}})
 	return err == nil

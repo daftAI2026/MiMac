@@ -44,6 +44,28 @@ func TestResolveActionRejectsUnavailableAndAmbiguousConfigurations(t *testing.T)
 	}
 }
 
+func TestResolveActionRequiresExplicitFnOptIn(t *testing.T) {
+	ref, snapshot := actionFixture()
+	snapshot.Actions[0].Control = &Control{
+		Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish,
+	}
+	snapshot.Actions[0].Candidates[0].Raw = "ptt"
+	snapshot.Actions[0].Candidates[0].Shortcut = "Fn"
+	ref.CandidateRaw = "ptt"
+	if _, err := ResolveAction(ref, 7, snapshot); err == nil {
+		t.Fatal("Fn candidate resolved without Control.AllowFnKey")
+	}
+	snapshot.Actions[0].Control.AllowFnKey = true
+	plan, err := ResolveAction(ref, 7, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Keys(), []bridge.Key{"Fn"}) || plan.Spec().Trigger != bridge.ActionHold ||
+		plan.Spec().Request != bridge.RequestStart || plan.Spec().ReleaseRequest != bridge.RequestFinish {
+		t.Fatalf("Fn PTT plan = %#v keys=%v", plan.Spec(), plan.Keys())
+	}
+}
+
 func TestResolvedActionDoesNotAliasDiscoverySnapshot(t *testing.T) {
 	r, s := actionFixture()
 	plan, err := ResolveAction(r, 7, s)

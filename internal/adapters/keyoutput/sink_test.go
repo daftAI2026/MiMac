@@ -199,6 +199,30 @@ func TestGlobalTargetAllocatesWholeBatchBeforeHIDPosts(t *testing.T) {
 	}
 }
 
+func TestFakeSinkPostsFnPressAndRelease(t *testing.T) {
+	f := newFakeEventAPI()
+	s, err := openWithAPI(GlobalTarget, f.api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Submit([]bridge.Effect{bridge.KeyDownEffect{Key: "Fn"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wantCreated := []struct {
+		code uint16
+		down bool
+	}{{code: 0x3F, down: true}, {code: 0x3F, down: false}}
+	if !reflect.DeepEqual(f.created, wantCreated) || !reflect.DeepEqual(f.flags, []uint64{1 << 23, 0}) {
+		t.Fatalf("fake Fn output = created=%#v flags=%#v", f.created, f.flags)
+	}
+	if len(f.globalPosts) != 2 || len(s.Held()) != 0 {
+		t.Fatalf("fake Fn posts=%#v held=%v", f.globalPosts, s.Held())
+	}
+}
+
 func TestSelfTargetPostsOnlyToCurrentProcess(t *testing.T) {
 	f := newFakeEventAPI()
 	s, err := openWithAPI(SelfTarget, f.api)

@@ -32,6 +32,7 @@ func TestDecodeStoreReturnsOnlyAllowlistedRawCandidates(t *testing.T) {
 		{key: "voicePTTShortcut_modifiers", value: mmkvInt32Value(7)},
 		{key: "voiceToggleShortcut_keyCodes", value: mmkvStringValue("[70]")},
 		{key: "voiceToggleShortcut_tapCount", value: mmkvInt32Value(-1)},
+		{key: voiceShortcutGlobalEnabledField, value: encodeVarint(1)},
 		{key: "unrelated.private.setting", value: []byte("PRIVATE_SENTINEL")},
 	})
 
@@ -46,6 +47,7 @@ func TestDecodeStoreReturnsOnlyAllowlistedRawCandidates(t *testing.T) {
 	assertFieldJSON(t, candidate, "voicePTTShortcut_modifiers", "7")
 	assertFieldJSON(t, candidate, "voiceToggleShortcut_keyCodes", "[70]")
 	assertFieldJSON(t, candidate, "voiceToggleShortcut_tapCount", "-1")
+	assertFieldJSON(t, candidate, voiceShortcutGlobalEnabledField, "true")
 	assertFieldMissing(t, candidate, "voicePTTShortcut_tapCount")
 	assertFieldMissing(t, candidate, "voiceToggleShortcut_modifiers")
 
@@ -72,6 +74,7 @@ func TestDecodeStoreUsesLastValueAndHonorsTombstones(t *testing.T) {
 	}
 	assertFieldJSON(t, candidate, "voicePTTShortcut_keyCodes", "[22]")
 	assertFieldMissing(t, candidate, "voiceToggleShortcut_tapCount")
+	assertFieldMissing(t, candidate, voiceShortcutGlobalEnabledField)
 }
 
 func TestDecodeStoreRejectsUnsupportedVersionEncryptionCRCAndSizes(t *testing.T) {
@@ -137,6 +140,31 @@ func TestDecodeStoreRejectsMalformedRecordsAndAllowlistedValues(t *testing.T) {
 	metadata, data = makeStoreFixture([]testEntry{{key: "voicePTTShortcut_modifiers", value: []byte{0x01, 0x02}}})
 	if _, err := decodeStore(metadata, data); !errors.Is(err, ErrMalformedValue) {
 		t.Fatalf("trailing Int32 bytes error = %v", err)
+	}
+
+	metadata, data = makeStoreFixture([]testEntry{{key: voiceShortcutGlobalEnabledField, value: encodeVarint(2)}})
+	if _, err := decodeStore(metadata, data); !errors.Is(err, ErrMalformedValue) {
+		t.Fatalf("non-boolean global flag error = %v", err)
+	}
+}
+
+func TestDecodeBoolAcceptsOnlyMMKVBooleanValues(t *testing.T) {
+	for _, test := range []struct {
+		value int32
+		want  string
+	}{
+		{value: 0, want: "false"},
+		{value: 1, want: "true"},
+	} {
+		got, err := decodeBool(mmkvInt32Value(test.value))
+		if err != nil || string(got) != test.want {
+			t.Fatalf("decodeBool(%d) = %s, %v; want %s", test.value, got, err, test.want)
+		}
+	}
+	for _, encoded := range [][]byte{{}, {0x02}, {0x01, 0x00}} {
+		if _, err := decodeBool(encoded); !errors.Is(err, ErrMalformedValue) {
+			t.Errorf("decodeBool(%v) error = %v, want ErrMalformedValue", encoded, err)
+		}
 	}
 }
 

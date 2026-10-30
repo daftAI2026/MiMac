@@ -22,6 +22,8 @@ const (
 	storeDirectory   = "WeType/mmkv"
 	storeName        = "wetype.settings"
 
+	voiceShortcutGlobalEnabledField = "voiceShortcutGlobalEnabled"
+
 	maxStoreDataBytes     int64 = 1 << 20
 	maxStoreMetadataBytes int64 = 64 << 10
 	mmkvMetaV3Size              = 104
@@ -51,12 +53,14 @@ var allowlistedFields = []fieldSpec{
 	{name: "voiceToggleShortcut_keyCodes", valueType: "MMKV string containing JSON [Int]", jsonInts: true},
 	{name: "voiceToggleShortcut_modifiers", valueType: "MMKV Int32"},
 	{name: "voiceToggleShortcut_tapCount", valueType: "MMKV Int32"},
+	{name: voiceShortcutGlobalEnabledField, valueType: "MMKV Bool", jsonBool: true},
 }
 
 type fieldSpec struct {
 	name      string
 	valueType string
 	jsonInts  bool
+	jsonBool  bool
 }
 
 // FieldCandidate carries a typed raw value without assigning shortcut or
@@ -67,8 +71,9 @@ type FieldCandidate struct {
 	Value  json.RawMessage `json:"value,omitempty"`
 }
 
-// Candidate includes the matched bundle identity and only the six
-// allowlisted MMKV fields. Paths and unrelated MMKV records are not exposed.
+// Candidate includes the matched bundle identity and only the six shortcut
+// fields plus the global-shortcut Bool. Paths and unrelated MMKV records are
+// not exposed.
 type Candidate struct {
 	BundleIdentifier string                    `json:"bundleIdentifier"`
 	BundleVersion    string                    `json:"bundleVersion"`
@@ -192,6 +197,8 @@ func decodeStore(metadata, data []byte) (Candidate, error) {
 			var encoded json.RawMessage
 			if spec.jsonInts {
 				encoded, err = decodeKeyCodeArray(value)
+			} else if spec.jsonBool {
+				encoded, err = decodeBool(value)
 			} else {
 				encoded, err = decodeInt32(value)
 			}
@@ -294,6 +301,14 @@ func decodeInt32(encoded []byte) (json.RawMessage, error) {
 		return nil, ErrMalformedValue
 	}
 	return json.Marshal(decoded)
+}
+
+func decodeBool(encoded []byte) (json.RawMessage, error) {
+	value, offset, ok := readMMKVVarint64(encoded, 0)
+	if !ok || offset != len(encoded) || value > 1 {
+		return nil, ErrMalformedValue
+	}
+	return json.Marshal(value == 1)
 }
 
 func readMMKVVarint32(data []byte, offset int) (uint32, int, bool) {

@@ -35,6 +35,7 @@ const (
 	flagControl uint64 = 1 << 18
 	flagOption  uint64 = 1 << 19
 	flagCommand uint64 = 1 << 20
+	flagFn      uint64 = 1 << 23
 )
 
 var letterCodes = map[byte]uint16{
@@ -61,6 +62,8 @@ var functionCodes = map[int]uint16{
 
 func specFor(key bridge.Key) (keySpec, error) {
 	switch key {
+	case "Fn":
+		return keySpec{code: 0x3F, flag: flagFn}, nil // kVK_Function
 	case "Control":
 		return keySpec{code: 0x3B, flag: flagControl}, nil // kVK_Control
 	case "Shift":
@@ -121,10 +124,22 @@ func specFor(key bridge.Key) (keySpec, error) {
 	return keySpec{}, fmt.Errorf("unsupported key %q", key)
 }
 
+// ParseOptions enables adapter-specific keys without widening the common
+// shortcut grammar. The zero value preserves the ordinary key set.
+type ParseOptions struct {
+	AllowFnKey bool
+}
+
 // ParseShortcut accepts canonical key names separated by '+'. Modifiers must
 // precede non-modifiers; it accepts one non-modifier, or modifier-only holds.
 // Letters map to ANSI physical-key codes, not layout-independent text input.
 func ParseShortcut(text string) ([]bridge.Key, error) {
+	return ParseShortcutWithOptions(text, ParseOptions{})
+}
+
+// ParseShortcutWithOptions parses an adapter shortcut. Fn is accepted only
+// when the adapter has explicitly opted in through AllowFnKey.
+func ParseShortcutWithOptions(text string, options ParseOptions) ([]bridge.Key, error) {
 	if text == "" || strings.TrimSpace(text) != text {
 		return nil, fmt.Errorf("%w: empty or padded shortcut", ErrInvalidShortcut)
 	}
@@ -137,6 +152,9 @@ func ParseShortcut(text string) ([]bridge.Key, error) {
 			return nil, fmt.Errorf("%w: empty or padded key", ErrInvalidShortcut)
 		}
 		key := bridge.Key(part)
+		if key == "Fn" && !options.AllowFnKey {
+			return nil, fmt.Errorf("%w: unsupported key %q", ErrInvalidShortcut, key)
+		}
 		spec, err := specFor(key)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidShortcut, err)
@@ -168,6 +186,9 @@ func FormatShortcut(keys []bridge.Key) (string, error) {
 	mainSeen := false
 	parts := make([]string, 0, len(keys))
 	for i, key := range keys {
+		if key == "Fn" {
+			return "", fmt.Errorf("%w: unsupported key %q", ErrInvalidShortcut, key)
+		}
 		spec, err := specFor(key)
 		if err != nil {
 			return "", fmt.Errorf("%w: %v", ErrInvalidShortcut, err)
