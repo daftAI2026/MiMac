@@ -7,13 +7,15 @@ flowchart LR
     keyout --> target["当前外部语音工具"]
 
     tool["已选工具注册的 audioRouteFactory"] --> route["liveAudioConnection 准备与持有路由"]
-    route --> prepare
+    route --> identity["应用身份与空闲检查\n冷进程无音频客户端不等于不存在"]
+    identity --> prepare
     core --> prepare["音频路由就绪时发出 PrepareSource"]
     prepare --> session["audio-session Runtime 持有本次会话资源"]
     session --> source["设备 PCM Source"]
     source --> pcm["有界 PCM 块"]
-    pcm --> sink["配置的 sink：Apple Speech 或受支持的豆包路由"]
-    sink --> drain["本地 drain 与可选最终转写"]
+    pcm --> sink["配置的 sink：Apple Speech 或豆包 / 微信兼容路由"]
+    sink --> receiver["兼容路由只向实际收音的精确 PID / UID 投递"]
+    receiver --> drain["本地 drain 与可选最终转写"]
     drain --> text["Apple 路由可投递到按下时捕获的文本目标"]
 
     pcm --> meter["同次 Read 的 RMS / peak 与可选频谱\n仅当前 token 快照，不保存录音"]

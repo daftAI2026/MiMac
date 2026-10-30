@@ -28,6 +28,8 @@ flowchart LR
     shell --> keys
     shell --> routeFactory
     routeFactory --> routeOwner
+    routeFactory --> contracts["Apple / 豆包 / 微信薄适配\n各自身份、输入源和偏好协议"]
+    contracts --> routeOwner
     routeOwner --> audio
     shell --> tools
     shell --> text
