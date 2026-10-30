@@ -30,7 +30,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 	ui.Row(c).Fill().MinWidth(0).AlignItems(ui.Start).Gap(windowInset).Children(func() {
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Height(frameHeight).MaxHeightPercent(100).MinHeight(0).Role(ui.RoleGroup).Label("遥控器预览").Gap(sectionGap).AlignItems(ui.Center).Children(func() {
 			if len(s.deviceProfiles) > 1 {
-				appMenuButton(c, a, profile.Name, false, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark), func(menu *ui.Menu) {
+				appMenuButton(c, a, profile.Name, false, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark, accessoryIconSize), func(menu *ui.Menu) {
 					for _, plugin := range s.deviceProfiles {
 						if menu.Item(plugin.Profile.Name).Checked(plugin.Profile.ID == profile.ID).Chosen() {
 							if err := s.selectDeviceProfile(plugin.Profile.ID); err != nil {
@@ -163,7 +163,7 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 			s.chooseMappingVoiceTool(c, tool)
 		}
 	default:
-		appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark), func(menu *ui.Menu) {
+		appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark, accessoryIconSize), func(menu *ui.Menu) {
 			for _, tool := range active {
 				item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
 				if item.Chosen() && tool.id != s.currentVoiceTool && !s.toolLoadFailed {

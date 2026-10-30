@@ -7,29 +7,81 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
+	"sync"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
 	"golang.org/x/image/tiff"
 )
 
-// Image renders an AppKit SF Symbol into an alpha-preserving bitmap. It must
-// be called while MyGo's event loop is active; native work runs on its main
-// thread. dark selects a light foreground for a dark sidebar.
-func Image(name string, dark bool) (image.Image, error) {
+type nsPoint struct{ X, Y float64 }
+type nsSize struct{ Width, Height float64 }
+type nsRect struct {
+	Origin nsPoint
+	Size   nsSize
+}
+
+var (
+	objcLibrary        uintptr
+	bitmapMessagesOnce sync.Once
+	bitmapMessagesErr  error
+	msgInitBitmap      func(obj objc.ID, sel objc.SEL, planes uintptr, width, height, bitsPerSample, samplesPerPixel int, alpha, planar bool, colorSpace objc.ID, bytesPerRow, bitsPerPixel int) objc.ID
+	msgSetSize         func(obj objc.ID, sel objc.SEL, size nsSize)
+	msgDrawImage       func(obj objc.ID, sel objc.SEL, dst, src nsRect, operation uint, fraction float64)
+)
+
+// Image rasterizes an AppKit SF Symbol into a square 2× bitmap for a logical
+// pointSize × pointSize slot. The returned image's bounds are pixels; its
+// TIFF representation also carries the logical point size. It must be called
+// while MyGo's event loop is active; native work runs on its main thread.
+// dark selects a light foreground for a dark sidebar.
+func Image(name string, dark bool, pointSize float64) (image.Image, error) {
 	if name == "" {
 		return nil, errors.New("symbols: empty SF Symbol name")
+	}
+	if math.IsNaN(pointSize) || math.IsInf(pointSize, 0) || pointSize <= 0 {
+		return nil, fmt.Errorf("symbols: invalid point size %v", pointSize)
+	}
+	if math.Ceil(pointSize*2) > maxRasterPixels {
+		return nil, fmt.Errorf("symbols: point size %v exceeds raster limit", pointSize)
+	}
+	if err := loadBitmapMessages(); err != nil {
+		return nil, err
 	}
 	var result image.Image
 	err := errors.New("symbols: MyGo main loop is unavailable")
 	mygo.RunOnMain(func() {
-		result, err = imageOnMain(name, dark)
+		result, err = imageOnMain(name, dark, pointSize)
 	})
 	return result, err
 }
 
-func imageOnMain(name string, dark bool) (image.Image, error) {
+const maxRasterPixels = 2048
+
+func loadBitmapMessages() error {
+	bitmapMessagesOnce.Do(func() {
+		var err error
+		objcLibrary, err = purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW)
+		if err != nil {
+			bitmapMessagesErr = fmt.Errorf("symbols: load Objective-C runtime: %w", err)
+			return
+		}
+		msgSend, err := purego.Dlsym(objcLibrary, "objc_msgSend")
+		if err != nil {
+			bitmapMessagesErr = fmt.Errorf("symbols: find objc_msgSend: %w", err)
+			return
+		}
+		purego.RegisterFunc(&msgInitBitmap, msgSend)
+		purego.RegisterFunc(&msgSetSize, msgSend)
+		purego.RegisterFunc(&msgDrawImage, msgSend)
+	})
+	return bitmapMessagesErr
+}
+
+func imageOnMain(name string, dark bool, pointSize float64) (image.Image, error) {
 	poolClass := objc.GetClass("NSAutoreleasePool")
 	if poolClass == 0 {
 		return nil, errors.New("symbols: AppKit autorelease pool unavailable")
@@ -43,12 +95,15 @@ func imageOnMain(name string, dark bool) (image.Image, error) {
 	imageClass := objc.GetClass("NSImage")
 	configClass := objc.GetClass("NSImageSymbolConfiguration")
 	colorClass := objc.GetClass("NSColor")
-	if imageClass == 0 || configClass == 0 || colorClass == 0 {
-		return nil, errors.New("symbols: SF Symbols require macOS 11 or later")
+	bitmapClass := objc.GetClass("NSBitmapImageRep")
+	graphicsClass := objc.GetClass("NSGraphicsContext")
+	colorSpaceClass := objc.GetClass("NSColorSpace")
+	if imageClass == 0 || configClass == 0 || colorClass == 0 || bitmapClass == 0 || graphicsClass == 0 || colorSpaceClass == 0 {
+		return nil, errors.New("symbols: AppKit image classes are unavailable")
 	}
 	if !responds(objc.ID(imageClass), "imageWithSystemSymbolName:accessibilityDescription:") ||
 		!responds(objc.ID(configClass), "configurationWithPointSize:weight:") ||
-		!responds(objc.ID(configClass), "configurationWithHierarchicalColor:") {
+		!responds(objc.ID(configClass), "configurationWithPaletteColors:") {
 		return nil, errors.New("symbols: required SF Symbol configuration is unavailable")
 	}
 
@@ -60,8 +115,7 @@ func imageOnMain(name string, dark bool) (image.Image, error) {
 	base.Send(selector("retain"))
 	defer base.Send(selector("release"))
 
-	// Rasterize at 2x so the 20 DIP settings icon stays sharp on Retina displays.
-	pointConfig := objc.ID(configClass).Send(selector("configurationWithPointSize:weight:"), 40.0, 0.0)
+	pointConfig := objc.ID(configClass).Send(selector("configurationWithPointSize:weight:"), pointSize, 0.0)
 	if pointConfig == 0 {
 		return nil, errors.New("symbols: could not configure SF Symbol size")
 	}
@@ -82,7 +136,14 @@ func imageOnMain(name string, dark bool) (image.Image, error) {
 	color.Send(selector("retain"))
 	defer color.Send(selector("release"))
 
-	colorConfig := objc.ID(configClass).Send(selector("configurationWithHierarchicalColor:"), color)
+	// Give every symbol layer the same foreground. Hierarchical color makes
+	// outlines such as info.circle's ring look lighter than sibling icons.
+	colors := [...]objc.ID{color, color, color}
+	palette := objc.ID(objc.GetClass("NSArray")).Send(selector("arrayWithObjects:count:"), unsafe.Pointer(&colors[0]), uintptr(len(colors)))
+	if palette == 0 {
+		return nil, errors.New("symbols: could not create SF Symbol palette")
+	}
+	colorConfig := objc.ID(configClass).Send(selector("configurationWithPaletteColors:"), palette)
 	if colorConfig == 0 {
 		return nil, errors.New("symbols: could not configure SF Symbol color")
 	}
@@ -106,7 +167,51 @@ func imageOnMain(name string, dark bool) (image.Image, error) {
 	rendered.Send(selector("retain"))
 	defer rendered.Send(selector("release"))
 
-	data := rendered.Send(selector("TIFFRepresentation"))
+	imageSize := objc.Send[nsSize](rendered, selector("size"))
+	if imageSize.Width <= 0 || imageSize.Height <= 0 || math.IsNaN(imageSize.Width) || math.IsNaN(imageSize.Height) || math.IsInf(imageSize.Width, 0) || math.IsInf(imageSize.Height, 0) {
+		return nil, fmt.Errorf("symbols: invalid SF Symbol size %gx%g", imageSize.Width, imageSize.Height)
+	}
+	fit := math.Min(pointSize/imageSize.Width, pointSize/imageSize.Height)
+	drawSize := nsSize{Width: imageSize.Width * fit, Height: imageSize.Height * fit}
+	destination := nsRect{
+		Origin: nsPoint{X: (pointSize - drawSize.Width) / 2, Y: (pointSize - drawSize.Height) / 2},
+		Size:   drawSize,
+	}
+
+	pixels := int(math.Ceil(pointSize * 2))
+	allocated := objc.ID(bitmapClass).Send(selector("alloc"))
+	if allocated == 0 {
+		return nil, errors.New("symbols: could not allocate SF Symbol bitmap")
+	}
+	bitmap := msgInitBitmap(allocated, selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
+		0, pixels, pixels, 8, 4, true, false, nsString("NSCalibratedRGBColorSpace"), 0, 0)
+	if bitmap == 0 {
+		return nil, errors.New("symbols: could not initialize SF Symbol bitmap")
+	}
+	bitmap.Send(selector("autorelease"))
+
+	sRGBSpace := objc.ID(colorSpaceClass).Send(selector("sRGBColorSpace"))
+	if sRGBSpace == 0 {
+		return nil, errors.New("symbols: could not get sRGB color space")
+	}
+	bitmap = bitmap.Send(selector("bitmapImageRepByRetaggingWithColorSpace:"), uintptr(sRGBSpace))
+	if bitmap == 0 {
+		return nil, errors.New("symbols: could not retag SF Symbol bitmap as sRGB")
+	}
+	msgSetSize(bitmap, selector("setSize:"), nsSize{Width: pointSize, Height: pointSize})
+
+	context := objc.ID(graphicsClass).Send(selector("graphicsContextWithBitmapImageRep:"), uintptr(bitmap))
+	if context == 0 {
+		return nil, errors.New("symbols: could not create SF Symbol bitmap context")
+	}
+	objc.ID(graphicsClass).Send(selector("saveGraphicsState"))
+	defer objc.ID(graphicsClass).Send(selector("restoreGraphicsState"))
+	objc.ID(graphicsClass).Send(selector("setCurrentContext:"), uintptr(context))
+	context.Send(selector("setImageInterpolation:"), 3)                                                        // NSImageInterpolationHigh
+	msgDrawImage(rendered, selector("drawInRect:fromRect:operation:fraction:"), destination, nsRect{}, 2, 1.0) // SourceOver
+	context.Send(selector("flushGraphics"))
+
+	data := bitmap.Send(selector("TIFFRepresentation"))
 	if data == 0 {
 		return nil, errors.New("symbols: AppKit returned no TIFF data")
 	}
@@ -117,11 +222,11 @@ func imageOnMain(name string, dark bool) (image.Image, error) {
 	if length == 0 || length > 8*1024*1024 {
 		return nil, errors.New("symbols: invalid TIFF data length")
 	}
-	pixels := objc.Send[*byte](data, selector("bytes"))
-	if pixels == nil {
+	pixelsPtr := objc.Send[*byte](data, selector("bytes"))
+	if pixelsPtr == nil {
 		return nil, errors.New("symbols: TIFF data has no bytes")
 	}
-	encoded := append([]byte(nil), unsafe.Slice(pixels, int(length))...)
+	encoded := append([]byte(nil), unsafe.Slice(pixelsPtr, int(length))...)
 	decoded, err := tiff.Decode(bytes.NewReader(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("symbols: decode AppKit TIFF: %w", err)

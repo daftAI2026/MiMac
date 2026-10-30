@@ -39,7 +39,7 @@ type settingsState struct {
 	deviceTone            statusTone
 	brandMark             *ui.SVG
 	modelBitmaps          map[string]*ui.Bitmap
-	navigationSymbols     map[string]*ui.Bitmap
+	navigationSymbols     map[symbolKey]*ui.Bitmap
 	appIcon               *ui.Bitmap
 	socialIcons           map[string]*ui.SVG
 	voiceToolIcons        map[string]*voiceToolIcon
@@ -81,8 +81,8 @@ func (s *shell) settings(c *ui.Context) {
 			ui.Box(c).Height(max(c.TitleBar().Height, sidebarHeaderHeight)).FillWidth().Shrink(0).DragWindow()
 			s.navigationItems(c, a)
 			ui.Box(c).Grow(1)
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(spaceSM).Padding(spaceSM).Children(func() {
-				ui.Icon(c, s.brandMark).FontSize(20).TextColor(a.theme.Text)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sidebarLabelGap).Padding(0, spaceMD, 0, sidebarItemInset).Children(func() {
+				ui.Icon(c, s.brandMark).FontSize(settingsIconSize).TextColor(a.theme.Text)
 				ui.Text(c, "MiMac").FontSize(a.fonts.body).TextColor(a.theme.Text)
 			})
 		})

@@ -79,7 +79,7 @@ func (s *shell) aboutSettings(c *ui.Context, a appearance) {
 								}
 							})
 							ui.Text(c, link.name).FontSize(a.fonts.body).Grow(1)
-							if icon := s.systemSymbol("arrow.up.right", a.theme.Dark); icon != nil {
+							if icon := s.systemSymbol("arrow.up.right", a.theme.Dark, accessoryIconSize); icon != nil {
 								ui.Image(c, icon).Width(accessoryIconSize).Height(accessoryIconSize).Fit(ui.Contain).Shrink(0)
 							}
 						})

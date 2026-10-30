@@ -17,12 +17,12 @@ type voiceToolIcon struct {
 func (s *shell) voiceToolArtwork(c *ui.Context, a appearance, tool *voiceTool) {
 	var icon *ui.Bitmap
 	if tool.systemArtwork != "" {
-		icon = s.systemSymbol(tool.systemArtwork, a.theme.Dark)
+		icon = s.systemSymbol(tool.systemArtwork, a.theme.Dark, settingsIconSize)
 	} else {
 		icon = s.voiceToolIcon(tool)
 	}
 	if icon == nil {
-		icon = s.systemSymbol("app", a.theme.Dark)
+		icon = s.systemSymbol("app", a.theme.Dark, settingsIconSize)
 	}
 	if icon != nil {
 		ui.Image(c, icon).Width(settingsIconSize).Height(settingsIconSize).Fit(ui.Contain).Shrink(0)
