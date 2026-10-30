@@ -72,7 +72,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		return result
 	}
 
-	result.Source = "wetype.settings#voicePTTShortcut_*, voiceToggleShortcut_* and voiceShortcutGlobalEnabled"
+	result.Source = "wetype.settings#voicePTTShortcut_*, voiceToggleShortcut_*, voiceShortcutGlobalEnabled and preferred microphone UID"
 	if allShortcutFieldsMissing(candidate) {
 		result.State = voicetools.ConfigMissing
 		result.Source = "WeType MMKV store has no stored shortcut fields"
@@ -170,7 +170,7 @@ func shortcutScope(candidate Candidate) string {
 
 func allSixShortcutFieldsPresentAndWellFormed(candidate Candidate) bool {
 	for _, spec := range allowlistedFields {
-		if spec.name == voiceShortcutGlobalEnabledField {
+		if spec.name == voiceShortcutGlobalEnabledField || spec.name == preferredMicrophoneUIDField {
 			continue
 		}
 		field, ok := candidate.Fields[spec.name]

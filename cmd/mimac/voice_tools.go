@@ -206,7 +206,7 @@ func builtInVoiceTools() []*voiceTool {
 		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo"},
 		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
-		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, fallbackIconPNG: wetype.IconPNG},
+		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}

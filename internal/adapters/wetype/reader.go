@@ -1,5 +1,6 @@
-// Package wetype reads only the statically allowlisted shortcut settings from
-// the verified WeType MMKV store. It does not interpret key codes or actions.
+// Package wetype reads only statically allowlisted shortcut and microphone
+// settings from the verified WeType MMKV store. It does not interpret key
+// codes or actions.
 package wetype
 
 import (
@@ -23,6 +24,7 @@ const (
 	storeName        = "wetype.settings"
 
 	voiceShortcutGlobalEnabledField = "voiceShortcutGlobalEnabled"
+	preferredMicrophoneUIDField     = "voice.input.preferredDeviceUID.v2"
 
 	maxStoreDataBytes     int64 = 1 << 20
 	maxStoreMetadataBytes int64 = 64 << 10
@@ -54,13 +56,15 @@ var allowlistedFields = []fieldSpec{
 	{name: "voiceToggleShortcut_modifiers", valueType: "MMKV Int32"},
 	{name: "voiceToggleShortcut_tapCount", valueType: "MMKV Int32"},
 	{name: voiceShortcutGlobalEnabledField, valueType: "MMKV Bool", jsonBool: true},
+	{name: preferredMicrophoneUIDField, valueType: "MMKV string", jsonString: true},
 }
 
 type fieldSpec struct {
-	name      string
-	valueType string
-	jsonInts  bool
-	jsonBool  bool
+	name       string
+	valueType  string
+	jsonInts   bool
+	jsonBool   bool
+	jsonString bool
 }
 
 // FieldCandidate carries a typed raw value without assigning shortcut or
@@ -72,8 +76,8 @@ type FieldCandidate struct {
 }
 
 // Candidate includes the matched bundle identity and only the six shortcut
-// fields plus the global-shortcut Bool. Paths and unrelated MMKV records are
-// not exposed.
+// fields, the global-shortcut Bool, and the preferred microphone UID. Paths
+// and unrelated MMKV records are not exposed.
 type Candidate struct {
 	BundleIdentifier string                    `json:"bundleIdentifier"`
 	BundleVersion    string                    `json:"bundleVersion"`
@@ -199,10 +203,17 @@ func decodeStore(metadata, data []byte) (Candidate, error) {
 				encoded, err = decodeKeyCodeArray(value)
 			} else if spec.jsonBool {
 				encoded, err = decodeBool(value)
+			} else if spec.jsonString {
+				encoded, err = decodeMMKVString(value)
 			} else {
 				encoded, err = decodeInt32(value)
 			}
 			if err != nil {
+				if spec.name == preferredMicrophoneUIDField {
+					field.Status = "malformed"
+					fields[spec.name] = field
+					continue
+				}
 				return Candidate{}, ErrMalformedValue
 			}
 			field.Status = "present"
@@ -309,6 +320,57 @@ func decodeBool(encoded []byte) (json.RawMessage, error) {
 		return nil, ErrMalformedValue
 	}
 	return json.Marshal(value == 1)
+}
+
+func decodeMMKVString(encoded []byte) (json.RawMessage, error) {
+	length, offset, ok := readMMKVVarint32(encoded, 0)
+	if !ok || uint64(length) != uint64(len(encoded)-offset) {
+		return nil, ErrMalformedValue
+	}
+	value := encoded[offset:]
+	if !utf8.Valid(value) {
+		return nil, ErrMalformedValue
+	}
+	return json.Marshal(string(value))
+}
+
+// PreferredMicrophoneUID returns the stored WeType microphone UID without
+// collapsing a missing MMKV key into an explicitly stored empty string. A nil
+// result means the key is missing; a non-nil pointer to "" means it is present
+// and currently requests automatic selection.
+func (candidate Candidate) PreferredMicrophoneUID() (*string, error) {
+	field, ok := candidate.Fields[preferredMicrophoneUIDField]
+	if !ok {
+		return nil, ErrMalformedValue
+	}
+	if field.Type != "MMKV string" {
+		return nil, ErrMalformedValue
+	}
+	switch field.Status {
+	case "missing":
+		if len(field.Value) != 0 {
+			return nil, ErrMalformedValue
+		}
+		return nil, nil
+	case "present":
+		var uid *string
+		if len(field.Value) == 0 || json.Unmarshal(field.Value, &uid) != nil || uid == nil || !utf8.ValidString(*uid) {
+			return nil, ErrMalformedValue
+		}
+		return uid, nil
+	default:
+		return nil, ErrMalformedValue
+	}
+}
+
+// ReadPreferredMicrophoneUID reads the allowlisted preference from the exact
+// installed WeType bundle and its current user's MMKV store.
+func ReadPreferredMicrophoneUID(ctx context.Context, locator voicetools.Locator) (*string, error) {
+	candidate, err := ReadInstalled(ctx, locator)
+	if err != nil {
+		return nil, err
+	}
+	return candidate.PreferredMicrophoneUID()
 }
 
 func readMMKVVarint32(data []byte, offset int) (uint32, int, bool) {

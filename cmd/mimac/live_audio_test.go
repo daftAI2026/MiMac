@@ -319,10 +319,17 @@ func TestBuiltInAudioRouteFactoriesAreExplicit(t *testing.T) {
 	for _, tool := range builtInVoiceTools() {
 		factories[tool.id] = tool.audioRouteFactory != nil
 	}
-	if !factories[appleSpeechToolID] || !factories["voice-doubao"] {
-		t.Fatalf("Apple/Doubao route capabilities = %+v", factories)
+	want := map[string]bool{
+		appleSpeechToolID: true,
+		"voice-doubao":    true,
+		"voice-wetype":    true,
+		"voice-typeless":  false,
+		"voice-shandian":  false,
+		"voice-chatgpt":   false,
 	}
-	if factories["voice-wetype"] {
-		t.Fatal("WeType received an audio route before its input protocol was verified")
+	for id, expected := range want {
+		if factories[id] != expected {
+			t.Fatalf("audio route factory for %q = %t, want %t (all: %+v)", id, factories[id], expected, factories)
+		}
 	}
 }

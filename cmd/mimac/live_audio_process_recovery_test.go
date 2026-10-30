@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/audiooutput"
-	"mimac.local/mimac/internal/adapters/doubao"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/audioroute"
@@ -206,8 +205,8 @@ func openProcessRecoveryRoute(t *testing.T, pid int32) (*compatLiveAudioRoute, *
 	locator := voicetools.Locator{Home: root, InputMethodDirs: []string{inputMethods}}
 	deps := compatAudioRouteDependencies{
 		newInspector: func() (compatAudioInspector, error) { return inspector, nil },
-		readSelection: func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error) {
-			return doubao.MicrophoneSelection{}, nil
+		readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
+			return compatAudioSelection{}, nil
 		},
 		requestSelection: requests.request,
 		captureIdentity: func(gotPID int32, gotExecutable string) (compatProcessIdentity, error) {

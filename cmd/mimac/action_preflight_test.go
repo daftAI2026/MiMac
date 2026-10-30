@@ -96,3 +96,25 @@ func TestPreflightBlocksStartButNeverFrozenRelease(t *testing.T) {
 		})
 	}
 }
+
+// WeType's global PTT path still selects its IME internally. If that source
+// is unavailable, the observed vendor version traps before audio delivery.
+func TestWeTypeRegistrationRequiresSelectedInputSource(t *testing.T) {
+	plan, err := bridge.NewActionPlan(bridge.ActionSpec{ToolID: "voice-wetype", ActionID: "voicePTTShortcut", CandidateRaw: "verified", Revision: 1, Scope: bridge.ActionGlobal, Trigger: bridge.ActionHold, Request: bridge.RequestStart, ReleaseRequest: bridge.RequestFinish}, "Fn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := builtInVoiceTools()
+	for _, tc := range []struct {
+		id      string
+		allowed bool
+	}{
+		{"com.apple.keylayout.ABC", false},
+		{"com.tencent.inputmethod.wetype.pinyin", true},
+	} {
+		err := checkActionInputSource(tools, plan, func() (string, error) { return tc.id, nil })
+		if (err == nil) != tc.allowed {
+			t.Fatalf("source=%q error=%v allowed=%t", tc.id, err, tc.allowed)
+		}
+	}
+}

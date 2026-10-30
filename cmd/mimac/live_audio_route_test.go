@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/audiooutput"
-	"mimac.local/mimac/internal/adapters/doubao"
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/platform/audioroute"
@@ -25,6 +24,7 @@ type compatRouteTestInspector struct {
 	device       audioroute.DeviceCapabilities
 	processes    []audioroute.ProcessInput
 	input        audioroute.ProcessInput
+	bundleIDs    []string
 	deviceUID    string
 	waitPID      int32
 	waitUID      string
@@ -47,9 +47,10 @@ func (i *compatRouteTestInspector) DeviceByUID(uid string) (audioroute.DeviceCap
 	return i.device, nil
 }
 
-func (i *compatRouteTestInspector) InputsForBundle(string) ([]audioroute.ProcessInput, error) {
+func (i *compatRouteTestInspector) InputsForBundle(bundleID string) ([]audioroute.ProcessInput, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.bundleIDs = append(i.bundleIDs, bundleID)
 	return append([]audioroute.ProcessInput(nil), i.processes...), nil
 }
 
@@ -270,6 +271,11 @@ func compatRouteTestFixture(t *testing.T, saved *string) (*compatLiveAudioRoute,
 
 func compatRouteTestFixtureWith(t *testing.T, saved *string, requestErrors, ownerErrors []error, sourceErr error) (*compatLiveAudioRoute, *compatRouteTestInspector, *compatRouteTestIdentity, *compatRouteTestOwner, *compatRouteTestRequest, *compatRouteTestSource, *compatRouteTestSink) {
 	t.Helper()
+	return compatRouteTestFixtureForTarget(t, doubaoAudioRouteTarget(), saved, requestErrors, ownerErrors, sourceErr)
+}
+
+func compatRouteTestFixtureForTarget(t *testing.T, target compatAudioRouteTarget, saved *string, requestErrors, ownerErrors []error, sourceErr error, configure ...func(*compatAudioRouteDependencies, *compatRouteTestInspector)) (*compatLiveAudioRoute, *compatRouteTestInspector, *compatRouteTestIdentity, *compatRouteTestOwner, *compatRouteTestRequest, *compatRouteTestSource, *compatRouteTestSink) {
+	t.Helper()
 	inspector := newCompatRouteTestInspector()
 	identity := &compatRouteTestIdentity{}
 	source := &compatRouteTestSource{}
@@ -279,8 +285,8 @@ func compatRouteTestFixtureWith(t *testing.T, saved *string, requestErrors, owne
 
 	root := t.TempDir()
 	inputMethods := filepath.Join(root, "Library", "Input Methods")
-	bundle := filepath.Join(inputMethods, "DoubaoIme.app")
-	executable := filepath.Join(bundle, "Contents", "MacOS", compatDoubaoExecutableName)
+	bundle := filepath.Join(inputMethods, target.bundleName)
+	executable := filepath.Join(bundle, "Contents", "MacOS", target.executableName)
 	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -290,8 +296,8 @@ func compatRouteTestFixtureWith(t *testing.T, saved *string, requestErrors, owne
 	locator := voicetools.Locator{Home: root, InputMethodDirs: []string{inputMethods}}
 	deps := compatAudioRouteDependencies{
 		newInspector: func() (compatAudioInspector, error) { return inspector, nil },
-		readSelection: func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error) {
-			return doubao.MicrophoneSelection{SelectedMicrophoneID: cloneMicrophoneOptional(saved)}, nil
+		readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
+			return compatAudioSelection{preferredUID: cloneMicrophoneOptional(saved)}, nil
 		},
 		requestSelection: requests.request,
 		captureIdentity: func(pid int32, gotExecutable string) (compatProcessIdentity, error) {
@@ -313,7 +319,16 @@ func compatRouteTestFixtureWith(t *testing.T, saved *string, requestErrors, owne
 		idleTimeout: 45 * time.Millisecond,
 		idlePoll:    2 * time.Millisecond,
 	}
-	got, err := openLiveXiaomiRouteWithDependencies(context.Background(), 7, "/tmp/libMiMacATVV.dylib", compatDoubaoBundleID, executable, locator, deps)
+	var got liveAudioRoute
+	var err error
+	for _, apply := range configure {
+		apply(&deps, inspector)
+	}
+	if target.bundleID == compatDoubaoBundleID {
+		got, err = openLiveXiaomiRouteWithDependencies(context.Background(), 7, "/tmp/libMiMacATVV.dylib", target.bundleID, executable, locator, deps)
+	} else {
+		got, err = openLiveXiaomiRouteForTargetWithDependencies(context.Background(), 7, "/tmp/libMiMacATVV.dylib", target, executable, locator, deps)
+	}
 	if err != nil {
 		t.Fatalf("openLiveXiaomiRouteWithDependencies() error = %v", err)
 	}
@@ -334,8 +349,8 @@ func TestOpenLiveXiaomiRouteDefersMiMacSelectionUntilBeforeStart(t *testing.T) {
 	route, inspector, _, owner, requests, _, sink := openCompatRouteForTest(t, &saved)
 	defer closeCompatRouteForTest(t, route)
 
-	if route.pid != 42 || route.bundleID != compatDoubaoBundleID || route.generation != 7 {
-		t.Fatalf("captured route identity = pid %d bundle %q generation %d", route.pid, route.bundleID, route.generation)
+	if route.pid != 42 || route.target.bundleID != compatDoubaoBundleID || route.generation != 7 {
+		t.Fatalf("captured route identity = pid %d bundle %q generation %d", route.pid, route.target.bundleID, route.generation)
 	}
 	if got := requests.snapshot(); len(got) != 0 {
 		t.Fatalf("factory changed Doubao selection = %v, want no request before a voice start", got)
@@ -498,8 +513,8 @@ func TestCompatRoutePartialDeviceOwnerOnOpenErrorRemainsClosable(t *testing.T) {
 	locator := voicetools.Locator{Home: root, InputMethodDirs: []string{inputMethods}}
 	deps := compatAudioRouteDependencies{
 		newInspector: func() (compatAudioInspector, error) { return inspector, nil },
-		readSelection: func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error) {
-			return doubao.MicrophoneSelection{SelectedMicrophoneID: &saved}, nil
+		readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
+			return compatAudioSelection{preferredUID: &saved}, nil
 		},
 		requestSelection: requests.request,
 		captureIdentity:  func(int32, string) (compatProcessIdentity, error) { return identity, nil },
@@ -682,8 +697,8 @@ func TestCompatRouteRequestFailureStillReturnsRestoreOwner(t *testing.T) {
 	locator := voicetools.Locator{Home: root, InputMethodDirs: []string{inputMethods}}
 	deps := compatAudioRouteDependencies{
 		newInspector: func() (compatAudioInspector, error) { return inspector, nil },
-		readSelection: func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error) {
-			return doubao.MicrophoneSelection{SelectedMicrophoneID: &saved}, nil
+		readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
+			return compatAudioSelection{preferredUID: &saved}, nil
 		},
 		requestSelection: requests.request,
 		captureIdentity:  func(int32, string) (compatProcessIdentity, error) { return identity, nil },
@@ -735,8 +750,8 @@ func TestCompatRouteRejectsBusyOrAmbiguousTargetBeforeRequest(t *testing.T) {
 			locator := voicetools.Locator{Home: root, InputMethodDirs: []string{inputMethods}}
 			deps := compatAudioRouteDependencies{
 				newInspector: func() (compatAudioInspector, error) { return inspector, nil },
-				readSelection: func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error) {
-					return doubao.MicrophoneSelection{}, nil
+				readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
+					return compatAudioSelection{}, nil
 				},
 				requestSelection: requests.request,
 				captureIdentity:  func(int32, string) (compatProcessIdentity, error) { return identity, nil },
@@ -751,6 +766,41 @@ func TestCompatRouteRejectsBusyOrAmbiguousTargetBeforeRequest(t *testing.T) {
 				t.Fatalf("microphone request issued before target eligibility: %v", values)
 			}
 		})
+	}
+}
+
+func TestCompatRouteTargetContractSupportsAlternateInputMethod(t *testing.T) {
+	saved := "original-device"
+	target := compatAudioRouteTarget{
+		bundleID: "com.tencent.inputmethod.wetype", bundleName: "WeType.app",
+		executableName: "WeType", name: "WeType",
+	}
+	route, inspector, _, _, requests, _, _ := compatRouteTestFixtureForTarget(t, target, &saved, nil, nil, nil)
+	if route.target != target {
+		t.Fatalf("captured target = %#v, want %#v", route.target, target)
+	}
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatalf("BeforeStart() = %v", err)
+	}
+	if got := requests.snapshot(); len(got) != 1 || got[0] == nil || *got[0] != compatAudioDeviceUID {
+		t.Fatalf("selection requests = %v, want only the compatibility UID", got)
+	}
+	if err := route.Close(context.Background()); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if got := requests.snapshot(); len(got) != 2 || got[1] == nil || *got[1] != saved {
+		t.Fatalf("selection requests after close = %v, want restoration of %q", got, saved)
+	}
+	inspector.mu.Lock()
+	bundleIDs := append([]string(nil), inspector.bundleIDs...)
+	inspector.mu.Unlock()
+	if len(bundleIDs) == 0 {
+		t.Fatal("target bundle identity was never inspected")
+	}
+	for _, bundleID := range bundleIDs {
+		if bundleID != target.bundleID {
+			t.Fatalf("route inspected bundle %q, want %q", bundleID, target.bundleID)
+		}
 	}
 }
 

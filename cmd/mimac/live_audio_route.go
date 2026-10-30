@@ -22,6 +22,7 @@ import (
 const (
 	compatAudioDeviceUID       = "dev.mimac.audio.compat.v1"
 	compatDoubaoBundleID       = "com.bytedance.inputmethod.doubaoime"
+	compatDoubaoBundleName     = "DoubaoIme.app"
 	compatDoubaoExecutableName = "DoubaoIme"
 	compatAudioSampleRate      = 16000
 	compatTargetIdleTimeout    = 1500 * time.Millisecond
@@ -31,9 +32,9 @@ const (
 var (
 	errCompatRouteContext       = errors.New("mimac-compat route: context is required")
 	errCompatRouteGeneration    = errors.New("mimac-compat route: nonzero device generation is required")
-	errCompatRouteTarget        = errors.New("mimac-compat route: only the verified Doubao input method is supported")
-	errCompatRouteTargetBusy    = errors.New("mimac-compat route: Doubao input is busy")
-	errCompatRouteTargetMissing = errors.New("mimac-compat route: captured Doubao process is no longer the unique Core Audio client")
+	errCompatRouteTarget        = errors.New("mimac-compat route: only a verified input method target is supported")
+	errCompatRouteTargetBusy    = errors.New("mimac-compat route: target input is busy")
+	errCompatRouteTargetMissing = errors.New("mimac-compat route: captured target process is no longer the unique Core Audio client")
 	errCompatRouteTargetNil     = errors.New("mimac-compat route: captured target identity is unavailable")
 	errCompatRouteDeviceUID     = errors.New("mimac-compat route: verified MiMac endpoint is unavailable")
 	errCompatRouteOwnerNil      = errors.New("mimac-compat route: Xiaomi device owner is unavailable")
@@ -52,6 +53,17 @@ type compatProcessIdentity interface {
 	Check() error
 }
 
+type compatAudioRouteTarget struct {
+	bundleID       string
+	bundleName     string
+	executableName string
+	name           string
+}
+
+type compatAudioSelection struct {
+	preferredUID *string
+}
+
 // The adapter keeps atvv's concrete return type behind a testable boundary.
 type compatATVVOwner interface {
 	newSource(context.Context, atvv.StreamKey) (audiosession.Source, error)
@@ -60,7 +72,7 @@ type compatATVVOwner interface {
 
 type compatAudioRouteDependencies struct {
 	newInspector     func() (compatAudioInspector, error)
-	readSelection    func(context.Context, voicetools.Locator) (doubao.MicrophoneSelection, error)
+	readSelection    func(context.Context, voicetools.Locator) (compatAudioSelection, error)
 	requestSelection func(context.Context, voicetools.Locator, *string) error
 	captureIdentity  func(int32, string) (compatProcessIdentity, error)
 	openDeviceOwner  func(uint64, string) (compatATVVOwner, error)
@@ -88,9 +100,7 @@ func (o *nativeCompatATVVOwner) close() error {
 
 func defaultCompatAudioRouteDependencies() compatAudioRouteDependencies {
 	return compatAudioRouteDependencies{
-		newInspector:     func() (compatAudioInspector, error) { return audioroute.New() },
-		readSelection:    doubao.ReadMicrophoneSelection,
-		requestSelection: doubao.RequestMicrophoneSelection,
+		newInspector: func() (compatAudioInspector, error) { return audioroute.New() },
 		captureIdentity: func(pid int32, executable string) (compatProcessIdentity, error) {
 			return processidentity.Capture(pid, executable)
 		},
@@ -104,6 +114,26 @@ func defaultCompatAudioRouteDependencies() compatAudioRouteDependencies {
 		openSink:    openXiaomiAudioSink,
 		idleTimeout: compatTargetIdleTimeout,
 		idlePoll:    compatTargetIdlePoll,
+	}
+}
+
+func defaultDoubaoAudioRouteDependencies() compatAudioRouteDependencies {
+	deps := defaultCompatAudioRouteDependencies()
+	deps.readSelection = func(ctx context.Context, locator voicetools.Locator) (compatAudioSelection, error) {
+		selection, err := doubao.ReadMicrophoneSelection(ctx, locator)
+		if err != nil {
+			return compatAudioSelection{}, err
+		}
+		return compatAudioSelection{preferredUID: cloneMicrophoneOptional(selection.SelectedMicrophoneID)}, nil
+	}
+	deps.requestSelection = doubao.RequestMicrophoneSelection
+	return deps
+}
+
+func doubaoAudioRouteTarget() compatAudioRouteTarget {
+	return compatAudioRouteTarget{
+		bundleID: compatDoubaoBundleID, bundleName: compatDoubaoBundleName,
+		executableName: compatDoubaoExecutableName, name: "Doubao",
 	}
 }
 
@@ -121,7 +151,7 @@ func openLiveXiaomiRoute(
 	targetExecutablePath string,
 	locator voicetools.Locator,
 ) (liveAudioRoute, error) {
-	return openLiveXiaomiRouteWithDependencies(ctx, generation, libraryPath, targetBundleID, targetExecutablePath, locator, defaultCompatAudioRouteDependencies())
+	return openLiveXiaomiRouteWithDependencies(ctx, generation, libraryPath, targetBundleID, targetExecutablePath, locator, defaultDoubaoAudioRouteDependencies())
 }
 
 func openLiveXiaomiRouteWithDependencies(
@@ -129,6 +159,23 @@ func openLiveXiaomiRouteWithDependencies(
 	generation uint64,
 	libraryPath string,
 	targetBundleID string,
+	targetExecutablePath string,
+	locator voicetools.Locator,
+	deps compatAudioRouteDependencies,
+) (liveAudioRoute, error) {
+	if targetBundleID != compatDoubaoBundleID {
+		return nil, errCompatRouteTarget
+	}
+	return openLiveXiaomiRouteForTargetWithDependencies(
+		ctx, generation, libraryPath, doubaoAudioRouteTarget(), targetExecutablePath, locator, deps,
+	)
+}
+
+func openLiveXiaomiRouteForTargetWithDependencies(
+	ctx context.Context,
+	generation uint64,
+	libraryPath string,
+	target compatAudioRouteTarget,
 	targetExecutablePath string,
 	locator voicetools.Locator,
 	deps compatAudioRouteDependencies,
@@ -142,7 +189,7 @@ func openLiveXiaomiRouteWithDependencies(
 	if generation == 0 {
 		return nil, errCompatRouteGeneration
 	}
-	if err := validateCompatDoubaoTarget(targetBundleID, targetExecutablePath, locator); err != nil {
+	if err := validateCompatAudioRouteTarget(target, targetExecutablePath, locator); err != nil {
 		return nil, err
 	}
 	if !filepath.IsAbs(libraryPath) || strings.ContainsRune(libraryPath, '\x00') {
@@ -174,7 +221,7 @@ func openLiveXiaomiRouteWithDependencies(
 		return nil, err
 	}
 
-	process, err := uniqueCompatTargetProcess(inspector, targetBundleID)
+	process, err := uniqueCompatTargetProcess(inspector, target.bundleID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +243,7 @@ func openLiveXiaomiRouteWithDependencies(
 	}
 	saved, err := deps.readSelection(ctx, locator)
 	if err != nil {
-		return nil, fmt.Errorf("mimac-compat route: snapshot Doubao microphone selection: %w", err)
+		return nil, fmt.Errorf("mimac-compat route: snapshot %s microphone selection: %w", target.name, err)
 	}
 	if err := identity.Check(); err != nil {
 		return nil, fmt.Errorf("mimac-compat route: target changed while snapshotting selection: %w", err)
@@ -208,11 +255,11 @@ func openLiveXiaomiRouteWithDependencies(
 	lease := &compatLiveAudioRoute{
 		generation:  generation,
 		locator:     locator,
-		bundleID:    targetBundleID,
+		target:      target,
 		pid:         process.PID,
 		identity:    identity,
 		inspector:   inspector,
-		saved:       cloneMicrophoneOptional(saved.SelectedMicrophoneID),
+		saved:       cloneMicrophoneOptional(saved.preferredUID),
 		request:     deps.requestSelection,
 		idleTimeout: deps.idleTimeout,
 		idlePoll:    deps.idlePoll,
@@ -275,17 +322,18 @@ func openLiveXiaomiRouteWithDependencies(
 	return lease, nil
 }
 
-func validateCompatDoubaoTarget(bundleID, executablePath string, locator voicetools.Locator) error {
-	if bundleID != compatDoubaoBundleID || !filepath.IsAbs(executablePath) || filepath.Base(executablePath) != compatDoubaoExecutableName {
+func validateCompatAudioRouteTarget(target compatAudioRouteTarget, executablePath string, locator voicetools.Locator) error {
+	if target.bundleID == "" || target.bundleName == "" || target.executableName == "" || target.name == "" ||
+		!filepath.IsAbs(executablePath) || filepath.Base(executablePath) != target.executableName {
 		return errCompatRouteTarget
 	}
 	cleanExecutable := filepath.Clean(executablePath)
-	for _, bundlePath := range voicetools.ApplicationCandidates(locator.InputMethodDirs, "DoubaoIme.app") {
-		if cleanExecutable == filepath.Join(bundlePath, "Contents", "MacOS", compatDoubaoExecutableName) {
+	for _, bundlePath := range voicetools.ApplicationCandidates(locator.InputMethodDirs, target.bundleName) {
+		if cleanExecutable == filepath.Join(bundlePath, "Contents", "MacOS", target.executableName) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: executable is outside the locator's Doubao bundle candidates", errCompatRouteTarget)
+	return fmt.Errorf("%w: executable is outside the locator's %s bundle candidates", errCompatRouteTarget, target.name)
 }
 
 func uniqueCompatTargetProcess(inspector compatAudioInspector, bundleID string) (audioroute.ProcessInput, error) {
@@ -336,7 +384,7 @@ func cloneMicrophoneOptional(value *string) *string {
 type compatLiveAudioRoute struct {
 	generation uint64
 	locator    voicetools.Locator
-	bundleID   string
+	target     compatAudioRouteTarget
 	pid        int32
 	identity   compatProcessIdentity
 	inspector  compatAudioInspector
@@ -429,7 +477,7 @@ func (r *compatLiveAudioRoute) verifyCapturedTargetIdle(ctx context.Context) err
 	if r.identity == nil || r.inspector == nil || r.pid <= 0 {
 		return errCompatRouteTargetNil
 	}
-	process, err := uniqueCompatTargetProcess(r.inspector, r.bundleID)
+	process, err := uniqueCompatTargetProcess(r.inspector, r.target.bundleID)
 	if err != nil {
 		return err
 	}
@@ -474,7 +522,7 @@ func (r *compatLiveAudioRoute) Prepare(ctx context.Context, token bridge.Session
 }
 
 // Close first quiesces the audio resources and ATVV owner. Only then does it
-// wait, with a bound, for the captured Doubao process to become input-idle and
+// wait, with a bound, for the captured target process to become input-idle and
 // post the saved Optional value. A changed/exited original process retires its
 // in-memory lease; the global notification is never sent to a known new PID.
 // A nil result from RequestMicrophoneSelection confirms only local posting,
@@ -607,7 +655,7 @@ func (r *compatLiveAudioRoute) waitForCapturedTargetIdle(ctx context.Context) (b
 		}
 		process, err := r.inspector.ProcessInput(r.pid)
 		if err != nil {
-			return false, fmt.Errorf("mimac-compat route: wait for Doubao input idle: %w", err)
+			return false, fmt.Errorf("mimac-compat route: wait for %s input idle: %w", r.target.name, err)
 		}
 		if err := waitCtx.Err(); err != nil {
 			return false, errors.Join(audiosession.ErrCleanupPending, err)
@@ -626,7 +674,7 @@ func (r *compatLiveAudioRoute) waitForCapturedTargetIdle(ctx context.Context) (b
 				if errors.Is(err, processidentity.ErrIdentityChanged) {
 					return true, nil
 				}
-				return false, fmt.Errorf("mimac-compat route: verify idle Doubao identity: %w", err)
+				return false, fmt.Errorf("mimac-compat route: verify idle %s identity: %w", r.target.name, err)
 			}
 			return false, nil
 		}
@@ -652,11 +700,11 @@ func (r *compatLiveAudioRoute) capturedTargetAlive() (bool, error) {
 		return false, nil
 	}
 	if !errors.Is(err, processidentity.ErrReadFailed) {
-		return false, fmt.Errorf("mimac-compat route: check captured Doubao identity: %w", err)
+		return false, fmt.Errorf("mimac-compat route: check captured %s identity: %w", r.target.name, err)
 	}
-	processes, listErr := r.inspector.InputsForBundle(r.bundleID)
+	processes, listErr := r.inspector.InputsForBundle(r.target.bundleID)
 	if listErr != nil {
-		return false, errors.Join(fmt.Errorf("mimac-compat route: check captured Doubao exit: %w", err), listErr)
+		return false, errors.Join(fmt.Errorf("mimac-compat route: check captured %s exit: %w", r.target.name, err), listErr)
 	}
 	for _, process := range processes {
 		if process.PID == r.pid {
@@ -670,7 +718,7 @@ func (r *compatLiveAudioRoute) verifyRestoreTargetIdle(ctx context.Context) erro
 	if err := ctx.Err(); err != nil {
 		return errors.Join(audiosession.ErrCleanupPending, err)
 	}
-	processes, err := r.inspector.InputsForBundle(r.bundleID)
+	processes, err := r.inspector.InputsForBundle(r.target.bundleID)
 	if err != nil {
 		return fmt.Errorf("mimac-compat route: verify target before restoring selection: %w", err)
 	}

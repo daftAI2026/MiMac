@@ -33,6 +33,7 @@ func TestDecodeStoreReturnsOnlyAllowlistedRawCandidates(t *testing.T) {
 		{key: "voiceToggleShortcut_keyCodes", value: mmkvStringValue("[70]")},
 		{key: "voiceToggleShortcut_tapCount", value: mmkvInt32Value(-1)},
 		{key: voiceShortcutGlobalEnabledField, value: encodeVarint(1)},
+		{key: preferredMicrophoneUIDField, value: mmkvStringValue("dev.mimac.audio.compat.v1")},
 		{key: "unrelated.private.setting", value: []byte("PRIVATE_SENTINEL")},
 	})
 
@@ -48,8 +49,13 @@ func TestDecodeStoreReturnsOnlyAllowlistedRawCandidates(t *testing.T) {
 	assertFieldJSON(t, candidate, "voiceToggleShortcut_keyCodes", "[70]")
 	assertFieldJSON(t, candidate, "voiceToggleShortcut_tapCount", "-1")
 	assertFieldJSON(t, candidate, voiceShortcutGlobalEnabledField, "true")
+	assertFieldJSON(t, candidate, preferredMicrophoneUIDField, `"dev.mimac.audio.compat.v1"`)
 	assertFieldMissing(t, candidate, "voicePTTShortcut_tapCount")
 	assertFieldMissing(t, candidate, "voiceToggleShortcut_modifiers")
+	uid, err := candidate.PreferredMicrophoneUID()
+	if err != nil || uid == nil || *uid != "dev.mimac.audio.compat.v1" {
+		t.Fatalf("preferred UID = %#v, %v", uid, err)
+	}
 
 	encoded, err := json.Marshal(candidate)
 	if err != nil {
@@ -57,6 +63,53 @@ func TestDecodeStoreReturnsOnlyAllowlistedRawCandidates(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "PRIVATE_SENTINEL") || strings.Contains(string(encoded), "unrelated.private.setting") {
 		t.Fatalf("non-allowlisted data escaped: %s", encoded)
+	}
+}
+
+func TestPreferredMicrophoneUIDPreservesMissingAndPresentEmpty(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		entries  []testEntry
+		wantNil  bool
+		wantText string
+	}{
+		{name: "missing", wantNil: true},
+		{name: "present empty", entries: []testEntry{{key: preferredMicrophoneUIDField, value: mmkvStringValue("")}}, wantText: ""},
+		{name: "present UID", entries: []testEntry{{key: preferredMicrophoneUIDField, value: mmkvStringValue("device-uid-雪")}}, wantText: "device-uid-雪"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			metadata, data := makeStoreFixture(test.entries)
+			candidate, err := decodeStore(metadata, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			uid, err := candidate.PreferredMicrophoneUID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantNil {
+				if uid != nil {
+					t.Fatalf("UID = %#v, want nil for missing key", *uid)
+				}
+				return
+			}
+			if uid == nil || *uid != test.wantText {
+				t.Fatalf("UID = %#v, want non-nil %q", uid, test.wantText)
+			}
+			field := candidate.Fields[preferredMicrophoneUIDField]
+			if field.Status != "present" {
+				t.Fatalf("empty key status = %q, want present", field.Status)
+			}
+		})
+	}
+}
+
+func TestPreferredMicrophoneUIDRejectsMalformedCandidateValue(t *testing.T) {
+	candidate := Candidate{Fields: map[string]FieldCandidate{
+		preferredMicrophoneUIDField: {Status: "present", Type: "MMKV string", Value: json.RawMessage(`null`)},
+	}}
+	if _, err := candidate.PreferredMicrophoneUID(); !errors.Is(err, ErrMalformedValue) {
+		t.Fatalf("null candidate value error = %v, want ErrMalformedValue", err)
 	}
 }
 
@@ -126,6 +179,14 @@ func TestDecodeStoreRejectsUnsupportedVersionEncryptionCRCAndSizes(t *testing.T)
 	}
 }
 
+func TestDecodeStoreRejectsStaleCRCForPreferredMicrophoneUID(t *testing.T) {
+	metadata, data := makeStoreFixture([]testEntry{{key: preferredMicrophoneUIDField, value: mmkvStringValue("device-uid")}})
+	metadata[0] ^= 1
+	if _, err := decodeStore(metadata, data); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("preferred UID stale CRC error = %v, want ErrIntegrity", err)
+	}
+}
+
 func TestDecodeStoreRejectsMalformedRecordsAndAllowlistedValues(t *testing.T) {
 	metadata, data := makeRawStoreFixture([]byte{0x80})
 	if _, err := decodeStore(metadata, data); !errors.Is(err, ErrMalformedRecord) {
@@ -145,6 +206,36 @@ func TestDecodeStoreRejectsMalformedRecordsAndAllowlistedValues(t *testing.T) {
 	metadata, data = makeStoreFixture([]testEntry{{key: voiceShortcutGlobalEnabledField, value: encodeVarint(2)}})
 	if _, err := decodeStore(metadata, data); !errors.Is(err, ErrMalformedValue) {
 		t.Fatalf("non-boolean global flag error = %v", err)
+	}
+
+	for _, value := range [][]byte{{0x03, 'u'}, {0x01, 0xff}} {
+		metadata, data = makeStoreFixture([]testEntry{{key: preferredMicrophoneUIDField, value: value}})
+		candidate, err := decodeStore(metadata, data)
+		if err != nil {
+			t.Fatalf("malformed optional microphone value interrupted shortcut decode: %v", err)
+		}
+		if _, err := candidate.PreferredMicrophoneUID(); !errors.Is(err, ErrMalformedValue) {
+			t.Fatalf("malformed optional microphone value accessor error = %v", err)
+		}
+	}
+}
+
+func TestMalformedPreferredMicrophoneUIDDoesNotChangeShortcutScope(t *testing.T) {
+	metadata, data := makeStoreFixture([]testEntry{
+		{key: pttKeyCodesField, value: mmkvStringValue("[63]")},
+		{key: pttModifiersField, value: mmkvInt32Value(0)},
+		{key: pttTapCountField, value: mmkvInt32Value(1)},
+		{key: toggleKeyCodesField, value: mmkvStringValue("[1]")},
+		{key: toggleModifiersField, value: mmkvInt32Value(0)},
+		{key: toggleTapCountField, value: mmkvInt32Value(1)},
+		{key: preferredMicrophoneUIDField, value: []byte{0x01, 0xff}},
+	})
+	candidate, err := decodeStore(metadata, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope := shortcutScope(candidate); scope != "global" {
+		t.Fatalf("shortcut scope = %q, want observed default global despite invalid microphone preference", scope)
 	}
 }
 
