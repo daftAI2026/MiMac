@@ -1,0 +1,18 @@
+flowchart TD
+    device["设备插件 Source：小米 ATVV / 后续设备"] --> read["audiosession：唯一 PCM Read"]
+    read --> sink["Sink：原样 PCM / 原采样率"]
+    sink --> target["语音工具适配器：豆包 / Apple 等"]
+    read --> observer["PCMObserver：已有 worker 内只读调用"]
+    enabled{"显示开启且可用？"} --> observer
+    observer --> bands["audiometer：512 样本固定窗 / band RMS"]
+    bands --> mailbox["完整 session token 的最新频谱快照"]
+    core["Core：唯一会话状态机"] --> mailbox
+    mailbox --> fresh{"当前会话且 ≤100ms？"}
+    fresh -->|是| view["siriglass：audioMeters 数组"]
+    fresh -->|否| quiet["无数据时仅发送零幅度数组"]
+    quiet --> view
+    ending["EOF / 取消 / 失败 / 结束"] --> clear["清除分析窗口与快照"]
+    enabled -->|关闭| clear
+    clear --> independent["识别与音频路由不依赖显示"]
+    view -.-> original["待证：原版频带配置与归一化"]
+    own["工具自行采音且不经过 MiMac PCM"] -.-> adapter["需由其适配器另提供观测信息"]

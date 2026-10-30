@@ -16,6 +16,8 @@
 
 语音呈现图记录 Core 状态与当前会话电平如何到达可选悬浮语音条。MyGo 管理非激活窗口，siriglass 仅在已验证的系统版本加载；关闭显示不停止音频。厂商语音条接管和完整 Siri 前景/业务语义仍用虚线表示，本地排空不能代替第三方工具的提交回执。
 
+共享 PCM 观测图记录同一读取点上的可选频谱分析、会话隔离与清理。频谱测量可供经过 MiMac 音频通道的工具复用；当前测量参数和原版 Siri 的归一化合同分别标注，不把原生接口接受参数等同于视觉验收。
+
 组件页是 token 和布局的 Web 样本，原生菜单、SwiftUI Form、系统绿色及 CoreAnimation 效果以实际 App 为准。它不会触发产品功能。正式设计契约见项目根目录 `DESIGN.md`。
 
 Pele 为 MIT 授权：[obsidianmd/pele](https://github.com/obsidianmd/pele)。构建输出保留其许可证。

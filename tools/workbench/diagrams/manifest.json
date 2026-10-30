@@ -17,7 +17,10 @@
       "internal/adapters/textoutput/textoutput.go",
       "internal/platform/siriglass/siriglass.go",
       "internal/platform/siriglass/siriglass_other.go",
-      "internal/platform/siriglass/siriglass_darwin_arm64.go"
+      "internal/platform/siriglass/siriglass_darwin_arm64.go",
+      "cmd/mimac/voice_meter.go",
+      "internal/audiometer/audiometer.go",
+      "internal/platform/siriglass/meters.go"
     ]
   },
   {
@@ -34,7 +37,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "HID 边沿进入协调器与 bridge；路由就绪后 Runtime 持有 PCM 会话。当前 RMS/peak 按完整 token 投影到可选 siriglass 材质显示，不保存样本；精确 OS gate 外或显示失败都不停止音频。PCM drain 不证明目标已识别或提交文字；厂商语音条接管与 Siri 业务前景仍未接入。",
+    "summary": "HID 边沿进入协调器与 bridge；路由就绪后 Runtime 持有 PCM 会话。同次读取的电平与可选频谱按完整 token 投影到 siriglass 数组入口，不保存录音、不修改输出样本；显示故障不停止音频。PCM drain 不证明目标已识别或提交文字。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -54,7 +57,10 @@
       "internal/platform/preferences/native/SettingsForm.swift",
       "internal/platform/siriglass/siriglass.go",
       "internal/platform/siriglass/siriglass_other.go",
-      "internal/platform/siriglass/siriglass_darwin_arm64.go"
+      "internal/platform/siriglass/siriglass_darwin_arm64.go",
+      "cmd/mimac/voice_meter.go",
+      "internal/audiometer/audiometer.go",
+      "internal/platform/siriglass/meters.go"
     ]
   },
   {
@@ -95,7 +101,7 @@
   {
     "id": "voice-tool-selection",
     "title": "语音工具启用与选择",
-    "summary": "多个语音工具可同时启用，Current 只选择一个工具提供当前语音映射；配置发现是可取消的一次性读取，选择切换会取消旧工具仍按住的动作。Core 当前不执行 app-scoped 快捷键。",
+    "summary": "多个工具可启用，但 Current 唯一。显式选择、同项重选和手动启用遥控器时，按适配器声明选择已启用的输入源并读回确认；仍有旧会话/路由或清理失败时不切换，需要完成释放后重选。启动和自动恢复不切输入法，action 仍逐次实读前置检查。",
     "sourcePaths": [
       "cmd/mimac/voice_tools.go",
       "cmd/mimac/voice_binding.go",
@@ -103,7 +109,11 @@
       "cmd/mimac/settings_voice.go",
       "cmd/mimac/coordinator.go",
       "internal/voicetools/action.go",
-      "internal/voicetools/voicetools.go"
+      "internal/voicetools/voicetools.go",
+      "cmd/mimac/remote.go",
+      "cmd/mimac/action_preflight.go",
+      "internal/platform/inputsource/inputsource_darwin.go",
+      "internal/platform/inputsource/select.go"
     ]
   },
   {
@@ -127,7 +137,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "当前可选语音状态适配器：Core 当前完整 token/phase 与 Runtime latest RMS/peak 进入 host 投影，再由 MyGo 非激活 Panel 在可见期 30 Hz 呈现 siriglass 材质。偏好默认开启但关闭只停显示；仅 arm64 macOS 27.0.1 build 26A434 可加载 native renderer，失败只关闭呈现。无样本留存；电平不证明对端收到或识别成功。虚线仍表示厂商语音条接管及完整 Siri 前景/业务语义。",
+    "summary": "共享 Runtime 在同一次 PCM Read 上进行可选频段观测，Core 仍持有唯一会话状态。显示只取完整 token 的新鲜快照，使用原生 audioMeters 数组；关闭显示停止分析，音频仍原样送出。当前 band RMS、频率与窗长是 MiMac 定义，原版归一化与真人明显随声效果尚未验收。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
@@ -156,7 +166,25 @@
       "internal/platform/siriglass/native/Sources/CGlassCompatibility/Compatibility.m",
       "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_abi.S",
       "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_explicit.S",
-      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_make.m"
+      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_make.m",
+      "cmd/mimac/voice_meter.go",
+      "internal/audiometer/audiometer.go",
+      "internal/platform/siriglass/meters.go"
+    ]
+  },
+  {
+    "id": "shared-pcm-observation",
+    "title": "共享 PCM 观测",
+    "summary": "设备、音频会话、频谱测量与显示适配分层。所有经过 MiMac PCM 通道的工具可复用观测点；不另开采音、不另建会话状态机，不保存录音。工具自行采音的路径需要另行适配。",
+    "sourcePaths": [
+      "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/voice_meter.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_overlay_view.go",
+      "internal/audiosession/runtime.go",
+      "internal/audiometer/audiometer.go",
+      "internal/platform/siriglass/meters.go",
+      "internal/platform/siriglass/siriglass_darwin_arm64.go"
     ]
   },
   {

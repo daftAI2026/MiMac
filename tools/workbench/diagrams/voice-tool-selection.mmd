@@ -5,7 +5,16 @@ flowchart LR
     sequence --> snapshots["Ready 快照提供已验证动作"]
     snapshots --> selected["仅 Current 工具提供当前语音映射预设"]
     selected --> resolve["解析唯一的 global hold-start/finish 或 toggle 动作"]
-    resolve --> freeze["Core 在物理按下时冻结动作计划"]
+    resolve --> preflight["每次新 action 读取实际输入源；不匹配则拒绝"]
+    preflight --> freeze["Core 在物理按下时冻结动作计划"]
     freeze --> release["物理松开沿用已冻结计划"]
     selected -->|切换工具| cancel["持久化选择并取消旧工具仍按住的动作"]
     cancel --> refresh["刷新映射/输出与音频路由"]
+    explicit["显式选择 / 重选当前工具 / 手动启用遥控器"] --> required{"适配器声明唯一可执行输入源？"}
+    required -->|否| unchanged["不改系统输入法"]
+    required -->|是| busy{"旧会话或路由仍未释放？"}
+    busy -->|是| retry["保留选择；释放后需显式重选"]
+    busy -->|否| enabledSource["TIS：仅选择已启用的精确 ID"]
+    enabledSource --> verify["立即读回确认；失败保留错误"]
+    verify --> preflight
+    background["登录启动 / 自动恢复 / 仅启用插件"] --> unchanged

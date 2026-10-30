@@ -14,14 +14,14 @@ flowchart LR
     sink --> drain["本地 drain 与可选最终转写"]
     drain --> text["Apple 路由可投递到按下时捕获的文本目标"]
 
-    source --> meter["Runtime latest RMS / peak / ObservedAt\n只保留当前 token 标量，不保存样本"]
+    pcm --> meter["同次 Read 的 RMS / peak 与可选频谱\n仅当前 token 快照，不保存录音"]
     core --> snapshot["当前 Core Snapshot 与完整 SessionToken"]
     meter --> projection["Host 语音呈现投影\n仅 Preparing / Capturing / Draining"]
     snapshot --> projection
     projection --> preference["show_voice_overlay 偏好"]
     preference --> panel["MyGo 非激活 Panel\n鼠标穿透；可见时 30 Hz"]
     panel --> gate{"arm64 macOS 27.0.1 build 26A434？"}
-    gate -->|是| renderer["siriglass 可选原版材质 renderer"]
+    gate -->|是| renderer["siriglass 可选材质\n当前频谱进入 audioMeters 数组"]
     gate -->|否| unsupported["不支持：只关闭显示"]
     renderer --> operation{"native 显示操作成功？"}
     operation -->|是| material["呈现当前会话材质"]

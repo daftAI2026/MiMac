@@ -10,7 +10,8 @@ flowchart LR
     tools["语音工具发现与动作快照"]
     text["辅助功能文本输出适配器"]
     prefs["show_voice_overlay 持久偏好"]
-    projection["Host 语音呈现投影\nCore Snapshot + 当前完整 token RMS"]
+    measurement["可选 PCM 观测\n通用 audiometer；不改变音频"]
+    projection["Host 语音呈现投影\nCore Snapshot + 当前完整 token 频谱"]
     panel["MyGo 非激活 Panel\n可见时 30 Hz；鼠标穿透"]
     glass["siriglass 可选材质 renderer\narm64 macOS 27.0.1 / 26A434 gate"]
     fault["显示故障只关闭呈现\nCore 与音频会话继续"]
@@ -26,7 +27,8 @@ flowchart LR
     shell --> tools
     shell --> text
     core --> projection
-    audio --> projection
+    audio --> measurement
+    measurement --> projection
     prefs --> projection
     projection --> panel
     panel --> glass
