@@ -30,12 +30,12 @@ function renderTokens() {
   const roles = { Background:'页面', Text:'主文字', TextMuted:'次文字', Surface:'表面', SurfaceHover:'悬停', SurfacePressed:'按下', Border:'边框', Accent:'操作', AccentHover:'操作悬停', AccentPressed:'操作按下', AccentText:'操作文字', Separator:'分隔线', Disabled:'禁用文字', Selection:'选中', Focus:'焦点', Inverse:'反色表面', InverseText:'反色文字', Scrollbar:'滚动条', Success:'成功文字', Warning:'提醒文字', Danger:'错误文字' };
   main.innerHTML = `<p class="intro muted">执行值由 <code>cmd/mimac/design.go</code> 自动导出。修改源码后重新构建，工作台不维护另一套数值。</p>
     <section><div class="section-heading"><h2>颜色</h2><p>语义角色随外观切换</p></div><div class="swatches">${Object.entries(roles).filter(([key])=>palette[key]).map(([key,label])=>`<div class="swatch"><div class="swatch-surface" style="background:${escape(palette[key])}"></div><strong>${label}</strong><code>${key} ${palette[key]}</code></div>`).join('')}</div></section>
-    <section class="section"><div class="section-heading"><h2>尺寸与间距</h2><label>筛选 <input class="filter" id="token-filter" type="search" placeholder="如 spacing、control、window" aria-label="筛选 Token"></label></div><table class="token-table"><thead><tr><th>Token</th><th>值</th><th>比例</th></tr></thead><tbody id="token-rows"></tbody></table></section>${sourceLinks(['cmd/mimac/design.go','DESIGN.md'])}`;
+    <section class="section"><div class="section-heading"><h2>尺寸、间距与字重</h2><label>筛选 <input class="filter" id="token-filter" type="search" placeholder="如 spacing、control、window" aria-label="筛选 Token"></label></div><table class="token-table"><thead><tr><th>Token</th><th>值</th><th>比例</th></tr></thead><tbody id="token-rows"></tbody></table></section>${sourceLinks(['cmd/mimac/design.go','DESIGN.md'])}`;
   const filter = document.querySelector('#token-filter');
   const renderRows = () => {
     const query = filter.value.trim().toLowerCase();
     const values = Object.entries(data.tokens).filter(([key])=>key.toLowerCase().includes(query));
-    document.querySelector('#token-rows').innerHTML = values.map(([key,value])=>`<tr><td><code>${key}</code></td><td>${value}${key==='mappingListRatio'||key==='mappingReferenceRows'?'':' pt'}</td><td><div class="measure" style="width:${Math.max(1,Math.min(value,184))}px" aria-hidden="true"></div></td></tr>`).join('') || '<tr><td colspan="3">没有匹配项</td></tr>';
+    document.querySelector('#token-rows').innerHTML = values.map(([key,value])=>`<tr><td><code>${key}</code></td><td>${value}${['mappingListRatio','mappingReferenceRows','sidebarSymbolWeight'].includes(key)?'':' pt'}</td><td><div class="measure" style="width:${Math.max(1,Math.min(value,184))}px" aria-hidden="true"></div></td></tr>`).join('') || '<tr><td colspan="3">没有匹配项</td></tr>';
   };
   filter.addEventListener('input', renderRows); renderRows();
 }

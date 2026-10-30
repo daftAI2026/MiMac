@@ -33,14 +33,31 @@ var (
 	msgDrawImage       func(obj objc.ID, sel objc.SEL, dst, src nsRect, operation uint, fraction float64)
 )
 
-// Image rasterizes an AppKit SF Symbol into a square 2× bitmap for a logical
-// pointSize × pointSize slot. The returned image's bounds are pixels; its
-// TIFF representation also carries the logical point size. It must be called
-// while MyGo's event loop is active; native work runs on its main thread.
-// dark selects a light foreground for a dark sidebar.
+// Image rasterizes one AppKit SF Symbol into a square 2× bitmap for a logical
+// pointSize × pointSize slot using weight 0. The returned image's bounds are
+// pixels; its TIFF representation also carries the logical point size. It
+// must be called while MyGo's event loop is active; native work runs on its
+// main thread. dark selects a light foreground for a dark sidebar.
 func Image(name string, dark bool, pointSize float64) (image.Image, error) {
 	if name == "" {
 		return nil, errors.New("symbols: empty SF Symbol name")
+	}
+	images, err := Images([]string{name}, dark, pointSize, 0)
+	if err != nil {
+		return nil, err
+	}
+	return images[0], nil
+}
+
+// Images rasterizes SF Symbols as one visual group. All symbols share a point
+// size, weight, palette, and fit scale, and are returned in input order. It
+// must be called while MyGo's event loop is active; AppKit work runs in one
+// main-thread callback and one autorelease pool.
+func Images(names []string, dark bool, pointSize, weight float64) ([]image.Image, error) {
+	for i, name := range names {
+		if name == "" {
+			return nil, fmt.Errorf("symbols: empty SF Symbol name at index %d", i)
+		}
 	}
 	if math.IsNaN(pointSize) || math.IsInf(pointSize, 0) || pointSize <= 0 {
 		return nil, fmt.Errorf("symbols: invalid point size %v", pointSize)
@@ -48,13 +65,21 @@ func Image(name string, dark bool, pointSize float64) (image.Image, error) {
 	if math.Ceil(pointSize*2) > maxRasterPixels {
 		return nil, fmt.Errorf("symbols: point size %v exceeds raster limit", pointSize)
 	}
+	if math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return nil, fmt.Errorf("symbols: invalid symbol weight %v", weight)
+	}
+	if len(names) == 0 {
+		return []image.Image{}, nil
+	}
 	if err := loadBitmapMessages(); err != nil {
 		return nil, err
 	}
-	var result image.Image
+	// Copy the caller's slice before handing the batch to the main thread.
+	symbolNames := append([]string(nil), names...)
+	var result []image.Image
 	err := errors.New("symbols: MyGo main loop is unavailable")
 	mygo.RunOnMain(func() {
-		result, err = imageOnMain(name, dark, pointSize)
+		result, err = imagesOnMain(symbolNames, dark, pointSize, weight)
 	})
 	return result, err
 }
@@ -81,7 +106,13 @@ func loadBitmapMessages() error {
 	return bitmapMessagesErr
 }
 
-func imageOnMain(name string, dark bool, pointSize float64) (image.Image, error) {
+type configuredSymbol struct {
+	name    string
+	image   objc.ID
+	natural nsSize
+}
+
+func imagesOnMain(names []string, dark bool, pointSize, weight float64) ([]image.Image, error) {
 	poolClass := objc.GetClass("NSAutoreleasePool")
 	if poolClass == 0 {
 		return nil, errors.New("symbols: AppKit autorelease pool unavailable")
@@ -107,15 +138,7 @@ func imageOnMain(name string, dark bool, pointSize float64) (image.Image, error)
 		return nil, errors.New("symbols: required SF Symbol configuration is unavailable")
 	}
 
-	label := nsString(name)
-	base := objc.ID(imageClass).Send(selector("imageWithSystemSymbolName:accessibilityDescription:"), nsString(name), label)
-	if base == 0 {
-		return nil, fmt.Errorf("symbols: unknown SF Symbol %q", name)
-	}
-	base.Send(selector("retain"))
-	defer base.Send(selector("release"))
-
-	pointConfig := objc.ID(configClass).Send(selector("configurationWithPointSize:weight:"), pointSize, 0.0)
+	pointConfig := objc.ID(configClass).Send(selector("configurationWithPointSize:weight:"), pointSize, weight)
 	if pointConfig == 0 {
 		return nil, errors.New("symbols: could not configure SF Symbol size")
 	}
@@ -156,80 +179,119 @@ func imageOnMain(name string, dark bool, pointSize float64) (image.Image, error)
 	}
 	combined.Send(selector("retain"))
 	defer combined.Send(selector("release"))
-	if !responds(base, "imageWithSymbolConfiguration:") {
-		return nil, errors.New("symbols: SF Symbol rendering configuration is unavailable")
+	configured := make([]configuredSymbol, 0, len(names))
+	defer func() {
+		for _, symbol := range configured {
+			symbol.image.Send(selector("release"))
+		}
+	}()
+	for _, name := range names {
+		base := objc.ID(imageClass).Send(selector("imageWithSystemSymbolName:accessibilityDescription:"), nsString(name), nsString(name))
+		if base == 0 {
+			return nil, fmt.Errorf("symbols: unknown SF Symbol %q", name)
+		}
+		base.Send(selector("retain"))
+		if !responds(base, "imageWithSymbolConfiguration:") {
+			base.Send(selector("release"))
+			return nil, errors.New("symbols: SF Symbol rendering configuration is unavailable")
+		}
+		image := base.Send(selector("imageWithSymbolConfiguration:"), combined)
+		if image == 0 {
+			base.Send(selector("release"))
+			return nil, fmt.Errorf("symbols: AppKit could not render SF Symbol %q", name)
+		}
+		image.Send(selector("retain"))
+		base.Send(selector("release"))
+		configured = append(configured, configuredSymbol{name: name, image: image})
 	}
 
-	rendered := base.Send(selector("imageWithSymbolConfiguration:"), combined)
-	if rendered == 0 {
-		return nil, errors.New("symbols: AppKit could not render SF Symbol")
+	// Configure the full set before measuring any natural size. One fit scale
+	// then preserves relative scale across the entire sidebar column.
+	var maxWidth, maxHeight float64
+	for i := range configured {
+		natural := objc.Send[nsSize](configured[i].image, selector("size"))
+		if natural.Width <= 0 || natural.Height <= 0 || math.IsNaN(natural.Width) || math.IsNaN(natural.Height) || math.IsInf(natural.Width, 0) || math.IsInf(natural.Height, 0) {
+			return nil, fmt.Errorf("symbols: invalid SF Symbol %q size %gx%g", configured[i].name, natural.Width, natural.Height)
+		}
+		configured[i].natural = natural
+		maxWidth = math.Max(maxWidth, natural.Width)
+		maxHeight = math.Max(maxHeight, natural.Height)
 	}
-	rendered.Send(selector("retain"))
-	defer rendered.Send(selector("release"))
+	fitScale := math.Min(pointSize/maxWidth, pointSize/maxHeight)
+	if fitScale <= 0 || math.IsNaN(fitScale) || math.IsInf(fitScale, 0) {
+		return nil, fmt.Errorf("symbols: invalid common fit scale %v", fitScale)
+	}
+	pixels := int(math.Ceil(pointSize * 2))
+	result := make([]image.Image, len(configured))
+	for i, symbol := range configured {
+		raster, err := rasterizeConfiguredSymbol(symbol, pointSize, fitScale, pixels,
+			objc.ID(bitmapClass), objc.ID(graphicsClass), objc.ID(colorSpaceClass))
+		if err != nil {
+			return nil, fmt.Errorf("symbols: rasterize %q: %w", symbol.name, err)
+		}
+		result[i] = raster
+	}
+	return result, nil
+}
 
-	imageSize := objc.Send[nsSize](rendered, selector("size"))
-	if imageSize.Width <= 0 || imageSize.Height <= 0 || math.IsNaN(imageSize.Width) || math.IsNaN(imageSize.Height) || math.IsInf(imageSize.Width, 0) || math.IsInf(imageSize.Height, 0) {
-		return nil, fmt.Errorf("symbols: invalid SF Symbol size %gx%g", imageSize.Width, imageSize.Height)
-	}
-	fit := math.Min(pointSize/imageSize.Width, pointSize/imageSize.Height)
-	drawSize := nsSize{Width: imageSize.Width * fit, Height: imageSize.Height * fit}
+func rasterizeConfiguredSymbol(symbol configuredSymbol, pointSize, fitScale float64, pixels int, bitmapClass, graphicsClass, colorSpaceClass objc.ID) (image.Image, error) {
+	drawSize := nsSize{Width: symbol.natural.Width * fitScale, Height: symbol.natural.Height * fitScale}
 	destination := nsRect{
 		Origin: nsPoint{X: (pointSize - drawSize.Width) / 2, Y: (pointSize - drawSize.Height) / 2},
 		Size:   drawSize,
 	}
 
-	pixels := int(math.Ceil(pointSize * 2))
 	allocated := objc.ID(bitmapClass).Send(selector("alloc"))
 	if allocated == 0 {
-		return nil, errors.New("symbols: could not allocate SF Symbol bitmap")
+		return nil, errors.New("could not allocate SF Symbol bitmap")
 	}
 	bitmap := msgInitBitmap(allocated, selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
 		0, pixels, pixels, 8, 4, true, false, nsString("NSCalibratedRGBColorSpace"), 0, 0)
 	if bitmap == 0 {
-		return nil, errors.New("symbols: could not initialize SF Symbol bitmap")
+		return nil, errors.New("could not initialize SF Symbol bitmap")
 	}
 	bitmap.Send(selector("autorelease"))
 
 	sRGBSpace := objc.ID(colorSpaceClass).Send(selector("sRGBColorSpace"))
 	if sRGBSpace == 0 {
-		return nil, errors.New("symbols: could not get sRGB color space")
+		return nil, errors.New("could not get sRGB color space")
 	}
 	bitmap = bitmap.Send(selector("bitmapImageRepByRetaggingWithColorSpace:"), uintptr(sRGBSpace))
 	if bitmap == 0 {
-		return nil, errors.New("symbols: could not retag SF Symbol bitmap as sRGB")
+		return nil, errors.New("could not retag SF Symbol bitmap as sRGB")
 	}
 	msgSetSize(bitmap, selector("setSize:"), nsSize{Width: pointSize, Height: pointSize})
 
 	context := objc.ID(graphicsClass).Send(selector("graphicsContextWithBitmapImageRep:"), uintptr(bitmap))
 	if context == 0 {
-		return nil, errors.New("symbols: could not create SF Symbol bitmap context")
+		return nil, errors.New("could not create SF Symbol bitmap context")
 	}
 	objc.ID(graphicsClass).Send(selector("saveGraphicsState"))
 	defer objc.ID(graphicsClass).Send(selector("restoreGraphicsState"))
 	objc.ID(graphicsClass).Send(selector("setCurrentContext:"), uintptr(context))
-	context.Send(selector("setImageInterpolation:"), 3)                                                        // NSImageInterpolationHigh
-	msgDrawImage(rendered, selector("drawInRect:fromRect:operation:fraction:"), destination, nsRect{}, 2, 1.0) // SourceOver
+	context.Send(selector("setImageInterpolation:"), 3)                                                            // NSImageInterpolationHigh
+	msgDrawImage(symbol.image, selector("drawInRect:fromRect:operation:fraction:"), destination, nsRect{}, 2, 1.0) // SourceOver
 	context.Send(selector("flushGraphics"))
 
 	data := bitmap.Send(selector("TIFFRepresentation"))
 	if data == 0 {
-		return nil, errors.New("symbols: AppKit returned no TIFF data")
+		return nil, errors.New("AppKit returned no TIFF data")
 	}
 	data.Send(selector("retain"))
 	defer data.Send(selector("release"))
 
 	length := objc.Send[uintptr](data, selector("length"))
 	if length == 0 || length > 8*1024*1024 {
-		return nil, errors.New("symbols: invalid TIFF data length")
+		return nil, errors.New("invalid TIFF data length")
 	}
 	pixelsPtr := objc.Send[*byte](data, selector("bytes"))
 	if pixelsPtr == nil {
-		return nil, errors.New("symbols: TIFF data has no bytes")
+		return nil, errors.New("TIFF data has no bytes")
 	}
 	encoded := append([]byte(nil), unsafe.Slice(pixelsPtr, int(length))...)
 	decoded, err := tiff.Decode(bytes.NewReader(encoded))
 	if err != nil {
-		return nil, fmt.Errorf("symbols: decode AppKit TIFF: %w", err)
+		return nil, fmt.Errorf("decode AppKit TIFF: %w", err)
 	}
 	return decoded, nil
 }

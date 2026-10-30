@@ -51,9 +51,10 @@ const (
 	windowMinWidth               = windowWidth
 	windowMinHeight              = windowHeight
 	trafficLightInset            = 20
-	sidebarItemInset     float32 = spaceSM
+	sidebarItemInset     float32 = 7
 	sidebarLabelGap      float32 = 3
 	sidebarIconSize      float32 = 18
+	sidebarSymbolWeight  float32 = 0.23
 )
 
 func mappingReferenceFrameHeight(captionSize, rowHeight float32) float32 {
