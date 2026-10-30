@@ -6,16 +6,18 @@ import (
 	"math"
 	"time"
 
+	"mimac.local/mimac/internal/audiometer"
 	"mimac.local/mimac/internal/bridge"
 )
 
 // This is a render snapshot. Core and the existing PCM owner remain the only
 // sources of session identity, phase and input level.
 type voiceOverlayFrame struct {
-	Visible bool
-	Token   bridge.SessionToken
-	Label   string
-	DB      float32
+	Visible  bool
+	Token    bridge.SessionToken
+	Label    string
+	DB       float32
+	Spectrum audiometer.Spectrum
 }
 
 type voiceOverlayView interface {
@@ -25,9 +27,10 @@ type voiceOverlayView interface {
 }
 
 type voiceOverlayState struct {
-	open func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
-	view voiceOverlayView
-	err  error // Optional display failure, never an audio/core failure.
+	open  func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
+	view  voiceOverlayView
+	err   error // Optional display failure, never an audio/core failure.
+	meter voiceSpectrumState
 }
 
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
@@ -46,6 +49,9 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 		return frame
 	}
 	frame.Visible, frame.Token, frame.Label = true, snapshot.Session.Token, phase.label
+	if snapshot.Session.Phase == bridge.PhaseCapturing || snapshot.Session.Phase == bridge.PhaseDraining {
+		frame.Spectrum = s.voiceOverlay.meter.snapshot(frame.Token, now)
+	}
 	level := presentVoiceInput(snapshot, s.coordinator.audio)
 	if level == nil || level.RMS <= 0 || math.IsNaN(float64(level.RMS)) || math.IsInf(float64(level.RMS), 0) ||
 		now.Before(level.ObservedAt) || now.Sub(level.ObservedAt) > 100*time.Millisecond {
@@ -57,6 +63,7 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 
 func (s *shell) syncVoiceOverlay() {
 	state := &s.voiceOverlay
+	state.meter.setEnabled(!s.closing && s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed && state.err == nil)
 	if s.closing || !s.preferencesState.value.ShowVoiceOverlay {
 		s.closeVoiceOverlay()
 		return
@@ -105,6 +112,7 @@ func (s *shell) recordVoiceOverlayError(err error) {
 		log.Printf("voice overlay unavailable: %v", err)
 	}
 	s.voiceOverlay.err = err
+	s.voiceOverlay.meter.setEnabled(false)
 	s.report.VoiceOverlayError = err.Error()
 }
 

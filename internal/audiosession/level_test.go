@@ -42,10 +42,11 @@ func TestRuntimeInputLevelFollowsPCMAndClearsBeforeDrain(t *testing.T) {
 	for _, rate := range []int{8000, 16000} {
 		t.Run(strconv.Itoa(rate), func(t *testing.T) {
 			source, sink := newSourceStub(), newSinkStub()
+			observer := &levelObserverStub{}
 			drainRelease := make(chan struct{})
 			sink.drainRelease = drainRelease
 			r := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
-				return Resources{Source: source, Sink: sink, SampleRate: rate}, nil
+				return Resources{Source: source, Sink: sink, SampleRate: rate, Observer: observer}, nil
 			})
 			core, device := newCoreForSessionTest(t, "input-level")
 			press, token, prepare := beginVoiceSession(t, core, device, 1)
@@ -64,6 +65,9 @@ func TestRuntimeInputLevelFollowsPCMAndClearsBeforeDrain(t *testing.T) {
 			source.reads <- readResult{pcm: pcm}
 			if got := waitLevelWrite(t, sink); !reflect.DeepEqual(got, pcm) {
 				t.Fatal("meter changed the delivered PCM")
+			}
+			if got := observer.samples(); !reflect.DeepEqual(got, pcm) {
+				t.Fatal("observer did not receive the same PCM delivered to the sink")
 			}
 			level, ok := r.InputLevel(token)
 			if !ok || math.Abs(float64(level.RMS)-math.Sqrt(.125)) > .00004 || level.Peak != .5 || level.Samples != len(pcm) || level.ObservedAt.IsZero() {
@@ -86,6 +90,9 @@ func TestRuntimeInputLevelFollowsPCMAndClearsBeforeDrain(t *testing.T) {
 			}
 			applySourceEffects(t, r, ended)
 			waitSignal(t, sink.drainStarted)
+			if observer.samples() != nil {
+				t.Fatal("observer retained source data while output was draining")
+			}
 			if _, ok := r.InputLevel(token); ok {
 				t.Fatal("EOF left an input level while final output was draining")
 			}
@@ -96,6 +103,76 @@ func TestRuntimeInputLevelFollowsPCMAndClearsBeforeDrain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The test deliberately copies borrowed samples to compare delivery; the
+// production observer retains only its bounded analyzer window and spectrum.
+type levelObserverStub struct {
+	mu     sync.Mutex
+	pcm    []int16
+	clears int
+}
+
+func (o *levelObserverStub) Observe(pcm []int16, _ time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pcm = append([]int16(nil), pcm...)
+}
+func (o *levelObserverStub) Clear() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pcm = nil
+	o.clears++
+}
+
+func TestObserverClearsWhenSessionNeverOpensPCMGate(t *testing.T) {
+	for _, mode := range []string{"gate-cancel", "receiver-error"} {
+		t.Run(mode, func(t *testing.T) {
+			source, sink, observer := newSourceStub(), newSinkStub(), &levelObserverStub{}
+			r := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+				v := Resources{Source: source, Sink: sink, SampleRate: 16000, Observer: observer}
+				if mode == "receiver-error" {
+					v.WaitReceiver = func(context.Context) error { return errors.New("receiver unavailable") }
+				}
+				return v, nil
+			})
+			core, device := newCoreForSessionTest(t, "observer-preflight")
+			_, token, prepare := beginVoiceSession(t, core, device, 1)
+			if err := r.Submit(prepare); err != nil {
+				t.Fatal(err)
+			}
+			completion := waitCompletion(t, r)
+			if mode == "gate-cancel" {
+				if completion.Err != nil {
+					t.Fatal(completion.Err)
+				}
+				if err := r.Submit(bridge.CloseGateEffect{Token: token}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := r.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			observer.mu.Lock()
+			clears, n := observer.clears, len(observer.pcm)
+			observer.mu.Unlock()
+			if clears == 0 || n != 0 {
+				t.Fatalf("unopened gate skipped observer retirement: clears=%d samples=%d", clears, n)
+			}
+			select {
+			case <-source.readStarted:
+				t.Fatal("gate never opened but source was read")
+			default:
+			}
+		})
+	}
+}
+func (o *levelObserverStub) samples() []int16 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]int16(nil), o.pcm...)
 }
 
 func waitLevelWrite(t *testing.T, sink *sinkStub) []int16 {

@@ -10,6 +10,7 @@ import (
 )
 
 const voiceOverlaySlot = 160
+
 // The native material's shadow extends beyond its layout slot. Reserve a
 // transparent tail; it is not a second surface or a caption container.
 const voiceOverlayHeight = voiceOverlaySlot + int(2*windowInset)
@@ -79,7 +80,7 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 	if !frame.Visible {
 		return v.Hide()
 	}
-	if err := v.renderer.Update(true, frame.DB); err != nil {
+	if err := v.renderer.UpdateMeters(true, frame.DB, siriglass.MetersFromSpectrum(frame.Spectrum)); err != nil {
 		return err
 	}
 	if !v.visible || v.frame.Token != frame.Token {

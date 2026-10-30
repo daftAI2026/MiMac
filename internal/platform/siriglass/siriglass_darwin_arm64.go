@@ -35,18 +35,24 @@ const (
 	nativeDisplayCeilingDB float32 = -20.0
 )
 
+type audioMetersInput struct {
+	NormalizedPowerAmplitudes []float32 `json:"normalizedPowerAmplitudes"`
+	StopFrequenciesHz         []float32 `json:"stopFrequenciesHz"`
+}
+
 type glassParameters struct {
-	SchemaVersion           int     `json:"schemaVersion"`
-	Revision                uint64  `json:"revision"`
-	Kind                    int     `json:"kind"`
-	Personality             int     `json:"personality"`
-	Variant                 string  `json:"variant"`
-	AudioPowerDB            float32 `json:"audioPowerDB"`
-	Diameter                float64 `json:"diameter"`
-	Visible                 bool    `json:"visible"`
-	Content                 string  `json:"content"`
-	Layers                  int     `json:"layers"`
-	ReferencePhaseAnimation bool    `json:"referencePhaseAnimation"`
+	AudioMeters             *audioMetersInput `json:"audioMeters,omitempty"`
+	SchemaVersion           int               `json:"schemaVersion"`
+	Revision                uint64            `json:"revision"`
+	Kind                    int               `json:"kind"`
+	Personality             int               `json:"personality"`
+	Variant                 string            `json:"variant"`
+	AudioPowerDB            float32           `json:"audioPowerDB"`
+	Diameter                float64           `json:"diameter"`
+	Visible                 bool              `json:"visible"`
+	Content                 string            `json:"content"`
+	Layers                  int               `json:"layers"`
+	ReferencePhaseAnimation bool              `json:"referencePhaseAnimation"`
 }
 
 func rendererParameters(revision uint64, visible bool, db float32) glassParameters {
@@ -67,6 +73,15 @@ func rendererParameters(revision uint64, visible bool, db float32) glassParamete
 		Layers:                  3,
 		ReferencePhaseAnimation: true,
 	}
+}
+
+func rendererMeterParameters(revision uint64, visible bool, db float32, meters Meters) glassParameters {
+	p := rendererParameters(revision, visible, db)
+	if visible && meters.Count > 0 {
+		p.AudioPowerDB = initialDB // Native array init ignores the legacy scalar.
+		p.AudioMeters = &audioMetersInput{meters.Amplitudes[:meters.Count], meters.StopFrequenciesHz[:meters.Count]}
+	}
+	return p
 }
 
 // nativeDisplayDBFromSourceDBFS maps the host's visible meter range into the
@@ -114,6 +129,7 @@ type Renderer struct {
 	revision uint64
 	visible  bool
 	db       float32
+	meters   Meters
 	closing  bool
 	closed   bool
 }
@@ -181,14 +197,27 @@ func Open(window uintptr) (*Renderer, error) {
 // canonicalized to the reference floor so meter changes cannot refresh a
 // hidden renderer. Identical native inputs are deduplicated.
 func (r *Renderer) Update(visible bool, db float32) error {
+	return r.UpdateMeters(visible, db, Meters{})
+}
+
+// UpdateMeters uses the native array branch when Count is nonzero. Arrays are
+// real frequency measurements; the scalar is retained only for legacy callers.
+func (r *Renderer) UpdateMeters(visible bool, db float32, meters Meters) error {
 	if r == nil {
 		return errors.New("siriglass: nil renderer")
 	}
 	if math.IsNaN(float64(db)) || math.IsInf(float64(db), 0) || db < -160 || db > 0 {
 		return errors.New("siriglass: audioPowerDB must be finite and between -160 and 0 dB")
 	}
+	if err := meters.validate(); err != nil {
+		return err
+	}
+	if meters.Count > 0 {
+		db = initialDB
+	}
 	if !visible {
 		db = initialDB
+		meters = Meters{}
 	}
 
 	var ran bool
@@ -199,7 +228,7 @@ func (r *Renderer) Update(visible bool, db float32) error {
 			resultErr = errors.New("siriglass: renderer is closed or awaiting close retry")
 			return
 		}
-		if r.visible == visible && r.db == db {
+		if r.visible == visible && r.db == db && r.meters == meters {
 			return
 		}
 		if r.revision == ^uint64(0) {
@@ -207,7 +236,7 @@ func (r *Renderer) Update(visible bool, db float32) error {
 			return
 		}
 		nextRevision := r.revision + 1
-		parameters := rendererParameters(nextRevision, visible, db)
+		parameters := rendererMeterParameters(nextRevision, visible, db, meters)
 		data, err := json.Marshal(parameters)
 		if err != nil {
 			resultErr = fmt.Errorf("siriglass: encode update parameters: %w", err)
@@ -219,7 +248,7 @@ func (r *Renderer) Update(visible bool, db float32) error {
 			return
 		}
 		runtime.KeepAlive(data)
-		r.revision, r.visible, r.db = nextRevision, visible, db
+		r.revision, r.visible, r.db, r.meters = nextRevision, visible, db, meters
 	})
 	if !ran {
 		return errors.New("siriglass: MyGo main loop is unavailable")

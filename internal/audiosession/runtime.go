@@ -45,10 +45,22 @@ type Transcript struct {
 	Text  string
 }
 
+// PCMObserver is an optional, bounded, in-process display tap. Calls are
+// serialized on the existing PCM worker, outside Runtime.mu. Observe must not
+// modify or retain its borrowed slice, block, do I/O, or dispatch to the UI.
+// A bounded analysis window may own a copy; no sample history is persisted.
+// Clear runs before drain and on every worker exit. It is idempotent.
+// This tap neither owns the source nor acknowledges delivery to a receiver.
+type PCMObserver interface {
+	Observe([]int16, time.Time)
+	Clear()
+}
+
 type Resources struct {
 	Source     Source
 	Sink       Sink
 	SampleRate int
+	Observer   PCMObserver
 	// WaitReceiver is supplied by an external-consumer adapter. It must verify
 	// the session's exact input route and active consumer, not merely that a
 	// shortcut was sent. Nil is for routes requiring no external readiness.
@@ -326,6 +338,11 @@ func (r *Runtime) run(s *resource) {
 		case <-s.ctx.Done():
 		}
 	}
+	if resources.Observer != nil {
+		// Includes failed preparation/receiver readiness and gate cancellation,
+		// which never enter copyPCM. Clear before completion or resource close.
+		resources.Observer.Clear()
+	}
 	r.mu.Lock()
 	if s.cause == nil && err != nil && s.ctx.Err() == nil {
 		s.cause = err
@@ -361,7 +378,13 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 			return errors.New("audiosession: invalid PCM block length")
 		}
 		if n > 0 {
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
 			r.recordInputLevel(s, pcm[:n])
+			if s.resources.Observer != nil {
+				s.resources.Observer.Observe(pcm[:n], time.Now())
+			}
 			if err := writePCM(s.ctx, s.resources.Sink, pcm[:n]); err != nil {
 				return err
 			}
@@ -369,6 +392,9 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 		if readErr == io.EOF {
 			// The source has ended even if the output still needs time to drain.
 			r.clearInputLevel(s)
+			if s.resources.Observer != nil {
+				s.resources.Observer.Clear()
+			}
 			r.mu.Lock()
 			stopDone, stopCtx := s.stopDone, s.stopCtx
 			r.mu.Unlock()

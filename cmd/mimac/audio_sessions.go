@@ -98,6 +98,17 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 				return resources, err
 			}
 		}
+		// Presentation observes this same source stream. It does not own a
+		// capture device, alter PCM, or introduce another session state machine.
+		s.voiceOverlay.meter.setEnabled(s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed && s.voiceOverlay.err == nil)
+		prepareAudio := prepare
+		prepare = func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
+			resources, err := prepareAudio(ctx, token)
+			if err == nil && ctx.Err() == nil && resources.Observer == nil {
+				resources.Observer = s.voiceOverlay.meter.observer(ctx, token, resources.SampleRate)
+			}
+			return resources, err
+		}
 		runner, err := audiosession.New(prepare)
 		if err != nil {
 			return func() error { return nil }, err

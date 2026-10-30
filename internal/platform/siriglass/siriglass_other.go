@@ -12,5 +12,7 @@ func Open(uintptr) (*Renderer, error) { return nil, ErrUnsupported }
 // Update reports that the native renderer is unavailable on this host.
 func (*Renderer) Update(bool, float32) error { return ErrUnsupported }
 
+func (*Renderer) UpdateMeters(bool, float32, Meters) error { return ErrUnsupported }
+
 // Close is a no-op because Open cannot create a native resource here.
 func (*Renderer) Close() error { return nil }
