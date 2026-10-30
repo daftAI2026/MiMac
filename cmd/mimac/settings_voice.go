@@ -65,8 +65,8 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 				if selected {
 					label = "当前工具"
 				}
-				button := appButton(c, a, label, selected || s.toolLoadFailed).Label(label + "：" + tool.name)
-				if button.Clicked() && !selected && !s.toolLoadFailed {
+				button := appButton(c, a, label, (selected && tool.requiredInputSource == nil) || s.toolLoadFailed).Label(label + "：" + tool.name)
+				if button.Clicked() && (!selected || tool.requiredInputSource != nil) && !s.toolLoadFailed {
 					if err := s.selectVoiceTool(tool); err != nil && s.toolError == "" {
 						s.toolError = "无法切换语音工具"
 					}

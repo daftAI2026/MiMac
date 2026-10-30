@@ -50,7 +50,11 @@ func newToolShortcutsTestShell(t *testing.T, snapshot voicetools.Snapshot) (*she
 			profile:     emptyProfile(),
 			mappingPath: path,
 		},
-		voiceToolsState: voiceToolsState{currentVoiceTool: "voice-typeless", tools: []*voiceTool{{id: "voice-typeless", name: "Typeless", active: true, sequence: 7, snapshot: snapshot}}},
+		voiceToolsState: voiceToolsState{
+			currentVoiceTool: "voice-typeless",
+			inputSource:      &fakeInputSourceController{current: "com.apple.keylayout.ABC"},
+			tools:            []*voiceTool{{id: "voice-typeless", name: "Typeless", active: true, sequence: 7, snapshot: snapshot}},
+		},
 		selectedProfile: profileID,
 		deviceProfiles:  []devicePlugin{{Profile: toolShortcutsTestProfile(profileID)}},
 		coordinator:     newDeviceCoordinator(),

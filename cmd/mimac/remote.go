@@ -360,6 +360,11 @@ func (s *shell) toggleRemote() {
 func (s *shell) enableRemote(requestPermission bool) {
 	s.remoteState.err = nil
 	s.deviceNeedsPermission = false
+	if requestPermission {
+		// Input-source selection is a user-triggered global change. A failure
+		// leaves remote mappings available; voice actions retain their live gate.
+		_ = s.ensureSelectedVoiceInputSource()
+	}
 	if err := s.plugins.Enable(remotePlugin); err != nil {
 		s.remoteState.err = err
 		if errors.Is(err, xiaomi.ErrInputMonitoringRequired) {

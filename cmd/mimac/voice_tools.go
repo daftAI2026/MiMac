@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"mimac.local/mimac/internal/adapters/typeless"
 	"mimac.local/mimac/internal/adapters/wetype"
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/platform/inputsource"
 	"mimac.local/mimac/internal/pluginrt"
 	"mimac.local/mimac/internal/voicetools"
 )
@@ -47,12 +49,155 @@ const (
 type voiceToolsState struct {
 	tools               []*voiceTool
 	currentVoiceTool    string
+	inputSource         inputSourceAccess
 	toolLocator         voicetools.Locator
 	toolPreferences     toolPreferences
 	toolPreferencesPath string
 	toolLoadFailed      bool
 	toolError           string
 	voiceStartBlocked   string
+}
+
+const (
+	inputSourceDeferredToolError      = "请在当前操作结束后重新选择此工具"
+	inputSourceFailedToolError        = "请在系统设置中检查输入法后重选"
+	inputSourceCleanupFailedToolError = "语音清理未完成，请先恢复再重选"
+)
+
+var errInputSourceCleanupFailed = errors.New("inputsource: previous audio owner cleanup is not confirmed")
+
+type inputSourceAccess interface {
+	CurrentID() (string, error)
+	SelectEnabledID(string) error
+}
+
+type nativeInputSourceAccess struct{}
+
+func (nativeInputSourceAccess) CurrentID() (string, error) { return inputsource.CurrentID() }
+func (nativeInputSourceAccess) SelectEnabledID(id string) error {
+	return inputsource.SelectEnabledID(id)
+}
+
+func (s *shell) inputSourceController() inputSourceAccess {
+	if s.inputSource != nil {
+		return s.inputSource
+	}
+	return nativeInputSourceAccess{}
+}
+
+// requiredInputSourceForSelection derives one target only from the current,
+// ready adapter snapshot and its executable, supported actions.
+func requiredInputSourceForSelection(tool *voiceTool) (string, bool) {
+	if tool == nil || tool.requiredInputSource == nil || tool.busy || tool.snapshot.State != voicetools.Ready {
+		return "", false
+	}
+	var target string
+	for _, action := range tool.snapshot.Actions {
+		if action.Control == nil {
+			continue
+		}
+		executable := false
+		for _, candidate := range action.Candidates {
+			if candidate.Supported {
+				executable = true
+				break
+			}
+		}
+		if !executable {
+			continue
+		}
+		sourceID, known := tool.requiredInputSource(action.ID)
+		if !known || sourceID == "" || (target != "" && target != sourceID) {
+			return "", false
+		}
+		target = sourceID
+	}
+	return target, target != ""
+}
+
+func (s *shell) ensureVoiceInputSource(tool *voiceTool) error {
+	target, required := requiredInputSourceForSelection(tool)
+	if !required {
+		return nil
+	}
+	controller := s.inputSourceController()
+	actual, err := controller.CurrentID()
+	if err != nil {
+		return fmt.Errorf("inputsource: read current ID: %w", err)
+	}
+	if actual == target {
+		return nil
+	}
+	if err := controller.SelectEnabledID(target); err != nil {
+		return err
+	}
+	actual, err = controller.CurrentID()
+	if err != nil {
+		return fmt.Errorf("inputsource: verify current ID: %w", err)
+	}
+	if actual != target {
+		return fmt.Errorf("inputsource: current ID is %q after selecting %q", actual, target)
+	}
+	return nil
+}
+
+// TIS changes are explicit user actions and only run after the existing voice
+// action/route owners are idle. A route for another target is still retiring
+// work even after its Core action has been cancelled.
+func (s *shell) inputSourceTransitionBusy(tool *voiceTool) bool {
+	if tool == nil || tool.requiredInputSource == nil {
+		return false
+	}
+	if s.closing || s.audioQuitPending || s.liveAudio.retiring || s.remoteState.stopPending ||
+		s.remoteState.cleanupInFlight || s.remoteState.reserveInFlight || s.remoteState.reserveQueued != 0 {
+		return true
+	}
+	if s.inputSourceCleanupFailed() {
+		return true
+	}
+	if s.coordinator != nil && s.coordinator.core != nil {
+		snapshot := s.coordinator.core.Snapshot()
+		if snapshot.HasSession || len(snapshot.HeldKeys) != 0 || len(snapshot.RecoveryKeys) != 0 || snapshot.OutputFailureID != 0 {
+			return true
+		}
+	}
+	oldRouteOwned := s.liveAudio.connection != nil || s.audioSession != nil
+	return oldRouteOwned && s.liveAudio.toolID != tool.id
+}
+
+// A failed route close retains its source owner even after Core is idle and
+// retiring returns false. Keep TIS unchanged until existing recovery clears it.
+func (s *shell) inputSourceCleanupFailed() bool {
+	return s.report.AudioCleanupFailed && (s.liveAudio.connection != nil || s.audioSession != nil)
+}
+
+func (s *shell) ensureSelectedVoiceInputSource() error {
+	var tool *voiceTool
+	for _, candidate := range s.tools {
+		if candidate.id == s.currentVoiceTool && candidate.active {
+			tool = candidate
+			break
+		}
+	}
+	if _, required := requiredInputSourceForSelection(tool); !required {
+		return nil
+	}
+	if s.inputSourceCleanupFailed() {
+		s.toolError = inputSourceCleanupFailedToolError
+		return errInputSourceCleanupFailed
+	}
+	if s.inputSourceTransitionBusy(tool) {
+		s.toolError = inputSourceDeferredToolError
+		return errors.New("inputsource: selection deferred until voice action and route cleanup finish")
+	}
+	if err := s.ensureVoiceInputSource(tool); err != nil {
+		s.toolError = inputSourceFailedToolError
+		return err
+	}
+	if s.toolError == inputSourceDeferredToolError || s.toolError == inputSourceFailedToolError || s.toolError == inputSourceCleanupFailedToolError {
+		s.toolError = ""
+	}
+	return nil
 }
 
 func builtInVoiceTools() []*voiceTool {
@@ -217,8 +362,28 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 		return errors.New("voice tool selection unavailable")
 	}
 	if s.currentVoiceTool == tool.id {
+		if _, required := requiredInputSourceForSelection(tool); !required {
+			return nil
+		}
+		if s.inputSourceCleanupFailed() {
+			s.toolError = inputSourceCleanupFailedToolError
+			return errInputSourceCleanupFailed
+		}
+		if s.inputSourceTransitionBusy(tool) {
+			s.toolError = inputSourceDeferredToolError
+			return errors.New("inputsource: selection deferred until voice action and route cleanup finish")
+		}
+		if err := s.ensureVoiceInputSource(tool); err != nil {
+			s.toolError = inputSourceFailedToolError
+			return err
+		}
+		s.toolError = ""
+		s.refreshRemoteOutput(false)
+		s.invalidateDeviceView()
 		return nil
 	}
+	_, needsInputSource := requiredInputSourceForSelection(tool)
+	inputSourceBusy := needsInputSource && s.inputSourceTransitionBusy(tool)
 	next := s.toolPreferences
 	next.Current = tool.id
 	if err := saveToolPreferences(s.toolPreferencesPath, next); err != nil {
@@ -230,6 +395,26 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 	if err := s.cancelToolActions(oldTool); err != nil {
 		s.toolError = "原工具按键未能释放"
 		return err
+	}
+	if needsInputSource {
+		if s.inputSourceCleanupFailed() {
+			s.toolError = inputSourceCleanupFailedToolError
+			s.refreshRemoteOutput(false)
+			s.invalidateDeviceView()
+			return errInputSourceCleanupFailed
+		}
+		if inputSourceBusy {
+			s.toolError = inputSourceDeferredToolError
+			s.refreshRemoteOutput(false)
+			s.invalidateDeviceView()
+			return errors.New("inputsource: selection deferred until voice action and route cleanup finish")
+		}
+		if err := s.ensureVoiceInputSource(tool); err != nil {
+			s.toolError = inputSourceFailedToolError
+			s.refreshRemoteOutput(false)
+			s.invalidateDeviceView()
+			return err
+		}
 	}
 	s.toolError = ""
 	s.refreshRemoteOutput(false)

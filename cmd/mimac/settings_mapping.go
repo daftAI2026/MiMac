@@ -133,7 +133,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 									menuButton.Children(func() {
 										ui.Box(c).Width(accessoryIconSize).Height(accessoryIconSize).
 											AlignItems(ui.Center).Justify(ui.Center).PassThrough().Children(func() {
-												if icon != nil {
+											if icon != nil {
 												image := ui.Image(c, icon).Width(accessoryIconSize).Height(accessoryIconSize).Fit(ui.Contain).Shrink(0)
 												if s.mappingLoadFailed {
 													image.Opacity(0.55)
@@ -180,7 +180,16 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 	case 1:
 		tool := active[0]
 		if tool.id == s.currentVoiceTool {
-			ui.Text(c, tool.name).FontSize(a.fonts.body).Width(width).MinHeight(height)
+			if tool.requiredInputSource == nil {
+				ui.Text(c, tool.name).FontSize(a.fonts.body).Width(width).MinHeight(height)
+				return
+			}
+			button := ui.ButtonBase(c).Label("重新选择：" + tool.name).
+				Width(width).MinHeight(height).Padding(0).FocusRing(false).Justify(ui.Start).AlignItems(ui.Center)
+			button.Children(func() { ui.Text(c, tool.name).FontSize(a.fonts.body) })
+			if button.Clicked() && !s.toolLoadFailed {
+				s.chooseMappingVoiceTool(c, tool)
+			}
 			return
 		}
 		button := appButton(c, a, "使用", s.toolLoadFailed).Label("使用："+tool.name).
@@ -192,7 +201,8 @@ func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voi
 		appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark, accessoryIconSize), func(menu *ui.Menu) {
 			for _, tool := range active {
 				item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
-				if item.Chosen() && tool.id != s.currentVoiceTool && !s.toolLoadFailed {
+				reselectCurrent := tool.id == s.currentVoiceTool && tool.requiredInputSource != nil
+				if item.Chosen() && (tool.id != s.currentVoiceTool || reselectCurrent) && !s.toolLoadFailed {
 					s.chooseMappingVoiceTool(c, tool)
 				}
 			}
