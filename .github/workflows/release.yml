@@ -43,7 +43,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Test release version planner
-        run: python3 script/release_version_test.py
+        run: |
+          python3 script/release_version_test.py
+          python3 script/test_verify_release.py
 
       - name: Test and vet
         run: |
@@ -71,16 +73,34 @@ jobs:
       - name: Build native settings libraries
         run: script/build_native_settings.sh
 
+      - name: Build optional Siri bridge on supported hosts
+        run: script/build_voice_overlay.sh
+
       - name: Build macOS arm64 app
         run: go tool mygo build -platform darwin/arm64 -skip-dmg -skip-notarize
 
       - name: Build macOS amd64 app
         run: go tool mygo build -platform darwin/amd64 -skip-dmg -skip-notarize
 
-      - name: Verify native bundle contents
+      - name: Verify release identities and native bundle contents
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          ASSET_STEM: ${{ steps.version.outputs.asset_stem }}
         run: |
-          python3 script/verify_app_bundle.py dist/darwin-arm64/MiMac.app --arch arm64
-          python3 script/verify_app_bundle.py dist/darwin-amd64/MiMac.app --arch amd64
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/mimac-release"
+          mkdir -p "$release_dir"
+          for arch in arm64 amd64; do
+            verify_args=("dist/darwin-$arch/MiMac.app" \
+              --arch "$arch" --revision "$GITHUB_SHA" \
+              --version "$RELEASE_VERSION" --build-number "$BUILD_NUMBER" \
+              --output "$release_dir/MiMac-${ASSET_STEM}-darwin-${arch}.json")
+            if [[ -f "resources/darwin-$arch/libSiriGlassBridge.dylib" ]]; then
+              verify_args+=(--require-siri)
+            fi
+            python3 script/verify_release.py "${verify_args[@]}"
+          done
 
       - name: Package apps and checksums
         env:
@@ -94,7 +114,8 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent dist/darwin-arm64/MiMac.app "$release_dir/$arm64_zip"
           ditto -c -k --sequesterRsrc --keepParent dist/darwin-amd64/MiMac.app "$release_dir/$amd64_zip"
           cd "$release_dir"
-          shasum -a 256 "$arm64_zip" "$amd64_zip" > SHA256SUMS
+          shasum -a 256 "$arm64_zip" "$amd64_zip" \
+            "MiMac-${ASSET_STEM}-darwin-arm64.json" "MiMac-${ASSET_STEM}-darwin-amd64.json" > SHA256SUMS
 
       - name: Create draft preview release
         env:
@@ -106,6 +127,9 @@ jobs:
           release_dir="$RUNNER_TEMP/mimac-release"
           cat > "$release_dir/RELEASE-NOTES.txt" <<'EOF'
           Preview build: ad hoc signed and not notarized; this is not a Developer ID distribution.
+
+          Each architecture includes an identity manifest with versions, source revision and binary/native-library checksums.
+          The manifest records whether the optional Siri glass bridge is included. It is built only on supported hosts; inclusion does not establish runtime compatibility on every Mac.
           EOF
           gh release create "$RELEASE_TAG" \
             --title "$RELEASE_TITLE" \
@@ -114,4 +138,5 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             "$release_dir"/*.zip \
+            "$release_dir"/*.json \
             "$release_dir/SHA256SUMS"
