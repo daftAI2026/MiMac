@@ -10,8 +10,9 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
-// WeType only supplies its identity and preference transport. Device ownership,
-// PCM delivery, exact receiver UID checks and retirement use the shared route.
+// WeType prepares its input preference before device startup: changing it at
+// Fn-down can race its warm/recording graph handoff. Presses only verify the
+// preference. Device ownership, PCM delivery and retirement stay shared.
 func wetypeAudioRouteFactory(ctx context.Context, config audioRouteConfig) (liveAudioRoute, error) {
 	deps := defaultCompatAudioRouteDependencies()
 	executablePath := filepath.Join(config.AppPath, "Contents", "MacOS", "WeType")
@@ -37,7 +38,9 @@ func wetypeAudioRouteFactory(ctx context.Context, config audioRouteConfig) (live
 		uid, err := wetype.ReadPreferredMicrophoneUID(ctx, locator)
 		return compatAudioSelection{preferredUID: uid}, err
 	}
-	deps.requestSelection = wetype.RequestMicrophoneSelection
+	deps.requestSelection = wetype.RequestMicrophoneSelectionConfirmed
+	deps.prepareSelection = wetype.RequestMicrophoneSelectionConfirmed
+	deps.verifySelection = wetype.VerifyMicrophoneSelection
 	return openLiveXiaomiRouteForTargetWithDependencies(ctx, config.Generation,
 		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
 		compatAudioRouteTarget{bundleID: "com.tencent.inputmethod.wetype", bundleName: "WeType.app", executableName: "WeType", name: "WeType"},

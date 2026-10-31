@@ -74,6 +74,10 @@ type compatAudioRouteDependencies struct {
 	newInspector     func() (compatAudioInspector, error)
 	readSelection    func(context.Context, voicetools.Locator) (compatAudioSelection, error)
 	requestSelection func(context.Context, voicetools.Locator, *string) error
+	// Tools that rebuild their capture graph when input changes prepare that
+	// preference before device startup. A press then verifies, without writing.
+	prepareSelection func(context.Context, voicetools.Locator, *string) error
+	verifySelection  func(context.Context, voicetools.Locator, *string) error
 	captureIdentity  func(int32, string) (compatProcessIdentity, error)
 	openDeviceOwner  func(uint64, string) (compatATVVOwner, error)
 	openSink         xiaomiAudioSinkFactory
@@ -199,6 +203,9 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		deps.captureIdentity == nil || deps.openDeviceOwner == nil || deps.openSink == nil {
 		return nil, errors.New("mimac-compat route: native dependencies are incomplete")
 	}
+	if (deps.prepareSelection == nil) != (deps.verifySelection == nil) {
+		return nil, errors.New("mimac-compat route: prepared selection requires a verifier")
+	}
 	if deps.idleTimeout <= 0 {
 		deps.idleTimeout = compatTargetIdleTimeout
 	}
@@ -253,17 +260,18 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 	}
 
 	lease := &compatLiveAudioRoute{
-		generation:  generation,
-		locator:     locator,
-		target:      target,
-		pid:         process.PID,
-		identity:    identity,
-		inspector:   inspector,
-		saved:       cloneMicrophoneOptional(saved.preferredUID),
-		request:     deps.requestSelection,
-		idleTimeout: deps.idleTimeout,
-		idlePoll:    deps.idlePoll,
-		closeGate:   make(chan struct{}, 1),
+		generation:      generation,
+		locator:         locator,
+		target:          target,
+		pid:             process.PID,
+		identity:        identity,
+		inspector:       inspector,
+		saved:           cloneMicrophoneOptional(saved.preferredUID),
+		request:         deps.requestSelection,
+		verifySelection: deps.verifySelection,
+		idleTimeout:     deps.idleTimeout,
+		idlePoll:        deps.idlePoll,
+		closeGate:       make(chan struct{}, 1),
 	}
 
 	var owner compatATVVOwner
@@ -302,12 +310,29 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		return nil, err // No selection request has been sent yet.
 	}
 	lease.route = inner
+	if deps.prepareSelection != nil {
+		if err := lease.verifyCapturedTargetIdle(ctx); err != nil {
+			return lease, err
+		}
+		// Preserve a reachable restoration lease even if a one-way post fails
+		// locally after the target has received it.
+		lease.selectionAttempted = true
+		uid := compatAudioDeviceUID
+		if err := deps.prepareSelection(ctx, locator, &uid); err != nil {
+			return lease, fmt.Errorf("mimac-compat route: prepare microphone selection: %w", err)
+		}
+		if err := identity.Check(); err != nil {
+			return lease, err
+		}
+	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return lease, err
 	}
-	if err := lease.verifyCapturedTargetIdle(ctx); err != nil {
-		return nil, err
+	if deps.prepareSelection == nil {
+		if err := lease.verifyCapturedTargetIdle(ctx); err != nil {
+			return lease, err
+		}
 	}
 	owner, err = deps.openDeviceOwner(generation, libraryPath)
 	if err != nil {
@@ -382,15 +407,16 @@ func cloneMicrophoneOptional(value *string) *string {
 }
 
 type compatLiveAudioRoute struct {
-	generation uint64
-	locator    voicetools.Locator
-	target     compatAudioRouteTarget
-	pid        int32
-	identity   compatProcessIdentity
-	inspector  compatAudioInspector
-	route      *xiaomiAudioRoute
-	saved      *string
-	request    func(context.Context, voicetools.Locator, *string) error
+	generation      uint64
+	locator         voicetools.Locator
+	target          compatAudioRouteTarget
+	pid             int32
+	identity        compatProcessIdentity
+	inspector       compatAudioInspector
+	route           *xiaomiAudioRoute
+	saved           *string
+	request         func(context.Context, voicetools.Locator, *string) error
+	verifySelection func(context.Context, voicetools.Locator, *string) error
 
 	idleTimeout time.Duration
 	idlePoll    time.Duration
@@ -414,9 +440,9 @@ func (r *compatLiveAudioRoute) Start() error {
 	return r.route.Start()
 }
 
-// BeforeStart reasserts the selected input immediately before a verified voice
-// action. The request is one-way; WaitReceiver remains the independent exact
-// PID/UID gate before PCM is delivered.
+// BeforeStart verifies a prepared input preference, or reasserts it for tools
+// whose contract requires action-time selection. Preference confirmation never
+// replaces WaitReceiver's exact PID/UID gate before PCM delivery.
 func (r *compatLiveAudioRoute) BeforeStart(ctx context.Context) error {
 	if r == nil || r.route == nil {
 		return errCompatRouteUnavailable
@@ -445,6 +471,13 @@ func (r *compatLiveAudioRoute) BeforeStart(ctx context.Context) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if r.verifySelection != nil {
+		uid := compatAudioDeviceUID
+		if err := r.verifySelection(ctx, r.locator, &uid); err != nil {
+			return fmt.Errorf("mimac-compat route: verify prepared microphone selection: %w", err)
+		}
+		return r.verifyCapturedTargetIdle(ctx)
 	}
 	if r.request == nil {
 		return errors.New("mimac-compat route: microphone selection requester is unavailable")
