@@ -24,6 +24,7 @@ type mygoVoiceOverlay struct {
 	read            func() voiceOverlayFrame
 	failed          func(error)
 	frame           voiceOverlayFrame
+	trace           *voiceOverlayTrace
 	visible, closed bool
 }
 
@@ -80,7 +81,9 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 	if !frame.Visible {
 		return v.Hide()
 	}
-	if err := v.renderer.UpdateMeters(true, frame.DB, siriglass.MetersFromSpectrum(frame.Spectrum)); err != nil {
+	err := v.renderer.UpdateMeters(true, frame.DB, siriglass.MetersFromSpectrum(frame.Spectrum))
+	v.trace.render(frame, err)
+	if err != nil {
 		return err
 	}
 	if !v.visible || v.frame.Token != frame.Token {
@@ -117,13 +120,18 @@ func (v *mygoVoiceOverlay) draw(c *ui.Context) {
 }
 
 func (v *mygoVoiceOverlay) Hide() error {
+	wasVisible, token := v.visible, v.frame.Token
 	v.visible = false
 	v.frame = voiceOverlayFrame{DB: -60}
 	if v.window != nil && !v.window.IsDestroyed() {
 		v.window.Hide()
 	}
 	if !v.closed && v.renderer != nil {
-		return v.renderer.Update(false, -60)
+		err := v.renderer.Update(false, -60)
+		if wasVisible {
+			v.trace.hidden(token, err)
+		}
+		return err
 	}
 	return nil
 }

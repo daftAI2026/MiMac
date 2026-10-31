@@ -25,6 +25,7 @@ type voiceSpectrumState struct {
 	quiet    siriglass.Spectrum
 	smoothed [siriglass.MaxMeterBands]float32
 	at       time.Time
+	trace    *voiceOverlayTrace // Opt-in, read-side metadata only.
 }
 
 func (m *voiceSpectrumState) setEnabled(enabled bool) {
@@ -38,9 +39,12 @@ func (m *voiceSpectrumState) setEnabled(enabled bool) {
 	}
 }
 
-func (m *voiceSpectrumState) snapshot(token bridge.SessionToken, now time.Time) siriglass.Spectrum {
+func (m *voiceSpectrumState) snapshot(token bridge.SessionToken, now time.Time) (result siriglass.Spectrum) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.trace != nil {
+		defer func() { m.trace.sample(m, token, now, result) }()
+	}
 	if !m.enabled || token != m.token || m.ctx == nil || m.ctx.Err() != nil {
 		return siriglass.Spectrum{}
 	}

@@ -133,7 +133,11 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 		return
 	}
 	s.voiceOverlay.open = func(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
-		return newVoiceOverlayView(read, failed)
+		view, err := newVoiceOverlayView(read, failed)
+		if native, ok := view.(*mygoVoiceOverlay); ok {
+			native.trace = s.voiceOverlay.meter.trace
+		}
+		return view, err
 	}
 	s.watchPower()
 	s.loadMappings()
@@ -193,6 +197,7 @@ func main() {
 	smoke := flag.Duration("smoke-duration", 0, "quit after a bounded host smoke run (1s to 30s)")
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
+	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded frequency/display metadata on exit; excludes PCM and text")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
 	audioBackend := flag.String("audio-backend", "", "optional audio backend: mimac-compat; never installs a component")
 	flag.Parse()
@@ -215,6 +220,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: *audioBackend}}
+	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "voice overlay report:", err)
+		os.Exit(2)
+	}
+	s.voiceOverlay.meter.trace = trace
 	mygo.App.SetName("MiMac")
 	s.loadPreferences()
 	s.applySavedAppearance()
@@ -275,6 +286,13 @@ func main() {
 	mygo.App.WhenReady(func() { s.ready(ctx, *show, *smoke, *capturePath) })
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
+	}
+	if traceFile != nil {
+		writeErr := trace.write(traceFile)
+		closeErr := traceFile.Close()
+		if writeErr != nil || closeErr != nil {
+			s.report.Error = fmt.Sprintf("voice overlay report: write=%v close=%v", writeErr, closeErr)
+		}
 	}
 	if *capturePath != "" && !s.report.CaptureWritten && s.report.Error == "" {
 		s.report.Error = "settings capture did not complete"
