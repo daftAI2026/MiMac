@@ -46,11 +46,11 @@ func (i *compatApplicationInspector) InputsForBundle(bundleID string) ([]audioro
 }
 
 func (i *compatApplicationInspector) ProcessInput(pid int32) (audioroute.ProcessInput, error) {
-	processes, err := i.InputsForBundle(i.bundleID)
+	current, err := i.resolveCurrentPID()
 	if err != nil {
 		return audioroute.ProcessInput{}, err
 	}
-	if len(processes) != 1 || processes[0].PID != pid {
+	if pid <= 0 || current != pid {
 		return audioroute.ProcessInput{PID: pid}, nil
 	}
 	input, err := i.compatAudioInspector.ProcessInput(pid)
@@ -70,12 +70,24 @@ func (i *compatApplicationInspector) WaitForInput(ctx context.Context, pid int32
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	processes, err := i.InputsForBundle(i.bundleID)
+	current, err := i.resolveCurrentPID()
 	if err != nil {
 		return err
 	}
-	if len(processes) != 1 || processes[0].PID != pid {
+	if pid <= 0 || current != pid {
 		return fmt.Errorf("mimac-compat receiver: %w", errCompatRouteTargetMissing)
 	}
 	return i.compatAudioInspector.WaitForInput(ctx, pid, uid)
+}
+
+// Once the application PID is captured, live receiver checks only need its
+// current application identity and its exact Core Audio route. Enumerating
+// every audio client here makes an unrelated client's registration/removal a
+// failure of this session. Discovery, pre-start and restore still use the
+// strict InputsForBundle snapshot above to establish target uniqueness.
+func (i *compatApplicationInspector) resolveCurrentPID() (int32, error) {
+	if i.resolve == nil || i.bundleID == "" {
+		return 0, errCompatRouteTarget
+	}
+	return i.resolve(context.Background())
 }

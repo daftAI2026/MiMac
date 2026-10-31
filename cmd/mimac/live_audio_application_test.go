@@ -35,16 +35,54 @@ func TestApplicationAudioInspectorColdClientIsIdleButNotReceiverReady(t *testing
 }
 
 type applicationInspectorWaitFailure struct {
-	*compatRouteTestInspector
+	compatAudioInspector
 	err error
 }
 
 func (i applicationInspectorWaitFailure) WaitForInput(ctx context.Context, pid int32, uid string) error {
-	_ = i.compatRouteTestInspector.WaitForInput(ctx, pid, uid)
+	_ = i.compatAudioInspector.WaitForInput(ctx, pid, uid)
 	return i.err
 }
 
-func TestApplicationAudioInspectorRejectsCompetingOrUnknownClients(t *testing.T) {
+type applicationInspectorEnumerationFailure struct {
+	compatAudioInspector
+	err   error
+	calls int
+}
+
+func (i *applicationInspectorEnumerationFailure) InputsForBundle(string) ([]audioroute.ProcessInput, error) {
+	i.calls++
+	return nil, i.err
+}
+
+type applicationInspectorProcessFailure struct {
+	compatAudioInspector
+	err   error
+	calls int
+	pid   int32
+}
+
+func (i *applicationInspectorProcessFailure) ProcessInput(pid int32) (audioroute.ProcessInput, error) {
+	i.calls++
+	i.pid = pid
+	return audioroute.ProcessInput{}, i.err
+}
+
+type applicationInspectorDirectWaitFailure struct {
+	compatAudioInspector
+	err   error
+	calls int
+	pid   int32
+	uid   string
+}
+
+func (i *applicationInspectorDirectWaitFailure) WaitForInput(ctx context.Context, pid int32, uid string) error {
+	i.calls++
+	i.pid, i.uid = pid, uid
+	return i.err
+}
+
+func TestApplicationAudioInspectorKeepsBundleEnumerationStrict(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		clients      []audioroute.ProcessInput
@@ -58,14 +96,149 @@ func TestApplicationAudioInspectorRejectsCompetingOrUnknownClients(t *testing.T)
 			base := newCompatRouteTestInspector()
 			base.processes = tc.clients
 			i := &compatApplicationInspector{base, "test.inputmethod", func(context.Context) (int32, error) { return 42, tc.resolveError }}
-			if _, err := i.ProcessInput(42); err == nil {
-				t.Fatal("unknown/competing target was accepted as idle")
-			}
-			if err := i.WaitForInput(context.Background(), 42, compatAudioDeviceUID); err == nil {
-				t.Fatal("unknown/competing receiver was accepted")
+			if _, err := i.InputsForBundle("test.inputmethod"); err == nil {
+				t.Fatal("unknown/competing target was accepted by bundle enumeration")
 			}
 		})
 	}
+
+	t.Run("underlying enumeration error", func(t *testing.T) {
+		base := newCompatRouteTestInspector()
+		enumerationError := errors.New("unreadable Core Audio object")
+		wrapped := &applicationInspectorEnumerationFailure{compatAudioInspector: base, err: enumerationError}
+		i := &compatApplicationInspector{wrapped, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
+		if _, err := i.InputsForBundle("test.inputmethod"); !errors.Is(err, enumerationError) {
+			t.Fatalf("bundle enumeration error = %v", err)
+		}
+		if wrapped.calls != 1 {
+			t.Fatalf("underlying enumeration calls = %d, want 1", wrapped.calls)
+		}
+	})
+}
+
+func TestApplicationAudioInspectorActiveReceiverUsesExactPIDWithoutBundleEnumeration(t *testing.T) {
+	base := newCompatRouteTestInspector()
+	base.input = audioroute.ProcessInput{
+		Found: true, PID: 42, RunningInput: true,
+		InputDeviceUIDs: []string{compatAudioDeviceUID},
+	}
+	enumerationError := errors.New("unrelated Core Audio object has no bundle ID")
+	wrapped := &applicationInspectorEnumerationFailure{compatAudioInspector: base, err: enumerationError}
+	i := &compatApplicationInspector{
+		compatAudioInspector: wrapped,
+		bundleID:             "test.inputmethod",
+		resolve:              func(context.Context) (int32, error) { return 42, nil },
+	}
+
+	input, err := i.ProcessInput(42)
+	if err != nil || !input.Found || input.PID != 42 || !input.RunningInput || len(input.InputDeviceUIDs) != 1 || input.InputDeviceUIDs[0] != compatAudioDeviceUID {
+		t.Fatalf("exact active target input = %+v, %v", input, err)
+	}
+	if err := i.WaitForInput(context.Background(), 42, compatAudioDeviceUID); err != nil {
+		t.Fatalf("exact active target readiness = %v", err)
+	}
+	_, waitPID, waitUID, waitCalls, processCalls := base.snapshot()
+	if processCalls != 1 || waitCalls != 1 || waitPID != 42 || waitUID != compatAudioDeviceUID {
+		t.Fatalf("PID-specific receiver calls = process:%d wait:%d pid:%d uid:%q", processCalls, waitCalls, waitPID, waitUID)
+	}
+	if wrapped.calls != 0 {
+		t.Fatalf("active receiver used global bundle enumeration %d times", wrapped.calls)
+	}
+}
+
+func TestApplicationAudioInspectorPIDQueriesRejectUnknownOrChangedTarget(t *testing.T) {
+	resolveError := errors.New("cannot read application identity")
+	for _, tc := range []struct {
+		name        string
+		resolvedPID int32
+		resolveErr  error
+	}{
+		{"resolver error", 0, resolveError},
+		{"target PID changed", 43, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := newCompatRouteTestInspector()
+			enumerationError := errors.New("global enumeration must not be used")
+			wrapped := &applicationInspectorEnumerationFailure{compatAudioInspector: base, err: enumerationError}
+			i := &compatApplicationInspector{
+				compatAudioInspector: wrapped,
+				bundleID:             "test.inputmethod",
+				resolve:              func(context.Context) (int32, error) { return tc.resolvedPID, tc.resolveErr },
+			}
+
+			input, err := i.ProcessInput(42)
+			if tc.resolveErr != nil {
+				if !errors.Is(err, tc.resolveErr) {
+					t.Fatalf("ProcessInput resolver error = %v", err)
+				}
+			} else if err != nil || input.Found {
+				t.Fatalf("ProcessInput accepted changed target: %+v, %v", input, err)
+			}
+			if err := i.WaitForInput(context.Background(), 42, compatAudioDeviceUID); err == nil {
+				t.Fatal("WaitForInput accepted unknown or changed target")
+			}
+			_, _, _, waitCalls, processCalls := base.snapshot()
+			if waitCalls != 0 || processCalls != 0 {
+				t.Fatalf("queried target after resolver failure/mismatch: process:%d wait:%d", processCalls, waitCalls)
+			}
+			if wrapped.calls != 0 {
+				t.Fatalf("used global bundle enumeration %d times", wrapped.calls)
+			}
+		})
+	}
+}
+
+func TestApplicationAudioInspectorRejectsMismatchedOrFailedDirectTargetReads(t *testing.T) {
+	t.Run("actual PID mismatch", func(t *testing.T) {
+		base := newCompatRouteTestInspector()
+		base.input = audioroute.ProcessInput{Found: true, PID: 43, RunningInput: true, InputDeviceUIDs: []string{compatAudioDeviceUID}}
+		wrapped := &applicationInspectorEnumerationFailure{
+			compatAudioInspector: base,
+			err:                  errors.New("global enumeration must not be used"),
+		}
+		i := &compatApplicationInspector{wrapped, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
+		input, err := i.ProcessInput(42)
+		if !errors.Is(err, errCompatRouteTargetMissing) || input.Found {
+			t.Fatalf("mismatched actual target = %+v, %v", input, err)
+		}
+		if wrapped.calls != 0 {
+			t.Fatalf("used global bundle enumeration %d times", wrapped.calls)
+		}
+	})
+
+	t.Run("direct process query error", func(t *testing.T) {
+		base := newCompatRouteTestInspector()
+		queryError := errors.New("target process route read failed")
+		enumeration := &applicationInspectorEnumerationFailure{
+			compatAudioInspector: base,
+			err:                  errors.New("global enumeration must not be used"),
+		}
+		query := &applicationInspectorProcessFailure{compatAudioInspector: enumeration, err: queryError}
+		i := &compatApplicationInspector{query, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
+		if _, err := i.ProcessInput(42); !errors.Is(err, queryError) {
+			t.Fatalf("direct ProcessInput error = %v", err)
+		}
+		if query.calls != 1 || query.pid != 42 || enumeration.calls != 0 {
+			t.Fatalf("direct process dispatch = calls:%d pid:%d global:%d", query.calls, query.pid, enumeration.calls)
+		}
+	})
+
+	t.Run("direct readiness query error", func(t *testing.T) {
+		base := newCompatRouteTestInspector()
+		queryError := errors.New("target receiver wait failed")
+		enumeration := &applicationInspectorEnumerationFailure{
+			compatAudioInspector: base,
+			err:                  errors.New("global enumeration must not be used"),
+		}
+		query := &applicationInspectorDirectWaitFailure{compatAudioInspector: enumeration, err: queryError}
+		i := &compatApplicationInspector{query, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
+		if err := i.WaitForInput(context.Background(), 42, compatAudioDeviceUID); !errors.Is(err, queryError) {
+			t.Fatalf("direct WaitForInput error = %v", err)
+		}
+		if query.calls != 1 || query.pid != 42 || query.uid != compatAudioDeviceUID || enumeration.calls != 0 {
+			t.Fatalf("direct readiness dispatch = calls:%d pid:%d uid:%q global:%d", query.calls, query.pid, query.uid, enumeration.calls)
+		}
+	})
 }
 
 func TestApplicationAudioInspectorPreservesActiveInputAndProcessRetirement(t *testing.T) {
