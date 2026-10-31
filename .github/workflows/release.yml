@@ -50,12 +50,23 @@ jobs:
           go test ./...
           go vet ./...
 
+      - name: Read all releases for tag planning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/mimac-releases.json"
+
       - name: Prepare release version
         id: version
         env:
           RELEASE_DATE: ${{ steps.release-date.outputs.date }}
           BUILD_NUMBER: ${{ github.run_number }}
-        run: python3 script/release_version.py --date "$RELEASE_DATE" --build-number "$BUILD_NUMBER"
+        run: |
+          python3 script/release_version.py \
+            --date "$RELEASE_DATE" \
+            --build-number "$BUILD_NUMBER" \
+            --existing-releases "$RUNNER_TEMP/mimac-releases.json"
 
       - name: Build native settings libraries
         run: script/build_native_settings.sh

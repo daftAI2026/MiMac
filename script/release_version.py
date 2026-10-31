@@ -73,6 +73,43 @@ def next_release_tag(release_date: str, tags: Iterable[str]) -> str:
     return base
 
 
+def release_tags_from_pages(pages: Any) -> list[str]:
+    """Extract release tag names from gh api --paginate --slurp output."""
+    if isinstance(pages, dict):
+        if "message" in pages:
+            raise ValueError(f"GitHub releases API error: {pages['message']}")
+        raise ValueError("existing releases JSON must be an array of pages")
+    if not isinstance(pages, list):
+        raise ValueError("existing releases JSON must be an array of pages")
+
+    tags: list[str] = []
+    for page_number, page in enumerate(pages, start=1):
+        if isinstance(page, dict) and "message" in page:
+            raise ValueError(f"GitHub releases API error on page {page_number}: {page['message']}")
+        if not isinstance(page, list):
+            raise ValueError(f"existing releases page {page_number} must be an array")
+        for release_number, release in enumerate(page, start=1):
+            if not isinstance(release, dict):
+                raise ValueError(
+                    f"release {release_number} on page {page_number} must be an object"
+                )
+            if "message" in release:
+                raise ValueError(
+                    f"GitHub releases API error on page {page_number}: {release['message']}"
+                )
+            if "tag_name" not in release:
+                raise ValueError(
+                    f"release {release_number} on page {page_number} is missing tag_name"
+                )
+            tag = release["tag_name"]
+            if not isinstance(tag, str) or not tag:
+                raise ValueError(
+                    f"release {release_number} on page {page_number} has an invalid tag_name"
+                )
+            tags.append(tag)
+    return tags
+
+
 def release_title(release_date: str, tag: str) -> str:
     release_date = validate_date(release_date)
     base = f"v{release_date}"
@@ -132,13 +169,18 @@ def append_outputs(path: Path, values: dict[str, str]) -> None:
             output.write(f"{key}={value}\n")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="frozen Asia/Shanghai date in YYYY.MM.DD form")
     parser.add_argument("--build-number", required=True, help="GitHub Actions run number, 1 through 9999")
     parser.add_argument("--config", type=Path, default=Path("mygo.json"))
     parser.add_argument("--output", type=Path, default=os.environ.get("GITHUB_OUTPUT"))
-    args = parser.parse_args()
+    parser.add_argument(
+        "--existing-releases",
+        type=Path,
+        help="JSON output from gh api --paginate --slurp for the repository releases endpoint",
+    )
+    args = parser.parse_args(argv)
 
     try:
         output_path = Path(args.output) if args.output is not None else None
@@ -153,6 +195,9 @@ def main() -> int:
             text=True,
             encoding="utf-8",
         ).stdout.splitlines()
+        if args.existing_releases is not None:
+            pages = json.loads(args.existing_releases.read_text(encoding="utf-8"))
+            tags.extend(release_tags_from_pages(pages))
         tag = next_release_tag(release_date, tags)
         title = release_title(release_date, tag)
         asset_stem = tag.removeprefix("v")
