@@ -267,6 +267,7 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		identity:        identity,
 		inspector:       inspector,
 		saved:           cloneMicrophoneOptional(saved.preferredUID),
+		readSelection:   deps.readSelection,
 		request:         deps.requestSelection,
 		verifySelection: deps.verifySelection,
 		idleTimeout:     deps.idleTimeout,
@@ -321,6 +322,7 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		if err := deps.prepareSelection(ctx, locator, &uid); err != nil {
 			return lease, fmt.Errorf("mimac-compat route: prepare microphone selection: %w", err)
 		}
+		lease.preparedSelectionConfirmed = true
 		if err := identity.Check(); err != nil {
 			return lease, err
 		}
@@ -415,6 +417,7 @@ type compatLiveAudioRoute struct {
 	inspector       compatAudioInspector
 	route           *xiaomiAudioRoute
 	saved           *string
+	readSelection   func(context.Context, voicetools.Locator) (compatAudioSelection, error)
 	request         func(context.Context, voicetools.Locator, *string) error
 	verifySelection func(context.Context, voicetools.Locator, *string) error
 
@@ -429,6 +432,9 @@ type compatLiveAudioRoute struct {
 	leaseDone          bool
 	retired            bool
 	selectionAttempted bool
+	// Only a successful preparation can be retired by observing an external
+	// choice. An uncertain post must keep its original recovery obligation.
+	preparedSelectionConfirmed bool
 }
 
 var _ liveAudioRoute = (*compatLiveAudioRoute)(nil)
@@ -556,7 +562,9 @@ func (r *compatLiveAudioRoute) Prepare(ctx context.Context, token bridge.Session
 
 // Close first quiesces the audio resources and ATVV owner. Only then does it
 // wait, with a bound, for the captured target process to become input-idle and
-// post the saved Optional value. A changed/exited original process retires its
+// post the saved Optional value. A confirmed prepared preference is restored
+// only while it is still MiMac's; an external choice retires that lease.
+// A changed/exited original process retires its
 // in-memory lease; the global notification is never sent to a known new PID.
 // A nil result from RequestMicrophoneSelection confirms only local posting,
 // not effective target restoration.
@@ -626,6 +634,19 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 			}
 			if err := r.verifyRestoreTargetIdle(ctx); err != nil {
 				if !r.isLeaseDone() {
+					return err
+				}
+			}
+			if !r.isLeaseDone() && r.preparedSelectionConfirmed {
+				selection, err := r.readSelection(ctx, r.locator)
+				if err != nil {
+					return fmt.Errorf("mimac-compat route: inspect prepared microphone ownership before restoring: %w", err)
+				}
+				if selection.preferredUID == nil || *selection.preferredUID != compatAudioDeviceUID {
+					r.mu.Lock()
+					r.retired, r.leaseDone = true, true
+					r.mu.Unlock()
+				} else if err := r.verifyRestoreTargetIdle(ctx); err != nil && !r.isLeaseDone() {
 					return err
 				}
 			}

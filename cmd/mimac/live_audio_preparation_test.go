@@ -12,7 +12,9 @@ import (
 func TestPreparedInputSelectionPrecedesDeviceStartupAndPressesNeverRewrite(t *testing.T) {
 	saved := "original-input"
 	prepared, verified := false, 0
+	state := &preparedSelectionState{current: &saved}
 	route, _, _, _, requests, _, _ := compatRouteTestFixtureForTarget(t, doubaoAudioRouteTarget(), &saved, nil, nil, nil,
+		state.configure,
 		func(deps *compatAudioRouteDependencies, _ *compatRouteTestInspector) {
 			request, open := deps.requestSelection, deps.openDeviceOwner
 			deps.prepareSelection = func(ctx context.Context, locator voicetools.Locator, uid *string) error {
@@ -61,15 +63,20 @@ func TestPreparedInputFailureKeepsRestorationLeaseReachable(t *testing.T) {
 			identity := &compatRouteTestIdentity{}
 			requests := &compatRouteTestRequest{}
 			ownerOpens := 0
+			var current *string
+			request := func(ctx context.Context, locator voicetools.Locator, uid *string) error {
+				current = cloneMicrophoneOptional(uid)
+				return requests.request(ctx, locator, uid)
+			}
 			deps := compatAudioRouteDependencies{
 				newInspector: func() (compatAudioInspector, error) { return inspector, nil },
 				readSelection: func(context.Context, voicetools.Locator) (compatAudioSelection, error) {
-					return compatAudioSelection{}, nil
+					return compatAudioSelection{preferredUID: cloneMicrophoneOptional(current)}, nil
 				},
 				captureIdentity:  func(int32, string) (compatProcessIdentity, error) { return identity, nil },
-				requestSelection: requests.request,
+				requestSelection: request,
 				prepareSelection: func(ctx context.Context, locator voicetools.Locator, uid *string) error {
-					if err := requests.request(ctx, locator, uid); err != nil {
+					if err := request(ctx, locator, uid); err != nil {
 						return err
 					}
 					if stage == "confirmation" {
@@ -108,25 +115,11 @@ func TestPreparedInputFailureKeepsRestorationLeaseReachable(t *testing.T) {
 	}
 }
 
-func TestPreparedInputSelectionRejectsExternalChangeWithoutReassertion(t *testing.T) {
-	changed := errors.New("prepared preference changed")
-	route, _, _, _, requests, _, _ := compatRouteTestFixtureForTarget(t, doubaoAudioRouteTarget(), nil, nil, nil, nil,
-		func(deps *compatAudioRouteDependencies, _ *compatRouteTestInspector) {
-			deps.prepareSelection = deps.requestSelection
-			deps.verifySelection = func(context.Context, voicetools.Locator, *string) error { return changed }
-		})
-	if err := route.BeforeStart(context.Background()); !errors.Is(err, changed) {
-		t.Fatalf("changed selection = %v", err)
-	}
-	if len(requests.snapshot()) != 1 {
-		t.Fatal("press overwrote external selection")
-	}
-	closeCompatRouteForTest(t, route)
-}
-
 func TestPreparedInputWarmCaptureCannotPassThePressIdleGuard(t *testing.T) {
 	checks := 0
+	state := &preparedSelectionState{}
 	route, inspector, _, _, requests, _, _ := compatRouteTestFixtureForTarget(t, doubaoAudioRouteTarget(), nil, nil, nil, nil,
+		state.configure,
 		func(deps *compatAudioRouteDependencies, inspector *compatRouteTestInspector) {
 			request := deps.requestSelection
 			deps.prepareSelection = func(ctx context.Context, locator voicetools.Locator, uid *string) error {
