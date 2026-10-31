@@ -50,6 +50,7 @@ const (
 type voiceToolsState struct {
 	tools               []*voiceTool
 	currentVoiceTool    string
+	pendingInputSource  *pendingVoiceToolSelection
 	inputSource         inputSourceAccess
 	toolLocator         voicetools.Locator
 	toolPreferences     toolPreferences
@@ -57,6 +58,11 @@ type voiceToolsState struct {
 	toolLoadFailed      bool
 	toolError           string
 	voiceStartBlocked   string
+}
+
+type pendingVoiceToolSelection struct {
+	tool     *voiceTool
+	sequence uint64
 }
 
 const (
@@ -89,29 +95,22 @@ func (s *shell) inputSourceController() inputSourceAccess {
 // requiredInputSourceForSelection derives one target only from the current,
 // ready adapter snapshot and its executable, supported actions.
 func requiredInputSourceForSelection(tool *voiceTool) (string, bool) {
-	if tool == nil || tool.requiredInputSource == nil || tool.busy || tool.snapshot.State != voicetools.Ready {
+	if tool == nil || tool.requiredInputSource == nil || tool.busy || tool.sequence == 0 || tool.snapshot.State != voicetools.Ready {
 		return "", false
 	}
 	var target string
 	for _, action := range tool.snapshot.Actions {
-		if action.Control == nil {
-			continue
-		}
-		executable := false
 		for _, candidate := range action.Candidates {
-			if candidate.Supported {
-				executable = true
-				break
+			ref := voicetools.ActionRef{ToolID: tool.id, ActionID: action.ID, CandidateRaw: candidate.Raw}
+			if _, err := voicetools.ResolveAction(ref, tool.sequence, tool.snapshot); err != nil {
+				continue
 			}
+			sourceID, known := tool.requiredInputSource(action.ID)
+			if !known || sourceID == "" || (target != "" && target != sourceID) {
+				return "", false
+			}
+			target = sourceID
 		}
-		if !executable {
-			continue
-		}
-		sourceID, known := tool.requiredInputSource(action.ID)
-		if !known || sourceID == "" || (target != "" && target != sourceID) {
-			return "", false
-		}
-		target = sourceID
 	}
 	return target, target != ""
 }
@@ -180,6 +179,11 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 			break
 		}
 	}
+	s.pendingInputSource = nil
+	if tool != nil && tool.busy && tool.requiredInputSource != nil {
+		s.pendingInputSource = &pendingVoiceToolSelection{tool: tool, sequence: tool.sequence}
+		return nil
+	}
 	if _, required := requiredInputSourceForSelection(tool); !required {
 		return nil
 	}
@@ -214,11 +218,11 @@ func builtInVoiceTools() []*voiceTool {
 
 // Discovery is one cancellable read per activation or explicit refresh. MyGo
 // serializes completions; there is no watcher, polling loop, or target process.
-func (t *voiceTool) refresh(locator voicetools.Locator, dispatch func(func()), changed func()) {
+func (t *voiceTool) refresh(locator voicetools.Locator, dispatch func(func()), changed func(uint64)) {
 	t.refreshUsing(locator, dispatch, changed, t.discover)
 }
 
-func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func()), changed func(), discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
+func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func()), changed func(uint64), discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
 	if !t.active {
 		return
 	}
@@ -238,7 +242,7 @@ func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func(
 				return
 			}
 			t.busy, t.cancel, t.snapshot = false, nil, result
-			changed()
+			changed(sequence)
 		})
 	}()
 }
@@ -276,15 +280,57 @@ func (s *shell) voiceToolManifests() []pluginrt.Manifest {
 func (s *shell) refreshVoiceTool(tool *voiceTool) { s.refreshVoiceToolUsing(tool, tool.discover) }
 
 func (s *shell) refreshVoiceToolUsing(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
+	s.refreshVoiceToolUsingWithDispatch(tool, discover, mygo.RunOnMain)
+}
+
+func (s *shell) refreshVoiceToolUsingWithDispatch(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot, dispatch func(func())) {
 	if s.closing {
 		return
 	}
-	tool.refreshUsing(s.toolLocator, mygo.RunOnMain, func() {
-		if !s.closing {
-			s.refreshRemoteOutput(false)
-			s.invalidateDeviceView()
-		}
+	tool.refreshUsing(s.toolLocator, dispatch, func(sequence uint64) {
+		s.finishVoiceToolDiscovery(tool, sequence)
 	}, discover)
+}
+
+func (s *shell) finishVoiceToolDiscovery(tool *voiceTool, sequence uint64) {
+	if s.closing {
+		s.pendingInputSource = nil
+		return
+	}
+	s.finishPendingInputSourceSelection(tool, sequence)
+	s.refreshRemoteOutput(false)
+	s.invalidateDeviceView()
+}
+
+func (s *shell) finishPendingInputSourceSelection(tool *voiceTool, sequence uint64) {
+	pending := s.pendingInputSource
+	if pending == nil || pending.tool != tool {
+		return
+	}
+	// Consume even stale or now-ineligible intent. A later refresh or tool
+	// switch must not revive an earlier explicit selection.
+	s.pendingInputSource = nil
+	if pending.sequence != sequence || tool == nil || !tool.active || tool.busy || tool.sequence != sequence || s.currentVoiceTool != tool.id {
+		return
+	}
+	if _, required := requiredInputSourceForSelection(tool); !required {
+		return
+	}
+	if s.inputSourceCleanupFailed() {
+		s.toolError = inputSourceCleanupFailedToolError
+		return
+	}
+	if s.inputSourceTransitionBusy(tool) {
+		s.toolError = inputSourceDeferredToolError
+		return
+	}
+	if err := s.ensureVoiceInputSource(tool); err != nil {
+		s.toolError = inputSourceFailedToolError
+		return
+	}
+	if s.toolError == inputSourceDeferredToolError || s.toolError == inputSourceFailedToolError || s.toolError == inputSourceCleanupFailedToolError {
+		s.toolError = ""
+	}
 }
 
 func (s *shell) loadVoiceTools() {
@@ -324,6 +370,9 @@ func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
 	if s.closing || s.toolLoadFailed || s.plugins == nil || !slices.Contains(s.tools, tool) {
 		return errors.New("voice tool activation unavailable")
 	}
+	if !enabled && s.pendingInputSource != nil && s.pendingInputSource.tool == tool {
+		s.pendingInputSource = nil
+	}
 	if tool.active == enabled {
 		return nil
 	}
@@ -362,7 +411,12 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 	if s.closing || s.toolLoadFailed || !slices.Contains(s.tools, tool) || !tool.active {
 		return errors.New("voice tool selection unavailable")
 	}
+	s.pendingInputSource = nil
 	if s.currentVoiceTool == tool.id {
+		if tool.busy && tool.requiredInputSource != nil {
+			s.pendingInputSource = &pendingVoiceToolSelection{tool: tool, sequence: tool.sequence}
+			return nil
+		}
 		if _, required := requiredInputSourceForSelection(tool); !required {
 			return nil
 		}
@@ -383,6 +437,7 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 		s.invalidateDeviceView()
 		return nil
 	}
+	deferInputSourceSelection := tool.busy && tool.requiredInputSource != nil
 	_, needsInputSource := requiredInputSourceForSelection(tool)
 	inputSourceBusy := needsInputSource && s.inputSourceTransitionBusy(tool)
 	next := s.toolPreferences
@@ -396,6 +451,9 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 	if err := s.cancelToolActions(oldTool); err != nil {
 		s.toolError = "原工具按键未能释放"
 		return err
+	}
+	if deferInputSourceSelection {
+		s.pendingInputSource = &pendingVoiceToolSelection{tool: tool, sequence: tool.sequence}
 	}
 	if needsInputSource {
 		if s.inputSourceCleanupFailed() {

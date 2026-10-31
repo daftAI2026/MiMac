@@ -425,6 +425,9 @@ func (s *shell) beginRemoteStop() {
 	if s.closing || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return
 	}
+	// Stopping the remote adapter cancels any explicit TIS intent that was
+	// waiting for tool discovery; cleanup completion must not revive it later.
+	s.pendingInputSource = nil
 	s.remoteState.stopPending = true
 	s.remoteState.cleanupInFlight = true
 	s.remoteState.cleanupSequence++

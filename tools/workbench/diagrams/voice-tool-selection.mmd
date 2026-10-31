@@ -10,11 +10,18 @@ flowchart LR
     freeze --> release["物理松开沿用已冻结计划"]
     selected -->|切换工具| cancel["持久化选择并取消旧工具仍按住的动作"]
     cancel --> refresh["刷新映射/输出与音频路由"]
-    explicit["显式选择 / 重选当前工具 / 手动启用遥控器"] --> required{"适配器声明唯一可执行输入源？"}
+    explicit["显式选择 / 重选当前工具 / 手动启用遥控器"] --> reading{"配置仍在读取？"}
+    reading -->|是| intent["仅记录这次选择的工具与 discovery sequence"]
+    intent --> completed{"同一工具及同一次读取完成？"}
+    sequence --> completed
+    completed -->|是| required{"适配器声明唯一可执行输入源？"}
+    completed -->|否| dropped["丢弃旧请求；不重试"]
+    reading -->|否| required
     required -->|否| unchanged["不改系统输入法"]
     required -->|是| busy{"旧会话或路由仍未释放？"}
     busy -->|是| retry["保留选择；释放后需显式重选"]
     busy -->|否| enabledSource["TIS：仅选择已启用的精确 ID"]
     enabledSource --> verify["立即读回确认；失败保留错误"]
     verify --> preflight
+    revoke["改选 / 停用 / 退出 / 新读取替代"] --> dropped
     background["登录启动 / 自动恢复 / 仅启用插件"] --> unchanged
