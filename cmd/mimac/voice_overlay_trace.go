@@ -14,10 +14,11 @@ import (
 
 const voiceOverlayTraceLimit = 4096
 
-// Optional UI-thread diagnostics. Nothing runs in the PCM worker, and no disk
-// report content is written during capture. UpdateMeters may deduplicate a
-// successful call; its return value is not a native update or GPU-present ACK.
+// Optional diagnostics. UI entries stay on the UI thread; I/O timing has its
+// own bounded worker-safe buffer. No report content is written during capture.
+// UpdateMeters may deduplicate a successful call; its return value is not a native update or GPU-present ACK.
 type voiceOverlayTrace struct {
+	io      voiceIOTrace
 	Entries []voiceOverlayTraceEntry `json:"entries"`
 	Dropped uint64                   `json:"dropped"`
 	Binary  string                   `json:"executable_sha256"`
@@ -131,9 +132,10 @@ func (t *voiceOverlayTrace) render(frame voiceOverlayFrame, err error) {
 
 func (t *voiceOverlayTrace) write(w io.Writer) error {
 	return json.NewEncoder(w).Encode(struct {
-		Schema                 int  `json:"schema"`
-		Limit                  int  `json:"limit"`
-		GPUPresentAcknowledged bool `json:"gpu_present_ack_observed"`
+		Schema                 int             `json:"schema"`
+		IO                     voiceIOSnapshot `json:"io"`
+		Limit                  int             `json:"limit"`
+		GPUPresentAcknowledged bool            `json:"gpu_present_ack_observed"`
 		*voiceOverlayTrace
-	}{Schema: 1, Limit: voiceOverlayTraceLimit, voiceOverlayTrace: t})
+	}{Schema: 2, IO: t.io.snapshot(), Limit: voiceOverlayTraceLimit, voiceOverlayTrace: t})
 }

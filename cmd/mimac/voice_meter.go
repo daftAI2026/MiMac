@@ -25,7 +25,7 @@ type voiceSpectrumState struct {
 	quiet    siriglass.Spectrum
 	smoothed [siriglass.MaxMeterBands]float32
 	at       time.Time
-	trace    *voiceOverlayTrace // Opt-in, read-side metadata only.
+	trace    *voiceOverlayTrace // Immutable opt-in report owner; UI sample entries stay read-side.
 }
 
 func (m *voiceSpectrumState) setEnabled(enabled bool) {

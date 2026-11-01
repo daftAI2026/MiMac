@@ -197,7 +197,7 @@ func main() {
 	smoke := flag.Duration("smoke-duration", 0, "quit after a bounded host smoke run (1s to 30s)")
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
-	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded frequency/display metadata on exit; excludes PCM and text")
+	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded I/O timing and frequency/display metadata on exit; excludes PCM and text")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
 	audioBackend := flag.String("audio-backend", "", "optional audio backend: mimac-compat; never installs a component")
 	flag.Parse()
