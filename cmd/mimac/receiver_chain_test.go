@@ -140,6 +140,120 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		assertReceiverChainNoMainTask(t, f.tasks)
 	})
 
+	t.Run("early release receiver failure blocks next press until route is ready", func(t *testing.T) {
+		f := newReceiverChainFixture(t)
+		f.sink.closeStarted = make(chan struct{})
+		f.sink.closeRelease = make(chan struct{})
+		t.Cleanup(func() {
+			select {
+			case <-f.sink.closeRelease:
+			default:
+				close(f.sink.closeRelease)
+			}
+		})
+
+		f.pressDown(t)
+		waitReceiverChainSignal(t, f.sink.waiting)
+		f.pressUp(t)
+		waitReceiverChainSignal(t, f.source.stopped)
+		if snapshot := f.host.coordinator.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != bridge.PhaseDraining || len(snapshot.PressedButtons) != 0 || !reflect.DeepEqual(snapshot.HeldKeys, []bridge.Key{"RightCommand"}) {
+			t.Fatalf("early release did not retain the draining voice lease: %+v", snapshot)
+		}
+		assertReceiverChainNoPCM(t, f.source, f.sink)
+
+		f.sink.receiverDecision <- io.ErrUnexpectedEOF
+		runHostTask(t, f.tasks) // SourceFailed must retire the already-draining Core session.
+		waitReceiverChainSignal(t, f.source.closed)
+		waitReceiverChainSignal(t, f.sink.closeStarted)
+		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.PressedButtons) != 0 || len(snapshot.HeldKeys) != 0 {
+			t.Fatalf("receiver failure did not clear early-release ownership: %+v", snapshot)
+		}
+		if f.host.report.AudioError == "" || f.sink.drainCalls.Load() != 0 {
+			t.Fatalf("receiver failure looked like a successful drain: report=%+v drains=%d", f.host.report, f.sink.drainCalls.Load())
+		}
+		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainTargetStart(t, f.keySink, true)
+		assertReceiverChainNoMainTask(t, f.tasks)
+		if f.host.audioResourcesReady() {
+			t.Fatal("leased route became ready while its old Dispose was blocked")
+		}
+
+		secondPress := voiceAudioTestPress(t, f.device, 2)
+		acceptVoiceAudioEdge(t, f.host.coordinator, f.device, secondPress, devices.EdgeDown)
+		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.PressedButtons) != 1 || len(snapshot.HeldKeys) != 0 {
+			t.Fatalf("press during old Dispose bypassed route readiness: %+v", snapshot)
+		}
+		if f.resolveCalls.Load() != 2 || f.sink.waitCalls.Load() != 1 {
+			t.Fatalf("unready press started audio work: resolves=%d old waits=%d", f.resolveCalls.Load(), f.sink.waitCalls.Load())
+		}
+		select {
+		case source := <-f.sources:
+			t.Fatalf("replacement source opened before old Dispose completed: %p", source)
+		default:
+		}
+		select {
+		case sink := <-f.sinks:
+			t.Fatalf("replacement sink opened before old Dispose completed: %p", sink)
+		default:
+		}
+		acceptVoiceAudioEdge(t, f.host.coordinator, f.device, secondPress, devices.EdgeUp)
+		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.PressedButtons) != 0 || len(snapshot.HeldKeys) != 0 {
+			t.Fatalf("unready press did not retire cleanly: %+v", snapshot)
+		}
+		assertReceiverChainTargetStart(t, f.keySink, true)
+
+		close(f.sink.closeRelease)
+		waitReceiverChainSignal(t, f.sink.closed)
+		waitXiaomiRoute(t, f.host.audioResourcesReady)
+		var secondSource *receiverChainSource
+		select {
+		case secondSource = <-f.sources:
+		case <-time.After(2 * time.Second):
+			t.Fatal("replacement source did not prepare after old Dispose completed")
+		}
+		var secondSink *receiverChainSink
+		select {
+		case secondSink = <-f.sinks:
+		case <-time.After(2 * time.Second):
+			t.Fatal("replacement receiver sink did not prepare after old Dispose")
+		}
+		if secondSink.prepareCalls.Load() != 1 {
+			t.Fatalf("replacement sink Prepare calls = %d, want 1", secondSink.prepareCalls.Load())
+		}
+		select {
+		case <-secondSink.waiting:
+			t.Fatal("replacement route waited for the target receiver before a new press")
+		default:
+		}
+
+		thirdPress := voiceAudioTestPress(t, f.device, 3)
+		acceptVoiceAudioEdge(t, f.host.coordinator, f.device, thirdPress, devices.EdgeDown)
+		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
+		if f.resolveCalls.Load() != 3 || f.sink.waitCalls.Load() != 1 {
+			t.Fatalf("ready press lifecycle: resolves=%d old waits=%d", f.resolveCalls.Load(), f.sink.waitCalls.Load())
+		}
+		waitReceiverChainSignal(t, secondSink.waiting)
+		secondSink.receiverDecision <- nil
+		runHostTask(t, f.tasks)
+		if pcm := waitReceiverChainPCM(t, secondSink.writes); !reflect.DeepEqual(pcm, []int16{17, -4, 3}) {
+			t.Fatalf("next session PCM = %v", pcm)
+		}
+
+		acceptVoiceAudioEdge(t, f.host.coordinator, f.device, thirdPress, devices.EdgeUp)
+		waitReceiverChainSignal(t, secondSource.stopped)
+		waitReceiverChainSignal(t, secondSink.drained)
+		runHostTask(t, f.tasks)
+		waitReceiverChainSignal(t, secondSource.closed)
+		waitReceiverChainSignal(t, secondSink.closed)
+		assertReceiverChainCore(t, f, false, 0)
+		assertReceiverChainTargetKeyEffects(t, f.keySink, 2)
+		if secondSink.waitCalls.Load() != 1 || secondSink.writeCalls.Load() != 1 || secondSink.drainCalls.Load() != 1 {
+			t.Fatalf("next session lifecycle: waits=%d writes=%d drains=%d", secondSink.waitCalls.Load(), secondSink.writeCalls.Load(), secondSink.drainCalls.Load())
+		}
+		assertReceiverChainNoMainTask(t, f.tasks)
+		closeReceiverChainAudioPlugin(t, f)
+	})
+
 	t.Run("resources not ready leave the press observed", func(t *testing.T) {
 		f := newReceiverChainFixtureWithReadiness(t, func() bool { return false })
 		f.pressDown(t)
@@ -170,6 +284,8 @@ type receiverChainFixture struct {
 	press        bridge.PressToken
 	source       *receiverChainSource
 	sink         *receiverChainSink
+	sources      chan *receiverChainSource
+	sinks        chan *receiverChainSink
 	resolveCalls atomic.Int32
 }
 
@@ -224,7 +340,7 @@ func newReceiverChainFixtureWithReadiness(t *testing.T, ready func() bool) *rece
 	press := voiceAudioTestPress(t, device, 1)
 	f := &receiverChainFixture{
 		host: host, tasks: tasks, keySink: keySink, device: device, press: press,
-		source: source, sink: sink,
+		source: source, sink: sink, sources: sources, sinks: sinks,
 	}
 	host.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) {
 		f.resolveCalls.Add(1)
@@ -401,6 +517,31 @@ func assertReceiverChainTargetStart(t *testing.T, sink *routedEffectsKeySink, re
 	}
 }
 
+func assertReceiverChainTargetKeyEffects(t *testing.T, sink *routedEffectsKeySink, sessions int) {
+	t.Helper()
+	want := make([]bridge.Key, sessions)
+	for index := range want {
+		want[index] = "RightCommand"
+	}
+	var downs, ups []bridge.Key
+	taps := 0
+	for _, batch := range sink.batches {
+		for _, effect := range batch {
+			switch e := effect.(type) {
+			case bridge.KeyDownEffect:
+				downs = append(downs, e.Key)
+			case bridge.KeyUpEffect:
+				ups = append(ups, e.Key)
+			case bridge.TargetTapEffect:
+				taps++
+			}
+		}
+	}
+	if !reflect.DeepEqual(downs, want) || !reflect.DeepEqual(ups, want) || taps != 0 {
+		t.Fatalf("tool shortcut effects: down=%v up=%v taps=%d, want %d balanced hold sessions", downs, ups, taps, sessions)
+	}
+}
+
 func assertReceiverChainNoPCM(t *testing.T, source *receiverChainSource, sink *receiverChainSink) {
 	t.Helper()
 	if source.readCalls.Load() != 0 || sink.writeCalls.Load() != 0 {
@@ -484,6 +625,8 @@ type receiverChainSink struct {
 	writes           chan []int16
 	drained          chan struct{}
 	closed           chan struct{}
+	closeStarted     chan struct{}
+	closeRelease     chan struct{}
 	prepareCalls     atomic.Int32
 	waitCalls        atomic.Int32
 	writeCalls       atomic.Int32
@@ -527,7 +670,15 @@ func (s *receiverChainSink) Drain(context.Context) error {
 	return nil
 }
 func (s *receiverChainSink) Close() error {
-	s.closeOnce.Do(func() { close(s.closed) })
+	s.closeOnce.Do(func() {
+		if s.closeStarted != nil {
+			close(s.closeStarted)
+		}
+		if s.closeRelease != nil {
+			<-s.closeRelease
+		}
+		close(s.closed)
+	})
 	return nil
 }
 
