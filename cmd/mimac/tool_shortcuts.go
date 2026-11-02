@@ -116,8 +116,8 @@ func (s *shell) saveToolAction(buttonID string, ref voicetools.ActionRef) {
 		s.mappingError = "工具动作不受支持"
 		return
 	}
-	if s.coordinator != nil && s.coordinator.report().Pressed != 0 {
-		s.mappingError = "请先松开遥控器按键"
+	if !s.mappingChangeAllowed() {
+		s.mappingError = "请先结束当前操作，再设置按键"
 		return
 	}
 	if err = saveProfile(s.mappingPath, next); err != nil {
@@ -129,6 +129,9 @@ func (s *shell) saveToolAction(buttonID string, ref voicetools.ActionRef) {
 		s.coordinator.mappings, _ = next.keys(s.activeProfile())
 		s.coordinator.actions = next.actionRefs(s.activeProfile())
 		s.coordinator.resolveAction = s.resolveToolAction
+	}
+	if !s.applySavedRemoteKeys() {
+		return
 	}
 	s.mappingError = ""
 	s.endShortcutRecording()

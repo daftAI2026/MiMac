@@ -140,6 +140,10 @@ func (s *shell) acquireRemoteReservation(generation uint64, starting bool) error
 		s.remoteState.err = errRemoteNoReservation
 		return errRemoteNoReservation
 	}
+	if err := s.reconcileRemoteKeys(); err != nil {
+		s.remoteState.err = err
+		return err
+	}
 	s.remoteState.err = nil
 	s.syncVoiceBinding()
 	return nil
@@ -194,7 +198,7 @@ func (s *shell) remoteHasReservation() bool {
 
 func (s *shell) remoteHasReservationWith(snapshot bridge.Snapshot) bool {
 	if s.powerInputBlocked() || s.remoteState.reservation == nil || s.remoteState.err != nil ||
-		s.remoteState.cleanupInFlight || s.remoteState.stopPending ||
+		s.remoteState.reserveInFlight || s.remoteState.cleanupInFlight || s.remoteState.stopPending ||
 		!s.remoteEnabled() || s.plugins.Failure(remotePlugin) != nil || s.coordinator == nil {
 		return false
 	}

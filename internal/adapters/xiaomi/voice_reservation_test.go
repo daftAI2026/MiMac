@@ -65,8 +65,8 @@ func (s *fakeVoiceMappingSnapshots) Load() (voiceMappingSnapshot, error) {
 		return voiceMappingSnapshot{}, errors.New("no pending snapshot")
 	}
 	return voiceMappingSnapshot{
-		Version: 1, BootID: "test-boot", RegistryID: s.registryID,
-		Original: cloneVoiceMappingEntries(s.original),
+		Version: s.version, BootID: "test-boot", RegistryID: s.registryID,
+		Original: cloneVoiceMappingEntries(s.original), Sources: append([]uint64(nil), s.sources...),
 	}, nil
 }
 

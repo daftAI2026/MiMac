@@ -42,6 +42,8 @@ type fakeVoiceMappingSnapshots struct {
 	pending    bool
 	registryID uint64
 	original   []voiceMappingEntry
+	version    uint64
+	sources    []uint64
 	saves      int
 	clears     int
 	saveErr    error
@@ -58,6 +60,17 @@ func (s *fakeVoiceMappingSnapshots) Save(registryID uint64, original []voiceMapp
 	s.pending = true
 	s.registryID = registryID
 	s.original = cloneVoiceMappingEntries(original)
+	s.version = 1
+	s.sources = nil
+	return nil
+}
+
+func (s *fakeVoiceMappingSnapshots) SaveWithSources(registryID uint64, sources []uint64, original []voiceMappingEntry) error {
+	if err := s.Save(registryID, original); err != nil {
+		return err
+	}
+	s.version = 2
+	s.sources = append([]uint64(nil), sources...)
 	return nil
 }
 
@@ -69,6 +82,8 @@ func (s *fakeVoiceMappingSnapshots) Clear() error {
 	s.pending = false
 	s.registryID = 0
 	s.original = nil
+	s.version = 0
+	s.sources = nil
 	return nil
 }
 
@@ -116,7 +131,7 @@ func TestVoiceMappingLeaseRestoresOriginalEntryAndPreservesExternalOrder(t *test
 	changedB["VendorExtension"] = []string{"external", "update"}
 	// An external reorder and unrelated edits survive; only our current voice
 	// entry is replaced in place with the exact saved baseline entry.
-	port.entries = []voiceMappingEntry{added, changedB, cloneVoiceMappingEntry(lease.owned), changedA}
+	port.entries = []voiceMappingEntry{added, changedB, cloneVoiceMappingEntry(lease.ownedBySource[voiceMappingSource]), changedA}
 	if err := lease.release(); err != nil {
 		t.Fatalf("release() error = %v", err)
 	}

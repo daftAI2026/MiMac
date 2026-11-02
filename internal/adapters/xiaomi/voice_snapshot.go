@@ -16,6 +16,7 @@ type voiceMappingSnapshot struct {
 	Version    uint64              `plist:"version"`
 	BootID     string              `plist:"boot_id"`
 	RegistryID uint64              `plist:"registry_id"`
+	Sources    []uint64            `plist:"sources,omitempty"`
 	Original   []voiceMappingEntry `plist:"original"`
 }
 
@@ -30,13 +31,30 @@ func (s *fileVoiceMappingSnapshots) HasPending() bool {
 }
 
 func (s *fileVoiceMappingSnapshots) Save(registryID uint64, original []voiceMappingEntry) error {
-	if s.bootID == "" || registryID == 0 {
+	return s.save(voiceMappingSnapshot{
+		Version: 1, BootID: s.bootID, RegistryID: registryID, Original: original,
+	})
+}
+
+func (s *fileVoiceMappingSnapshots) SaveWithSources(registryID uint64, sources []uint64, original []voiceMappingEntry) error {
+	if err := validateVoiceMappingSources(sources); err != nil {
+		return fmt.Errorf("xiaomi voice mapping: invalid recovery source set: %w", err)
+	}
+	return s.save(voiceMappingSnapshot{
+		Version: 2, BootID: s.bootID, RegistryID: registryID,
+		Sources: append([]uint64(nil), sources...), Original: original,
+	})
+}
+
+func (s *fileVoiceMappingSnapshots) save(snapshot voiceMappingSnapshot) error {
+	if s.bootID == "" || snapshot.RegistryID == 0 {
 		return errors.New("xiaomi voice mapping: recovery identity unavailable")
 	}
-	if original == nil {
-		original = []voiceMappingEntry{}
+	if snapshot.Original == nil {
+		snapshot.Original = []voiceMappingEntry{}
 	}
-	data, err := plist.Marshal(voiceMappingSnapshot{Version: 1, BootID: s.bootID, RegistryID: registryID, Original: original}, plist.BinaryFormat)
+	snapshot.BootID = s.bootID
+	data, err := plist.Marshal(snapshot, plist.BinaryFormat)
 	if err != nil {
 		return err
 	}
@@ -85,10 +103,39 @@ func (s *fileVoiceMappingSnapshots) Load() (voiceMappingSnapshot, error) {
 	if _, err := plist.Unmarshal(data, &snapshot); err != nil {
 		return snapshot, err
 	}
-	if snapshot.Version != 1 || snapshot.RegistryID == 0 || s.bootID == "" || snapshot.BootID != s.bootID {
+	if snapshot.RegistryID == 0 || s.bootID == "" || snapshot.BootID != s.bootID || snapshot.Original == nil {
 		return snapshot, fmt.Errorf("xiaomi voice mapping: recovery identity does not match this boot")
 	}
+	switch snapshot.Version {
+	case 1:
+		if len(snapshot.Sources) != 0 {
+			return snapshot, errors.New("xiaomi voice mapping: version 1 recovery record has unexpected sources")
+		}
+	case 2:
+		if err := validateVoiceMappingSources(snapshot.Sources); err != nil {
+			return snapshot, fmt.Errorf("xiaomi voice mapping: invalid version 2 source set: %w", err)
+		}
+	default:
+		return snapshot, fmt.Errorf("xiaomi voice mapping: unsupported recovery version %d", snapshot.Version)
+	}
 	return snapshot, nil
+}
+
+func (snapshot voiceMappingSnapshot) managedSources() ([]uint64, error) {
+	switch snapshot.Version {
+	case 1:
+		if len(snapshot.Sources) != 0 {
+			return nil, errors.New("xiaomi voice mapping: version 1 recovery record has unexpected sources")
+		}
+		return []uint64{voiceMappingSource}, nil
+	case 2:
+		if err := validateVoiceMappingSources(snapshot.Sources); err != nil {
+			return nil, err
+		}
+		return append([]uint64(nil), snapshot.Sources...), nil
+	default:
+		return nil, fmt.Errorf("xiaomi voice mapping: unsupported recovery version %d", snapshot.Version)
+	}
 }
 
 func (s *fileVoiceMappingSnapshots) Clear() error {

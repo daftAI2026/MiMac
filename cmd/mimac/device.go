@@ -62,7 +62,9 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 	}
 	var accepted bool
 	var err error
-	if s.editButton != "" {
+	if s.editButton != "" || !s.remoteHasReservation() {
+		// Observe down edges until native suppression is confirmed. This
+		// isolation still delivers up edges to release Core's frozen plan.
 		accepted, err = s.coordinator.acceptWhileShortcutRecording(event)
 	} else {
 		accepted, err = s.coordinator.accept(event)

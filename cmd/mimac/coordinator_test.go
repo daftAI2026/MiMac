@@ -7,6 +7,7 @@ import (
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/devices"
+	"mimac.local/mimac/internal/pluginrt"
 	"mimac.local/mimac/internal/voicetools"
 )
 
@@ -76,6 +77,19 @@ func TestCoordinatorShortcutRecordingIsolatesBindingsAndTracksRelease(t *testing
 		selectedProfile: profile.ID,
 		deviceProfiles:  []devicePlugin{{Profile: profile}},
 	}
+	// This recorder test exercises an enabled device with confirmed native
+	// suppression; passive monitoring alone must never inject a mapping.
+	s.plugins, err = pluginrt.New(pluginrt.Manifest{ID: remotePlugin, Start: func() (pluginrt.StopFunc, error) {
+		return func() error { return nil }, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.plugins.Enable(remotePlugin); err != nil {
+		t.Fatal(err)
+	}
+	s.remoteState.reservation = &remoteTestReservation{}
+	s.remoteState.reservationGeneration = 1
 	device, _ := bridge.NewDevice("recording-test", 1)
 	s.handleDeviceEvent(devices.InputEvent{State: devices.InputStateConnected, Device: device})
 	ordinary, _ := bridge.NewPressToken(device, ordinaryButton, 1)

@@ -34,7 +34,7 @@ func (s *shell) outputLabel() string {
 	if s.output == nil {
 		return "未启用"
 	}
-	return "已启用，额外发送快捷键"
+	return "已启用"
 }
 
 func (s *shell) toggleOutput() {

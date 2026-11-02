@@ -376,8 +376,8 @@ func (s *shell) saveMapping(id, shortcut string) {
 	}
 	// Freeze this operation at a physical idle boundary, rather than changing
 	// what an already-held button means or losing an up edge.
-	if s.coordinator != nil && s.coordinator.report().Pressed != 0 {
-		s.mappingError = "请先松开遥控器按键，再录入快捷键"
+	if !s.mappingChangeAllowed() {
+		s.mappingError = "请先结束当前操作，再设置按键"
 		return
 	}
 	if err := saveProfile(s.mappingPath, next); err != nil {
@@ -388,6 +388,9 @@ func (s *shell) saveMapping(id, shortcut string) {
 	if s.coordinator != nil {
 		s.coordinator.mappings = keys
 		s.coordinator.actions = next.actionRefs(profile)
+	}
+	if !s.applySavedRemoteKeys() {
+		return
 	}
 	s.mappingError = ""
 	s.endShortcutRecording()
