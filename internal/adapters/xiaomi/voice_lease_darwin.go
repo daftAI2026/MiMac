@@ -30,7 +30,7 @@ var (
 	errVoiceMappingPortClosed        = errors.New("xiaomi HID: voice mapping port is closed")
 	errVoiceMappingNativeUnavailable = errors.New("xiaomi HID: voice mapping native API is unavailable")
 	errVoiceMappingServiceNotUnique  = errors.New("xiaomi HID: matching keyboard event service is not unique for the active device")
-	errVoiceMappingServiceMissing    = errors.New("xiaomi HID: matching keyboard event service was not found for the active device")
+	errVoiceMappingServiceMissing    = ErrVoiceMappingServiceNotReady
 	errVoiceMappingServiceChanged    = errors.New("xiaomi HID: keyboard event service no longer belongs to the active device")
 	errVoiceMappingRegistryEntryGone = errors.New("xiaomi HID: registry entry ID is no longer present")
 )

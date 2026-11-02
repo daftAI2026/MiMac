@@ -38,7 +38,12 @@ type remoteState struct {
 	closeAudio            func(context.Context, *audioSessionHost) error
 	cleanedAudio          *audiosession.Runtime
 	reserveQueued         uint64
+	reserveQueueSequence  uint64
+	reserveQueuedSequence uint64
 	cleanupSequence       uint64
+	reservationRetry      remoteReservationRetry
+	retryAfter            remoteReservationRetryAfterFunc
+	retryNow              func() time.Time
 	reserveInFlight       bool
 	cleanupInFlight       bool
 	stopPending           bool
@@ -66,6 +71,9 @@ func (s *shell) remoteStart() (func() error, error) {
 		snapshot := s.coordinator.core.Snapshot()
 		if snapshot.Connected {
 			if err := s.acquireRemoteReservation(snapshot.Generation, true); err != nil {
+				if s.beginRemoteReservationRetry(snapshot.Generation, err, true) {
+					return stop, nil
+				}
 				s.remoteState.err = err
 				return stop, err
 			}
@@ -152,6 +160,7 @@ func (s *shell) acquireRemoteReservation(generation uint64, starting bool) (err 
 }
 
 func (s *shell) stopRemotePlugin() error {
+	s.cancelRemoteReservationRetry()
 	if s.coordinator != nil {
 		if err := s.coordinator.disconnect(); err != nil {
 			s.remoteState.err = err
@@ -243,6 +252,9 @@ func (s *shell) remoteButtonLabel() string {
 	if s.powerState.resumeRemote && !s.remoteBusy() {
 		return "停用遥控器"
 	}
+	if s.remoteEnabled() && s.remoteState.reservationRetry.pending {
+		return "停用遥控器"
+	}
 	if s.remoteBusy() {
 		return "准备中"
 	}
@@ -278,6 +290,9 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	}
 	if s.remoteState.stopPending {
 		return "正在停用", toneNeutral
+	}
+	if s.remoteState.reservationRetry.pending {
+		return "正在连接", toneNeutral
 	}
 	if s.remoteBusy() {
 		return "正在连接", toneNeutral
@@ -386,6 +401,7 @@ func (s *shell) enableRemote(requestPermission bool) {
 		s.invalidateDeviceView()
 		return
 	}
+	s.armRemoteReservationRetry()
 	s.syncVoiceBinding()
 	s.refreshRemoteOutput(requestPermission)
 	s.invalidateDeviceView()
@@ -431,6 +447,7 @@ func (s *shell) beginRemoteStop() {
 	if s.closing || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return
 	}
+	s.cancelRemoteReservationRetry()
 	// Stopping the remote adapter cancels any explicit TIS intent that was
 	// waiting for tool discovery; cleanup completion must not revive it later.
 	s.pendingInputSource = nil
@@ -458,9 +475,18 @@ func (s *shell) remoteDeviceEvent(event xiaomi.MonitorEvent) {
 	}
 	if event.State == xiaomi.MonitorStateConnected {
 		if s.remoteEnabled() && event.Device.Generation() != 0 {
+			if s.remoteState.reservationRetry.generation != 0 &&
+				s.remoteState.reservationRetry.generation != event.Device.Generation() {
+				s.cancelRemoteReservationRetry()
+			}
 			s.queueRemoteReserve(event.Device.Generation())
 		}
 		return
+	}
+	if event.State == xiaomi.MonitorStateDisconnected &&
+		s.remoteState.reservationRetry.generation == event.Device.Generation() {
+		s.cancelRemoteReservationRetry()
+		s.syncVoiceBinding()
 	}
 	if event.State != xiaomi.MonitorStateDisconnected ||
 		s.remoteState.reservation == nil ||
@@ -477,16 +503,37 @@ func (s *shell) queueRemoteReserve(generation uint64) {
 		s.remoteState.stopPending || !s.remoteEnabled() {
 		return
 	}
+	if s.remoteState.reservationRetry.blocks(generation) {
+		return
+	}
+	if s.remoteState.reservationRetry.generation != 0 {
+		s.cancelRemoteReservationRetry()
+	}
+	s.remoteState.reserveQueueSequence++
+	queueSequence := s.remoteState.reserveQueueSequence
+	retryEpoch := s.remoteState.reservationRetry.epoch
 	s.remoteState.reserveQueued = generation
+	s.remoteState.reserveQueuedSequence = queueSequence
 	s.postRemoteMain(func() {
-		if s.remoteState.reserveQueued == generation {
+		if s.remoteState.reserveQueued == generation && s.remoteState.reserveQueuedSequence == queueSequence {
 			s.remoteState.reserveQueued = 0
+			s.remoteState.reserveQueuedSequence = 0
+		}
+		if s.remoteState.reserveQueueSequence != queueSequence || s.remoteState.reservationRetry.epoch != retryEpoch {
+			return
 		}
 		if s.closing || s.powerInputBlocked() || !s.remoteEnabled() || s.remoteState.cleanupInFlight || s.remoteState.stopPending {
 			return
 		}
+		if s.remoteState.reservationRetry.blocks(generation) {
+			return
+		}
 		if err := s.acquireRemoteReservation(generation, false); err != nil {
-			s.remoteState.err = err
+			if !s.beginRemoteReservationRetry(generation, err, false) {
+				s.cancelRemoteReservationRetry()
+				s.remoteState.reservationRetry.fail(generation, err)
+				s.remoteState.err = err
+			}
 		}
 		s.syncVoiceBinding()
 		s.refreshRemoteOutput(false)
@@ -497,6 +544,9 @@ func (s *shell) queueRemoteReserve(generation uint64) {
 func (s *shell) beginRemoteDisconnectCleanup(generation uint64) {
 	if s.closing || s.remoteState.cleanupInFlight || s.remoteState.stopPending {
 		return
+	}
+	if s.remoteState.reservationRetry.generation == generation {
+		s.cancelRemoteReservationRetry()
 	}
 	s.remoteState.cleanupInFlight = true
 	s.remoteState.cleanupSequence++
@@ -656,7 +706,11 @@ func (s *shell) finishRemoteDisconnect(sequence uint64, generation uint64, host 
 		snapshot := s.coordinator.core.Snapshot()
 		if snapshot.Connected {
 			if err := s.acquireRemoteReservation(snapshot.Generation, false); err != nil {
-				s.remoteState.err = err
+				if !s.beginRemoteReservationRetry(snapshot.Generation, err, false) {
+					s.cancelRemoteReservationRetry()
+					s.remoteState.reservationRetry.fail(snapshot.Generation, err)
+					s.remoteState.err = err
+				}
 			}
 		}
 	}

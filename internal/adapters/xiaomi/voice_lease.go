@@ -17,6 +17,7 @@ const (
 )
 
 var (
+	ErrVoiceMappingServiceNotReady = errors.New("xiaomi HID: matching keyboard event service was not found for the active device")
 	ErrVoiceMappingSnapshotPending = errors.New("xiaomi HID: a voice mapping recovery snapshot is already pending")
 	ErrVoiceMappingRecoveryNeeded  = errors.New("xiaomi HID: voice mapping recovery must finish before reacquiring")
 	ErrVoiceMappingChanged         = errors.New("xiaomi HID: user key mappings changed before lease write")

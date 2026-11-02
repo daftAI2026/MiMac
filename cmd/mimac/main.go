@@ -255,6 +255,7 @@ func main() {
 	mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
 		s.closeVoiceOverlay()
 		s.cancelPowerResume()
+		s.cancelRemoteReservationRetry()
 		if s.deferAudioQuit(event.PreventDefault, mygo.RunOnMain, func() {
 			if s.audioQuitReady && !s.report.AudioCleanupFailed && s.audioSession != nil {
 				s.remoteState.cleanedAudio = s.audioSession.runtime

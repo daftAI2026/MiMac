@@ -269,6 +269,7 @@ func (s *shell) deferAudioQuit(prevent func(), post func(func()), quit func()) b
 	if s.audioSession == nil || s.audioQuitReady {
 		return false
 	}
+	s.cancelRemoteReservationRetry()
 	prevent()
 	if s.audioQuitPending {
 		return true

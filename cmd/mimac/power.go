@@ -57,8 +57,8 @@ func (s *shell) setPowerReason(reason *bool, value bool) {
 			s.powerState.resumeRemote = s.remoteEnabled()
 			s.powerState.resumeMonitor = s.monitor != nil && !s.powerState.resumeRemote
 		}
+		s.cancelRemoteReservationRetry()
 		s.endShortcutRecording()
-		s.remoteState.reserveQueued = 0
 		s.powerState.stopping = s.remoteEnabled() || s.monitor != nil || s.audioSession != nil || s.remoteState.reservation != nil
 		if s.coordinator != nil {
 			if err := s.coordinator.disconnect(); err != nil {
