@@ -905,6 +905,10 @@ func (c *Core) sourceDrained(token SessionToken, effects *[]Effect) {
 	c.finishSession()
 }
 
+// cancelSession retires local ownership, not a target's queued transcript.
+// Releasing a held shortcut may finish and submit in the target; an uncertain
+// toggle must not be guessed. A target-specific discard needs its own verified
+// adapter contract and cannot be inferred from this resource cleanup.
 func (c *Core) cancelSession(effects *[]Effect) {
 	s := c.state.session
 	if s == nil {
