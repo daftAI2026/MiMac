@@ -132,7 +132,14 @@ func nativeCreateError(status int32, message []byte) error {
 	if text == "" {
 		return fmt.Errorf("applespeech: native create failed with status %d", status)
 	}
-	if strings.Contains(strings.ToLower(text), "asset") || strings.Contains(strings.ToLower(text), "model") {
+	lowerMessage := strings.ToLower(text)
+	if strings.HasPrefix(lowerMessage, nativeUnsupportedLocalePrefix) {
+		return fmt.Errorf("%w: %s", ErrInvalidLocale, text)
+	}
+	if strings.HasPrefix(lowerMessage, nativeAssetsUnsupportedPrefix) {
+		return fmt.Errorf("%w: %s", ErrUnsupported, text)
+	}
+	if strings.HasPrefix(lowerMessage, nativeAssetsUnavailablePrefix) {
 		return fmt.Errorf("%w: %s", ErrAssetsUnavailable, text)
 	}
 	return fmt.Errorf("applespeech: native create failed with status %d: %s", status, text)

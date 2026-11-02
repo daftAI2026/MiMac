@@ -36,6 +36,65 @@ private struct BridgeFailure: Error, CustomStringConvertible {
     static func assets(_ locale: String, status: String) -> BridgeFailure {
         BridgeFailure(description: "assets unavailable: install the Apple Speech model for \(locale) (status: \(status))")
     }
+
+    static func unsupported(_ locale: String, status: String) -> BridgeFailure {
+        BridgeFailure(description: "assets unsupported: Apple Speech configuration \(locale) (status: \(status))")
+    }
+
+    static func installationRequest(_ locale: String, status: String, error: Error) -> BridgeFailure {
+        BridgeFailure(description: "asset installation request failed: \(locale) (status: \(status)): \(error)")
+    }
+}
+
+@available(macOS 26.0, *)
+private func speechErrorCode(_ error: Error) -> SFSpeechError.Code? {
+    let value = error as NSError
+    guard value.domain == SFSpeechError.errorDomain else { return nil }
+    return SFSpeechError.Code(rawValue: value.code)
+}
+
+// Use the framework's typed error domain for asset classification. Status can
+// lag or reflect reservation state even when a shared model is usable.
+@available(macOS 26.0, *)
+func classifyPreparationFailure(_ error: Error, status: AssetInventory.Status, locale: String) -> Error {
+    if status == .unsupported || speechErrorCode(error) == .noModel || speechErrorCode(error) == .cannotAllocateUnsupportedLocale {
+        return BridgeFailure.unsupported(locale, status: "prepare failed: \(error)")
+    }
+    if speechErrorCode(error) == .assetLocaleNotAllocated {
+        return BridgeFailure.assets(locale, status: "locale reservation required: \(error)")
+    }
+    return error
+}
+
+@available(macOS 26.0, *)
+func classifyInstallationRequestFailure(_ error: Error, status: AssetInventory.Status, locale: String) -> Error {
+    if status == .unsupported || speechErrorCode(error) == .noModel || speechErrorCode(error) == .cannotAllocateUnsupportedLocale {
+        return BridgeFailure.unsupported(locale, status: "asset request failed: \(error)")
+    }
+    return BridgeFailure.installationRequest(locale, status: String(describing: status), error: error)
+}
+
+func findNewlyReservedLocale(requested: Locale, before: [Locale], after: [Locale]) -> Locale? {
+    let requestedID = reservationLocaleKey(requested)
+    let previouslyReserved = Set(before.map(reservationLocaleKey))
+    return after.first { reservationLocaleKey($0) == requestedID && !previouslyReserved.contains(reservationLocaleKey($0)) }
+}
+
+private func reservationLocaleKey(_ locale: Locale) -> String {
+	[
+		locale.language.languageCode?.identifier ?? "",
+		locale.language.script?.identifier ?? "",
+		locale.region?.identifier ?? "",
+	].joined(separator: "-").lowercased()
+}
+
+func releaseUncommittedReservation(
+    _ locale: Locale?,
+    preparationReachedReady: Bool,
+    release: (Locale) async -> Bool
+) async -> Bool {
+    guard !preparationReachedReady, let locale else { return false }
+    return await release(locale)
 }
 
 @available(macOS 26.0, *)
@@ -238,6 +297,8 @@ private final class AppleSpeechSession: @unchecked Sendable {
         var localAnalyzer: SpeechAnalyzer?
         var localAnalysisTask: Task<Void, Error>?
         var localResultsTask: Task<Void, Error>?
+        var newlyReservedLocale: Locale?
+        var preparationReachedReady = false
         defer {
             withConditionLock {
                 workerTerminated = true
@@ -255,18 +316,48 @@ private final class AppleSpeechSession: @unchecked Sendable {
 
             let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
             var moduleStatus = await AssetInventory.status(forModules: [transcriber])
+            if moduleStatus == .unsupported {
+                throw BridgeFailure.unsupported(localeIdentifier, status: String(describing: moduleStatus))
+            }
             if installAssets {
+                let reservationsBeforeRequest = await AssetInventory.reservedLocales
+                let request: AssetInstallationRequest?
                 do {
-                    if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                        try Task.checkCancellation()
-                        try await request.downloadAndInstall()
-                        try Task.checkCancellation()
-                    }
+                    request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber])
                 } catch {
+                    let reservationsAfterRequest = await AssetInventory.reservedLocales
+                    newlyReservedLocale = findNewlyReservedLocale(
+                        requested: locale,
+                        before: reservationsBeforeRequest,
+                        after: reservationsAfterRequest
+                    )
                     if Task.isCancelled || error is CancellationError { throw CancellationError() }
-                    throw BridgeFailure.assets(localeIdentifier, status: "installation failed: \(error)")
+                    let requestStatus = await AssetInventory.status(forModules: [transcriber])
+                    throw classifyInstallationRequestFailure(error, status: requestStatus, locale: localeIdentifier)
+                }
+                let reservationsAfterRequest = await AssetInventory.reservedLocales
+                newlyReservedLocale = findNewlyReservedLocale(
+                    requested: locale,
+                    before: reservationsBeforeRequest,
+                    after: reservationsAfterRequest
+                )
+                if let request {
+                    try Task.checkCancellation()
+                    do {
+                        try await request.downloadAndInstall()
+                    } catch {
+                        if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                        let installStatus = await AssetInventory.status(forModules: [transcriber])
+                        let category = classifyPreparationFailure(error, status: installStatus, locale: localeIdentifier)
+                        if category is BridgeFailure { throw category }
+                        throw BridgeFailure.assets(localeIdentifier, status: "installation failed: \(error)")
+                    }
+                    try Task.checkCancellation()
                 }
                 moduleStatus = await AssetInventory.status(forModules: [transcriber])
+                if moduleStatus == .unsupported {
+                    throw BridgeFailure.unsupported(localeIdentifier, status: String(describing: moduleStatus))
+                }
             }
 
             let requestedFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: false)!
@@ -296,10 +387,7 @@ private final class AppleSpeechSession: @unchecked Sendable {
             } catch {
                 if Task.isCancelled || error is CancellationError { throw CancellationError() }
                 let prepareStatus = await AssetInventory.status(forModules: [transcriber])
-                if prepareStatus != .installed {
-                    throw BridgeFailure.assets(localeIdentifier, status: "\(prepareStatus): prepare failed: \(error)")
-                }
-                throw error
+                throw classifyPreparationFailure(error, status: prepareStatus, locale: localeIdentifier)
             }
             try Task.checkCancellation()
 
@@ -320,7 +408,10 @@ private final class AppleSpeechSession: @unchecked Sendable {
                 resultsTask = resultTask
                 self.analysisTask = analysisTask
                 let wasCancelled = cancelled
-                if !wasCancelled { state = stateReady }
+                if !wasCancelled {
+                    state = stateReady
+                    preparationReachedReady = true
+                }
                 condition.broadcast()
                 return wasCancelled
             }
@@ -361,6 +452,12 @@ private final class AppleSpeechSession: @unchecked Sendable {
             }
         } catch {
             await cancelAndJoin(analyzer: localAnalyzer, analysisTask: localAnalysisTask, resultsTask: localResultsTask)
+            _ = await releaseUncommittedReservation(
+                newlyReservedLocale,
+                preparationReachedReady: preparationReachedReady
+            ) { reservedLocale in
+                await AssetInventory.release(reservedLocale: reservedLocale)
+            }
             withConditionLock {
                 if state == stateFailed {
                     // Preserve a specific failure (such as final-text overflow)

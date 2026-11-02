@@ -3,9 +3,11 @@
 package textoutput
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -48,8 +50,8 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 	if err != nil || pid <= 0 {
 		t.Fatal("invalid fixture PID")
 	}
-	kinds := []string{"textview", "field", "input", "textarea", "editable"}
-	rejectKinds := []string{"textview", "input", "textarea", "editable"}
+	kinds := []string{"textview", "field", "input", "textarea", "editable", "rich"}
+	rejectKinds := []string{"textview", "input", "textarea", "editable", "rich"}
 	secureKinds := []string{"secure", "password"}
 	if os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") == "1" {
 		kinds = []string{"input", "textarea", "editable"}
@@ -91,6 +93,13 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 		t.Fatalf("fixture command %s timed out", action)
 		return matrixResult{}
 	}
+	if !expectUnsupported && os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") != "1" {
+		// Launch a fresh test process while the rich contenteditable selection is
+		// focused. Its first native text-output call is Capture itself.
+		command(t, "reset", "rich")
+		waitForMatrixDOMFocus(t, int32(pid), "rich")
+		runNativeColdCaptureChild(t)
+	}
 	capture := func(t *testing.T, kind string) (*Target, error) {
 		t.Helper()
 		if _, err := loadNativeAPI(); err != nil {
@@ -102,33 +111,8 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 		}
 		// Browser engines construct their AX tree lazily. Synchronize our fixture's
 		// requested DOM focus before capture; never retry an output operation.
-		if kind == "input" || kind == "textarea" || kind == "editable" || kind == "password" {
-			api, _ := loadNativeAPI()
-			name, err := api.makeString(kind)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer api.cfRelease(name)
-			ready := false
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				element, _, err := focusedElement(api, int32(pid))
-				if err == nil {
-					identifier, _ := api.optionalAttribute(element, "AXDOMIdentifier")
-					if identifier != 0 {
-						ready = api.cfEqual(identifier, name) != 0
-						api.cfRelease(identifier)
-					}
-					api.cfRelease(element)
-				}
-				if ready {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			if !ready {
-				t.Fatal("fixture AX focus did not settle")
-			}
+		if kind == "input" || kind == "textarea" || kind == "editable" || kind == "rich" || kind == "password" {
+			waitForMatrixDOMFocus(t, int32(pid), kind)
 		}
 		if expectUnsupported && kind != "password" {
 			api, _ := loadNativeAPI()
@@ -165,7 +149,7 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 				if !errors.Is(err, ErrUnsupportedTarget) {
 					t.Fatalf("unsupported target Capture = %v, want ErrUnsupportedTarget", err)
 				}
-				if state := command(t, "snapshot", kind); state.value(kind) != "L|old|R" || state.Other != "untouched" {
+				if state := command(t, "snapshot", kind); state.value(kind) != matrixValue(kind, "old") || state.Other != "untouched" {
 					t.Fatal("rejected target changed fixture text")
 				}
 				return
@@ -185,11 +169,12 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 			}
 			state := command(t, "snapshot", kind)
 			deadline := time.Now().Add(2 * time.Second)
-			for state.value(kind) != "L|"+matrixText+"|R" && time.Now().Before(deadline) {
+			want := matrixValue(kind, matrixText)
+			for state.value(kind) != want && time.Now().Before(deadline) {
 				time.Sleep(20 * time.Millisecond)
 				state = command(t, "snapshot", kind)
 			}
-			if got := state.value(kind); got != "L|"+matrixText+"|R" {
+			if got := state.value(kind); got != want {
 				t.Fatalf("actual fixture value %q, want exact selected-range replacement", got)
 			}
 			if err := target.Insert("duplicate"); !errors.Is(err, ErrAlreadySubmitted) {
@@ -210,9 +195,10 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 				t.Fatal(err)
 			}
 			deadline = time.Now().Add(2 * time.Second)
+			want = matrixValue(kind, matrixText+"续写")
 			for {
 				state = command(t, "snapshot", kind)
-				if state.value(kind) == "L|"+matrixText+"续写|R" {
+				if state.value(kind) == want {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -243,7 +229,7 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 					t.Fatalf("changed target Insert = %v", err)
 				}
 				state := command(t, "snapshot", changed)
-				if state.value(kind) != "L|old|R" || state.Other != "untouched" {
+				if state.value(kind) != matrixValue(kind, "old") || state.Other != "untouched" {
 					t.Fatal("changed target received text")
 				}
 			})
@@ -344,6 +330,113 @@ type matrixResult struct {
 	Field    string            `json:"field"`
 	Other    string            `json:"other"`
 	Web      map[string]string `json:"web"`
+}
+
+func matrixValue(kind, text string) string {
+	value := "L|" + text + "|R"
+	if kind == "rich" {
+		return value + "\n\nkeep"
+	}
+	return value
+}
+
+func waitForMatrixDOMFocus(t *testing.T, pid int32, kind string) {
+	t.Helper()
+	api, err := loadNativeAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := api.makeString(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer api.cfRelease(name)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		element, _, err := focusedElement(api, pid)
+		if err == nil {
+			identifier, _ := api.optionalAttribute(element, "AXDOMIdentifier")
+			ready := identifier != 0 && api.cfEqual(identifier, name) != 0
+			if identifier != 0 {
+				api.cfRelease(identifier)
+			}
+			api.cfRelease(element)
+			if ready {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("fixture AX focus for %q did not settle", kind)
+}
+
+// TestNativeColdCaptureChild runs only in a fresh test process. Its first
+// textoutput native operation is Capture, so it does not warm loadNativeAPI
+// before the measurement.
+func TestNativeColdCaptureChild(t *testing.T) {
+	if os.Getenv("MIMAC_TEXT_MATRIX_COLD_CAPTURE_CHILD") != "1" {
+		t.Skip("runs only as a child process of the native matrix")
+	}
+	dir := os.Getenv("MIMAC_TEXT_MATRIX_DIR")
+	pidBytes, err := os.ReadFile(filepath.Join(dir, "pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPID, err := strconv.Atoi(string(pidBytes))
+	if err != nil || wantPID <= 0 {
+		t.Fatal("invalid fixture PID")
+	}
+	started := time.Now()
+	target, err := Capture()
+	if target != nil {
+		defer target.Close()
+	}
+	if err != nil {
+		t.Fatalf("first cold Capture: %v", err)
+	}
+	if target.snapshot.processID != int32(wantPID) {
+		t.Fatalf("cold Capture target PID = %d, want fixture PID %d", target.snapshot.processID, wantPID)
+	}
+	if kind := os.Getenv("MIMAC_TEXT_MATRIX_COLD_CAPTURE_KIND"); kind != "" {
+		api, err := loadNativeAPI()
+		if err != nil {
+			t.Fatal(err)
+		}
+		identifier, err := api.optionalAttribute(target.snapshot.element, "AXDOMIdentifier")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if identifier == 0 {
+			t.Fatal("cold captured web target has no AXDOMIdentifier")
+		}
+		defer api.cfRelease(identifier)
+		want, err := api.makeString(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer api.cfRelease(want)
+		if api.cfEqual(identifier, want) == 0 {
+			t.Fatalf("cold Capture DOM ID differs from %q", kind)
+		}
+	}
+	t.Logf("cold first Capture testPID=%d targetPID=%d domID=%s started=%s elapsed_ms=%d", os.Getpid(), target.snapshot.processID, os.Getenv("MIMAC_TEXT_MATRIX_COLD_CAPTURE_KIND"), started.Format(time.RFC3339Nano), time.Since(started).Milliseconds())
+}
+
+func runNativeColdCaptureChild(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestNativeColdCaptureChild$")
+	command.Env = append(os.Environ(), "MIMAC_TEXT_MATRIX_COLD_CAPTURE_CHILD=1", "MIMAC_TEXT_MATRIX_COLD_CAPTURE_KIND=rich")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cold Capture child process failed: %v\n%s", err, output)
+	}
+	t.Logf("cold Capture child output: %s", strings.TrimSpace(string(output)))
 }
 
 func (m matrixResult) value(kind string) string {

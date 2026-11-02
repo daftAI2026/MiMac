@@ -96,14 +96,17 @@ func TestOpenCancellationKeepsUnjoinedOwnerForRetry(t *testing.T) {
 	}
 	result := make(chan openResult, 1)
 	go func() {
-		sink, err := openWith(ctx, testConfig(false), func(string) (nativeBridge, error) { return bridge, nil })
+		sink, err := openWith(ctx, testConfig(true), func(string) (nativeBridge, error) { return bridge, nil })
 		result <- openResult{sink: sink, err: err}
 	}()
 	<-bridge.created
+	if !bridge.installAssets {
+		t.Fatal("asset preparation cancellation did not request install-enabled Open")
+	}
 	cancel()
 	opened := <-result
-	if opened.sink == nil || !errors.Is(opened.err, ErrCleanupPending) {
-		t.Fatalf("Open cancellation = (%v, %v), want a retained sink and ErrCleanupPending", opened.sink, opened.err)
+	if opened.sink == nil || !errors.Is(opened.err, context.Canceled) || !errors.Is(opened.err, ErrCleanupPending) {
+		t.Fatalf("Open cancellation = (%v, %v), want context.Canceled, a retained sink, and ErrCleanupPending", opened.sink, opened.err)
 	}
 	if owner.wasReleased() {
 		t.Fatal("Open released an owner before its task joined")
@@ -179,6 +182,49 @@ func TestMissingAssetsIsClassifiable(t *testing.T) {
 	}
 	if !owner.wasReleased() {
 		t.Fatal("failed preparation owner was not released after join")
+	}
+}
+
+func TestUnsupportedAssetsAndReservationFailuresAreNotReportedAsMissingAssets(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		message   string
+		want      error
+		mustNotBe error
+	}{
+		{
+			name:      "unsupported module configuration",
+			message:   "assets unsupported: Apple Speech configuration zh-CN (status: unsupported)",
+			want:      ErrUnsupported,
+			mustNotBe: ErrAssetsUnavailable,
+		},
+		{
+			name:      "asset locale reservation request failed",
+			message:   "asset installation request failed: no locale reservations available",
+			want:      ErrNativeFailure,
+			mustNotBe: ErrAssetsUnavailable,
+		},
+		{
+			name:      "ordinary prepare failure mentioning a model",
+			message:   "SpeechAnalyzer prepareToAnalyze failed: model format incompatibility",
+			want:      ErrNativeFailure,
+			mustNotBe: ErrAssetsUnavailable,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			owner := newFakeOwner(nativeFailed)
+			owner.failure = test.message
+			owner.terminated = true
+			_, err := openWith(context.Background(), testConfig(true), func(string) (nativeBridge, error) {
+				return &fakeBridge{owner: owner}, nil
+			})
+			if !errors.Is(err, test.want) || errors.Is(err, test.mustNotBe) {
+				t.Fatalf("Open error = %v; want %v and not %v", err, test.want, test.mustNotBe)
+			}
+			if !owner.wasReleased() {
+				t.Fatal("failed preparation owner was not released after join")
+			}
+		})
 	}
 }
 

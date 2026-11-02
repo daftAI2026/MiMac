@@ -18,6 +18,10 @@ const (
 	NativeQueueSamples = 32000
 	MaxFinalTextBytes  = 64 * 1024
 
+	nativeUnsupportedLocalePrefix = "unsupported apple speech locale:"
+	nativeAssetsUnsupportedPrefix = "assets unsupported:"
+	nativeAssetsUnavailablePrefix = "assets unavailable:"
+
 	nativeWaitInterval = 50 * time.Millisecond
 	cleanupWaitLimit   = 2 * time.Second
 )
@@ -423,13 +427,16 @@ func (s *Sink) nativeFailure(stage string) error {
 		return fmt.Errorf("%w during %s", ErrNativeFailure, stage)
 	}
 	lowerMessage := strings.ToLower(message)
-	if strings.Contains(lowerMessage, "final text exceeds") {
+	if strings.HasPrefix(lowerMessage, "final text exceeds") {
 		return fmt.Errorf("%w during %s: %s", ErrFinalTextOverflow, stage, message)
 	}
-	if strings.Contains(lowerMessage, "unsupported apple speech locale") {
+	if strings.HasPrefix(lowerMessage, nativeUnsupportedLocalePrefix) {
 		return fmt.Errorf("%w: %s", ErrInvalidLocale, message)
 	}
-	if strings.Contains(lowerMessage, "asset") || strings.Contains(lowerMessage, "model") {
+	if strings.HasPrefix(lowerMessage, nativeAssetsUnsupportedPrefix) {
+		return fmt.Errorf("%w: %s", ErrUnsupported, message)
+	}
+	if strings.HasPrefix(lowerMessage, nativeAssetsUnavailablePrefix) {
 		return fmt.Errorf("%w during %s: %s", ErrAssetsUnavailable, stage, message)
 	}
 	return fmt.Errorf("%w during %s: %s", ErrNativeFailure, stage, message)

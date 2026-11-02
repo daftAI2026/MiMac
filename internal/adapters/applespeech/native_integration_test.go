@@ -64,6 +64,83 @@ func TestNativeLifecycleNormalCancelNormal(t *testing.T) {
 	assertFixtureTranscript(t, secondText)
 }
 
+// This opt-in path proves one cold-process, first-session Open/Write/Drain
+// using a caller-generated TTS fixture. It intentionally runs one normal
+// session only; lifecycle cancellation is covered by the separate matrix.
+func TestNativeColdFirstTTSInput(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Apple Speech integration requires macOS")
+	}
+	libraryPath := strings.TrimSpace(os.Getenv("MIMAC_SPEECH_LIBRARY"))
+	pcmPath := strings.TrimSpace(os.Getenv("MIMAC_SPEECH_PCM"))
+	if libraryPath == "" || pcmPath == "" {
+		t.Skip("set MIMAC_SPEECH_LIBRARY and MIMAC_SPEECH_PCM to opt into native integration")
+	}
+
+	pcmBytes, err := os.ReadFile(pcmPath)
+	if err != nil {
+		t.Fatalf("read synthesized TTS fixture: %v", err)
+	}
+	if len(pcmBytes) == 0 || len(pcmBytes)%2 != 0 {
+		t.Fatalf("PCM fixture must contain a non-empty whole number of s16le samples; got %d bytes", len(pcmBytes))
+	}
+	samples := make([]int16, len(pcmBytes)/2)
+	for index := range samples {
+		samples[index] = int16(binary.LittleEndian.Uint16(pcmBytes[index*2 : index*2+2]))
+	}
+
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cfg := Config{LibraryPath: libraryPath, Locale: "zh-CN", SampleRate: RequiredSampleRate}
+	openStarted := time.Now()
+	sink, err := Open(ctx, cfg)
+	openDuration := time.Since(openStarted)
+	closed := false
+	closeSession := func() error {
+		if sink == nil || closed {
+			return nil
+		}
+		if err := sink.Close(); err != nil {
+			return err
+		}
+		closed = true
+		return nil
+	}
+	t.Cleanup(func() {
+		if closeErr := closeSession(); closeErr != nil {
+			t.Errorf("cleanup cold first Apple Speech session: %v", closeErr)
+		}
+	})
+	if err != nil {
+		t.Fatalf("cold first Apple Speech Open after %s: %v", openDuration, err)
+	}
+	writeStarted := time.Now()
+	if err := writeFixture(ctx, sink, samples); err != nil {
+		_ = closeSession()
+		t.Fatalf("write synthesized TTS fixture: %v", err)
+	}
+	writeDuration := time.Since(writeStarted)
+	drainStarted := time.Now()
+	if err := sink.Drain(ctx); err != nil {
+		_ = closeSession()
+		t.Fatalf("drain first Apple Speech TTS session: %v", err)
+	}
+	drainDuration := time.Since(drainStarted)
+	text, err := sink.FinalText()
+	if err != nil {
+		_ = closeSession()
+		t.Fatalf("read final Apple Speech text: %v", err)
+	}
+	assertFixtureTranscript(t, text)
+	closeStarted := time.Now()
+	if err := closeSession(); err != nil {
+		t.Fatalf("close first Apple Speech TTS session: %v", err)
+	}
+	t.Logf("cold first TTS session pid=%d started=%s locale=zh-CN installAssets=false pcm_samples=%d open_ms=%d write_ms=%d drain_ms=%d close_ms=%d total_ms=%d transcript=%q",
+		os.Getpid(), started.Format(time.RFC3339Nano), len(samples), openDuration.Milliseconds(), writeDuration.Milliseconds(), drainDuration.Milliseconds(), time.Since(closeStarted).Milliseconds(), time.Since(started).Milliseconds(), text)
+}
+
 func transcribeFixture(t *testing.T, ctx context.Context, cfg Config, samples []int16) string {
 	t.Helper()
 	sink, err := Open(ctx, cfg)
