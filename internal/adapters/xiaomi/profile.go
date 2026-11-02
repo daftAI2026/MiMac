@@ -13,7 +13,7 @@ func DeviceProfile() (devices.Profile, error) {
 		Model: devices.Model{Width: 146, Height: 572, CornerRadius: 8, DefaultSelectedButtonID: VoiceButtonID},
 		Buttons: []devices.Button{
 			rc003Button(VoiceButtonID, "语音", "voice", "F5", 110, 39, 36, 36, 18),
-			rc003Button("hid:0007:0066", "电源（待确认）", "power", "Power", 35, 39, 36, 36, 18),
+			rc003Button("hid:0007:0066", "电源", "power", "Power", 35, 39, 36, 36, 18),
 			rc003Button("hid:0007:0052", "上", "arrow-up", "↑", 73, 83, 24, 24, 12),
 			rc003Button("hid:0007:0050", "左", "arrow-left", "←", 25, 130, 24, 24, 12),
 			rc003Button("hid:0007:0028", "确认", "confirm", "↩", 73, 130, 60, 60, 30),
@@ -24,7 +24,7 @@ func DeviceProfile() (devices.Profile, error) {
 			rc003Button("hid:0007:0081", "音量 −", "volume-down", "音量 −", 103, 274, 48, 48, 24),
 			rc003Button("hid:0007:004a", "主页", "home", "Home", 43, 274, 48, 48, 24),
 			rc003Button("hid:0007:0065", "菜单", "menu", "菜单键", 43, 329, 48, 48, 24),
-			rc003Button("hid:0007:0035", "TV（待确认）", "tv", "` / ~", 103, 329, 48, 48, 24),
+			rc003Button("hid:0007:0035", "TV", "tv", "` / ~", 103, 329, 48, 48, 24),
 		},
 	})
 }
