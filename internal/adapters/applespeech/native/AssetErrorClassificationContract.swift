@@ -1,10 +1,16 @@
 import Foundation
 import Speech
+import Darwin
 
 @main
 struct AssetErrorClassificationContract {
+    static func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data(("FAIL " + message + "\n").utf8))
+        exit(1)
+    }
+
     static func main() {
-        guard #available(macOS 26.0, *) else { fatalError("requires macOS 26 SDK") }
+        guard #available(macOS 26.0, *) else { fail("requires macOS 26 SDK") }
         let cases: [(String, Error, AssetInventory.Status, String, String)] = [
             (
                 "no model is unsupported",
@@ -41,7 +47,7 @@ struct AssetErrorClassificationContract {
         for (name, error, status, wantPrefix, rejectPrefix) in cases {
             let classified = String(describing: classifyPreparationFailure(error, status: status, locale: "zh-HK"))
             guard classified.hasPrefix(wantPrefix), !classified.hasPrefix(rejectPrefix) else {
-                fatalError("\(name): got \(classified)")
+                fail("\(name): got \(classified)")
             }
             print("PASS \(name): \(classified)")
         }
@@ -50,7 +56,7 @@ struct AssetErrorClassificationContract {
                             userInfo: [NSLocalizedDescriptionKey: "No locale reservations available"])
         let requestFailure = String(describing: classifyInstallationRequestFailure(quota, status: .supported, locale: "zh-HK"))
         guard requestFailure.hasPrefix("asset installation request failed:"), !requestFailure.hasPrefix("assets unavailable:") else {
-            fatalError("reservation quota error misclassified: \(requestFailure)")
+            fail("reservation quota error misclassified: \(requestFailure)")
         }
         print("PASS reservation failure stays distinct: \(requestFailure)")
     }
