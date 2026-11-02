@@ -43,6 +43,7 @@ type hostReport struct {
 	VoiceOverlayError   string                `json:"voice_overlay_error,omitempty"`
 	AudioError          string                `json:"audio_error,omitempty"`
 	AudioCleanupFailed  bool                  `json:"audio_cleanup_failed,omitempty"`
+	RemoteRecovery      []remoteRecoveryEvent `json:"remote_recovery,omitempty"`
 }
 
 type shell struct {
@@ -220,6 +221,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: *audioBackend}}
+	s.remoteState.reportRecovery = *reportPath != ""
 	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "voice overlay report:", err)

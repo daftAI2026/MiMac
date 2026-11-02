@@ -42,6 +42,7 @@ type remoteState struct {
 	reserveInFlight       bool
 	cleanupInFlight       bool
 	stopPending           bool
+	reportRecovery        bool
 	err                   error
 }
 
@@ -93,7 +94,8 @@ func (s *shell) configureRemoteReservation() error {
 	return nil
 }
 
-func (s *shell) acquireRemoteReservation(generation uint64, starting bool) error {
+func (s *shell) acquireRemoteReservation(generation uint64, starting bool) (err error) {
+	defer func() { s.recordRemoteRecovery("acquire", generation, err) }()
 	if s.closing || s.powerInputBlocked() || generation == 0 || s.coordinator == nil || s.remoteState.reserve == nil {
 		return nil
 	}
@@ -448,6 +450,9 @@ func (s *shell) beginRemoteStop() {
 }
 
 func (s *shell) remoteDeviceEvent(event xiaomi.MonitorEvent) {
+	if event.State != xiaomi.MonitorStateConnected || len(event.Edges) == 0 {
+		s.recordRemoteRecovery("device:"+event.State, event.Device.Generation(), nil)
+	}
 	if s.closing || s.powerInputBlocked() {
 		return
 	}
@@ -597,6 +602,7 @@ func (s *shell) finishRemoteStop(sequence uint64, host *audioSessionHost, discon
 }
 
 func (s *shell) finishRemoteDisconnect(sequence uint64, generation uint64, host *audioSessionHost, audioErr error) {
+	defer s.recordRemoteRecovery("disconnect-cleanup", generation, nil)
 	if s.closing {
 		return
 	}
