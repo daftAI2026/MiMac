@@ -5,6 +5,7 @@ package siriglass
 import (
 	"encoding/json"
 	"github.com/ebitengine/purego"
+	"math"
 	"os"
 	"testing"
 	"unsafe"
@@ -129,4 +130,37 @@ func BenchmarkRendererRealFFI(b *testing.B) {
 			}
 		}
 	})
+}
+
+// Uses a native C receiver to verify the actual arm64 FFI argument layout.
+func TestNativeFrameABIFieldValues(t *testing.T) {
+	path := os.Getenv("MIMAC_FRAME_FFI_LIBRARY")
+	if path == "" {
+		t.Skip("set MIMAC_FRAME_FFI_LIBRARY to the C fixture library")
+	}
+	library, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer purego.Dlclose(library)
+	r := &Renderer{handle: 17, api: &nativeAPI{}}
+	purego.RegisterLibFunc(&r.api.updateFrame, library, "frame_fixture_typed")
+	var field func(uint32) uint64
+	purego.RegisterLibFunc(&field, library, "frame_fixture_field")
+	meters := Meters{Count: 2, Amplitudes: [MaxMeterBands]float32{1.25, 0.125}, StopFrequenciesHz: [MaxMeterBands]float32{200, 8000}}
+	if !r.submitFrame(19, true, -30, meters) {
+		t.Fatal("native refused frame")
+	}
+	want := []uint64{17, 19, 1, uint64(math.Float32bits(-60)), 2, uint64(math.Float32bits(1.25)), uint64(math.Float32bits(0.125)), uint64(math.Float32bits(8000))}
+	for i, value := range want {
+		if got := field(uint32(i)); got != value {
+			t.Fatalf("native field %d = %x, want %x", i, got, value)
+		}
+	}
+	if !r.submitFrame(20, true, -30, Meters{}) {
+		t.Fatal("native refused scalar frame")
+	}
+	if field(3) != uint64(math.Float32bits(-25)) || field(4) != 0 || field(5) != 0 || field(6) != 0 || field(7) != 0 {
+		t.Fatal("native scalar frame retained array data or lost legacy display mapping")
+	}
 }
