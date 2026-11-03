@@ -1,9 +1,10 @@
+import { attachDiagramCanvas } from './diagram-canvas.js';
 const main = document.querySelector('main');
 const title = document.querySelector('#page-title');
 const theme = document.querySelector('#theme');
 const media = matchMedia('(prefers-color-scheme: dark)');
-const names = { brand: '品牌', tokens: '设计 Token', components: '组件状态', architecture: '架构与流程' };
-let data, selectedDiagram, scale = 1;
+const names = { brand: '品牌', tokens: '设计 Token', components: '组件状态', pages: '页面预览', architecture: '架构与流程' };
+let data, selectedDiagram, selectedPage, activeCanvas;
 const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 function sourceLinks(paths) {
   return `<div class="source-list">${paths.map(path => `<a href="${data.sourceIndex[path].url}" target="_blank" rel="noopener">${escape(path)}</a>`).join('')}</div>`;
@@ -53,24 +54,49 @@ function renderComponents() {
   select.addEventListener('change',()=>choose(select.value));
   document.querySelectorAll('input[name="tool"]').forEach(input=>input.addEventListener('change',()=>choose(input.value)));
 }
+function renderPages() {
+  const capture = data.nativePreviews;
+  if (!capture) {
+    main.innerHTML = `<p>尚未采集原生页面。</p><pre>script/capture_workbench.swift --bundle /absolute/path/MiMac.app
+./script/workbench.sh --build</pre>`;
+    return;
+  }
+  selectedPage ||= capture.pages[0].id;
+  const page = capture.pages.find(page => page.id === selectedPage) || capture.pages[0];
+  const date = new Date(page.capturedAt).toLocaleString('zh-CN', { hour12: false });
+  main.innerHTML = `<div class="preview-navigation" role="group" aria-label="选择原生页面">${capture.pages.map(item => `<button data-preview="${escape(item.id)}" aria-pressed="${item.id === page.id}">${escape(item.title)}</button>`).join('')}</div>
+    <figure class="native-preview"><a href="${escape(page.url)}" target="_blank" rel="noopener" aria-label="打开${escape(page.title)}原始截图"><img src="${escape(page.url)}" width="${page.width}" height="${page.height}" alt="MiMac ${escape(page.title)}原生窗口，${escape(page.state)}"></a><figcaption><span>${escape(page.title)}，${escape(page.state)}</span><a href="${escape(page.url)}" download>下载原图</a></figcaption></figure>
+    <details><summary>采集信息</summary><dl class="facts"><dt>采集时间</dt><dd>${escape(date)}</dd><dt>窗口</dt><dd>${capture.window.width} × ${capture.window.height} pt</dd><dt>图片</dt><dd>${page.width} × ${page.height} px</dd><dt>磁盘程序 SHA256</dt><dd><code>${escape(capture.app.executableSHA256)}</code></dd></dl>${sourceLinks(page.sourcePaths)}</details>`;
+  document.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', () => { selectedPage = button.dataset.preview; renderPages(); }));
+}
 function renderArchitecture() {
   selectedDiagram ||= data.diagrams[0].id;
   main.innerHTML = `<p class="intro muted">MyGo 宿主，最小通用核心，独立设备与语音适配器。Siri 材质作为可选显示适配器，仅在已验证的系统版本加载。</p><div class="diagram-list"><div class="diagram-nav" role="group" aria-label="选择流程图">${data.diagrams.map(d=>`<button data-diagram="${escape(d.id)}" aria-pressed="false">${escape(d.title)}</button>`).join('')}</div><section class="diagram-panel" id="diagram-panel" aria-live="polite"></section></div>`;
-  document.querySelectorAll('[data-diagram]').forEach(button=>button.addEventListener('click',()=>{selectedDiagram=button.dataset.diagram;scale=1;renderDiagram();}));
+  document.querySelectorAll('[data-diagram]').forEach(button=>button.addEventListener('click',()=>{selectedDiagram=button.dataset.diagram;renderDiagram();}));
   renderDiagram();
 }
 function renderDiagram() {
+  activeCanvas?.destroy();
+  activeCanvas = null;
   const d = data.diagrams.find(item=>item.id===selectedDiagram);
   document.querySelectorAll('[data-diagram]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.diagram===selectedDiagram)));
-  document.querySelector('#diagram-panel').innerHTML = `<div class="toolbar"><h2>${escape(d.title)}</h2><div class="zoom-actions"><button id="zoom-out" aria-label="缩小图表">−</button><button id="zoom-fit">原始大小</button><button id="zoom-in" aria-label="放大图表">＋</button><button id="download-svg">导出 SVG</button></div></div><p class="diagram-summary">${escape(d.summary)}</p><div class="diagram-viewport pele" tabindex="0" role="region" aria-label="${escape(d.title)}，可滚动查看">${d.svg}</div>${sourceLinks(d.sourcePaths)}<details><summary>Mermaid 源码</summary><pre>${escape(d.source)}</pre><button id="download-source">下载源码</button></details>`;
+  document.querySelector('#diagram-panel').innerHTML = `<div class="toolbar"><h2>${escape(d.title)}</h2><div class="zoom-actions"><button id="zoom-out" aria-label="缩小图表">−</button><output id="zoom-value" class="zoom-value" aria-label="缩放比例"></output><button id="zoom-fit">适应视图</button><button id="zoom-reset">100%</button><button id="zoom-in" aria-label="放大图表">＋</button><button id="download-svg">导出 SVG</button></div></div><p class="diagram-summary">${escape(d.summary)}</p><div class="diagram-viewport pele" tabindex="0" role="region" aria-label="${escape(d.title)}，拖拽平移，滚轮或捏合缩放">${d.svg}</div>${sourceLinks(d.sourcePaths)}<details><summary>Mermaid 源码</summary><pre>${escape(d.source)}</pre><button id="download-source">下载源码</button></details>`;
   const viewport = document.querySelector('.diagram-viewport');
   const svg = viewport.querySelector('svg');
-  // Keep the diagram's actual type size; fitting a wide graph into its pane
-  // would silently turn readable labels into unreadable 6pt labels.
-  const resize = () => { svg.style.width = `${d.width*scale}px`; document.querySelector('#zoom-out').disabled=scale<=1; };
-  document.querySelector('#zoom-in').onclick=()=>{scale=Math.min(3,scale+.25);resize();};
-  document.querySelector('#zoom-out').onclick=()=>{scale=Math.max(1,scale-.25);resize();};
-  document.querySelector('#zoom-fit').onclick=()=>{scale=1;resize();};
+  const zoomOut = document.querySelector('#zoom-out');
+  const zoomIn = document.querySelector('#zoom-in');
+  activeCanvas = attachDiagramCanvas(viewport, svg, {
+    width: d.width, height: d.height,
+    onScaleChange: value => {
+      document.querySelector('#zoom-value').value = `${Math.round(value * 100)}%`;
+      zoomOut.disabled = value <= 0.1;
+      zoomIn.disabled = value >= 4;
+    },
+  });
+  zoomIn.onclick = activeCanvas.zoomIn;
+  zoomOut.onclick = activeCanvas.zoomOut;
+  document.querySelector('#zoom-fit').onclick = activeCanvas.fit;
+  document.querySelector('#zoom-reset').onclick = activeCanvas.reset;
   document.querySelector('#download-source').onclick=()=>download(`${d.id}.mmd`,d.source,'text/plain');
   document.querySelector('#download-svg').onclick=()=>{
     const copy=svg.cloneNode(true), computed=getComputedStyle(svg);
@@ -87,7 +113,6 @@ function renderDiagram() {
     copy.insertBefore(background,copy.firstChild);
     download(`${d.id}.svg`,new XMLSerializer().serializeToString(copy),'image/svg+xml');
   };
-  resize();
 }
 function download(name,content,type) {
   const url=URL.createObjectURL(new Blob([content],{type}));
@@ -95,11 +120,13 @@ function download(name,content,type) {
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function route() {
+  activeCanvas?.destroy();
+  activeCanvas = null;
   const key=location.hash.slice(1)||'brand';
   if (!(key in names)) { location.hash='brand'; return; }
   title.textContent=names[key];document.title=`${names[key]} | MiMac 工作台`;
   document.querySelectorAll('nav a').forEach(a=>a.setAttribute('aria-current',a.hash===`#${key}`?'page':'false'));
-  ({brand:renderBrand,tokens:renderTokens,components:renderComponents,architecture:renderArchitecture})[key]();
+  ({brand:renderBrand,tokens:renderTokens,components:renderComponents,pages:renderPages,architecture:renderArchitecture})[key]();
 }
 try {
   const response=await fetch('data.json');if(!response.ok)throw new Error('项目数据不可用');data=await response.json();

@@ -2,14 +2,13 @@ flowchart LR
     mygo["MyGo 宿主：主线程与事件循环"]
     shell["cmd/mimac 组合根"]
     ui["MyGo 设置窗口与菜单栏托盘"]
-    plugins["pluginrt 固定生命周期运行时"]
-    core["bridge.Core 单所有者状态"]
+    plugins["pluginrt 固定清单生命周期\n串行调用；不另建事件循环"]
+    core["bridge.Core 唯一设备动作与语音会话状态"]
     hid["Xiaomi HID 适配器"]
     keys["系统按键输出适配器"]
     audio["音频会话与路由适配器"]
     routeFactory["工具注册的 audioRouteFactory 能力"]
-    routeOwner["共用 liveAudioConnection
-准备、会话与关闭的所有权"]
+    routeOwner["liveAudioConnection + audio-session Runtime\n连接 owner 与会话 source/sink owner 分层"]
     tools["语音工具发现与动作快照"]
     text["辅助功能文本输出适配器"]
     prefs["show_voice_overlay 持久偏好"]
@@ -28,7 +27,7 @@ flowchart LR
     shell --> keys
     shell --> routeFactory
     routeFactory --> routeOwner
-    routeFactory --> contracts["Apple / 豆包 / 微信薄适配\n各自身份、输入源和偏好协议"]
+    routeFactory --> contracts["Apple / 豆包 / WeType 薄适配\n按工具处理身份、输入源与偏好协议"]
     contracts --> routeOwner
     routeOwner --> audio
     shell --> tools

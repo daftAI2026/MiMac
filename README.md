@@ -24,4 +24,4 @@ go test ./...
 
 图标源文件为 `Assets/Brand/MiMac.icon`，可用 `./script/export_icon.sh` 更新同源 PNG。有 Xcode 时 MyGo 编译原生图标；否则使用 PNG。
 
-本地开发工作台集中查看品牌、设计 token、组件状态及架构流程。运行 `./script/workbench.sh`，打开终端显示的本地地址；需要 Node.js 20+，不参与 App 构建。详见 [工作台入口](tools/workbench/README.md)。
+本地开发工作台集中查看品牌、设计 token、组件状态、原生页面截图及可拖拽缩放的架构流程。运行 `./script/workbench.sh`，打开终端显示的本地地址；需要 Node.js 20+，不参与 App 构建。详见 [工作台入口](tools/workbench/README.md)。

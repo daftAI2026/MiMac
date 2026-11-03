@@ -12,3 +12,6 @@ flowchart TD
     blocked -.-> future["未来适配：先确认目标身份与动作语义"]
     future -.-> intent["分别表达：听写、实时对话、语音消息、文字转语音"]
     intent -.-> submit["分别核实目标提交规则；未知时不推断"]
+
+    cancelBoundary["WeType 中 Esc 已观察为提交；\n不能当作取消或撤回目标文字。"]
+    cancelBoundary -.-> submit

@@ -1,13 +1,15 @@
 flowchart LR
-    host["cmd/mimac 组合根"] --> runtime["pluginrt：固定 manifests"]
+    mygo["MyGo：主线程、菜单、窗口与事件循环"] --> host["cmd/mimac 组合根"]
+    host -->|串行生命周期调用| runtime["pluginrt：固定 manifests\n不另建事件循环或 goroutine"]
     core["bridge"]
     keyout["key-output"]
     hid["xiaomi-hid"]
     remote["remote-control"]
     audioout["audio-output"]
     audiosession["audio-session"]
-    voice["内置语音工具模块"]
-    cleanup["Start 返回 StopFunc；失败清理纳入回滚"]
+    voice["内置语音工具 manifests"]
+    cleanup["Start 所有路径须返回非空 StopFunc\n失败时 Runtime 用它回滚"]
+
     keyout -->|依赖| core
     hid -->|依赖| core
     remote -->|依赖| core
@@ -15,8 +17,8 @@ flowchart LR
     audioout -->|依赖| core
     audiosession -->|依赖| core
     audiosession -->|依赖| audioout
-    runtime -->|先启动依赖| core
-    runtime -->|逆序停止| remote
-    runtime -->|清理失败则故障并固定依赖| audiosession
-    voice -->|无模块依赖| runtime
+    runtime -->|按依赖序 Enable| core
+    runtime -->|按逆依赖序 Close| remote
+    runtime -->|清理失败则故障并保留依赖| audiosession
+    runtime -->|无模块依赖| voice
     runtime --> cleanup

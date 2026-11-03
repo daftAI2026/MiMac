@@ -4,6 +4,7 @@ import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { render } from 'pele';
+import { nativePreviews } from './native-previews.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -28,7 +29,8 @@ for (const item of manifest) {
   for (const path of item.sourcePaths) sourcePaths.add(path);
 }
 for (const path of [
-  'cmd/mimac/settings_mapping.go', 'cmd/mimac/settings_voice.go', 'cmd/mimac/remote.go',
+  'cmd/mimac/settings.go', 'cmd/mimac/settings_mapping.go', 'cmd/mimac/settings_voice.go',
+  'cmd/mimac/native_preferences.go', 'cmd/mimac/settings_about.go', 'cmd/mimac/remote.go',
   'internal/platform/readyindicator/native/ReadyIndicator.m',
 ]) sourcePaths.add(path);
 await mkdir(resolve(out, 'source'), { recursive: true });
@@ -44,6 +46,7 @@ for (const path of sourcePaths) {
 }
 data.diagrams = diagrams;
 data.sourceIndex = sourceIndex;
+data.nativePreviews = await nativePreviews(out);
 data.revision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 data.builtAt = new Date().toISOString();
 data.renderer = 'Pele 1.12.0';
@@ -53,7 +56,7 @@ const paletteCSS = Object.entries(data.palettes).map(([mode, palette]) =>
 ).join('\n');
 const numericCSS = `:root {\n${Object.entries(data.tokens).map(([name, value]) => `  --${name}: ${value}px;`).join('\n')}\n}`;
 await writeFile(resolve(out, 'tokens.css'), `${numericCSS}\n${paletteCSS}\n`);
-for (const file of ['index.html', 'style.css', 'app.js']) await cp(resolve(here, file), resolve(out, file));
+for (const file of ['index.html', 'style.css', 'app.js', 'diagram-canvas.js']) await cp(resolve(here, file), resolve(out, file));
 await mkdir(resolve(out, 'brand'), { recursive: true });
 for (const file of ['mark.svg', 'app-icon.png', 'about-icon.png', 'tray.png']) {
   await cp(resolve(root, 'Assets/Brand', file), resolve(out, 'brand', file));

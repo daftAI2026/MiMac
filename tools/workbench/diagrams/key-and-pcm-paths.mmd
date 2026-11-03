@@ -1,35 +1,44 @@
 flowchart LR
-    hid["HID 监控器产生物理边沿"] --> coordinator["MyGo 主线程上的协调器"]
-    coordinator --> resolve["解析当前映射或已选工具动作"]
-    resolve --> core["bridge.Core 冻结动作计划与会话策略"]
-    core --> keyfx["按键按下/释放或原子 tap 效果"]
-    keyfx --> keyout["系统按键输出适配器"]
-    keyout --> target["当前外部语音工具"]
+    hid["Xiaomi HID monitor\n物理按键边沿"] --> coordinator["MyGo 主线程协调器"]
+    coordinator --> resolve["解析当前映射或工具动作"]
+    resolve --> core["bridge.Core\n冻结唯一动作计划与会话策略"]
+    core -->|按键效果| keyout["系统按键输出适配器"]
+    keyout --> target["当前选定的外部语音工具"]
 
-    tool["已选工具注册的 audioRouteFactory"] --> route["liveAudioConnection 准备与持有路由"]
-    route --> identity["应用身份与空闲检查\n冷进程无音频客户端不等于不存在"]
-    identity --> prepare
-    core --> prepare["音频路由就绪时发出 PrepareSource"]
-    prepare --> session["audio-session Runtime 持有本次会话资源"]
-    session --> source["设备 PCM Source"]
-    source --> pcm["有界 PCM 块"]
-    pcm --> sink["配置的 sink：Apple Speech 或豆包 / 微信兼容路由"]
-    sink --> receiver["兼容路由只向实际收音的精确 PID / UID 投递"]
-    receiver --> drain["本地 drain 与可选最终转写"]
-    drain --> text["Apple 路由可投递到按下时捕获的文本目标"]
+    tool["当前工具注册的 audioRouteFactory"] --> connection["liveAudioConnection\n准备并持有共享路由"]
+    connection --> identity["准备音频端点；确认目标应用身份与空闲态"]
+    identity -->|路由就绪| prepare["Core 发出 PrepareSource"]
+    prepare --> runtime["audio-session Runtime\n拥有本会话的 Source 和 Sink"]
+    remoteAudio["ATVV 控制/音频通知"] --> source["当前 ATVV Source\n有界 PCM 环形队列"]
+    runtime --> resources["准备 Source/Sink，校验格式与 source health"]
+    source --> resources
+    resources --> wait["可选 WaitReceiver\n核验活动接收器的精确 PID/UID"]
+    wait -->|就绪| prepared["SourcePrepared"]
+    prepared --> open["Core 开启本 token 的 PCM gate"]
+    open --> read["Runtime Source.Read"]
+    source --> read
+    read --> pcm["有界 PCM 数据块"]
+    pcm --> sink["配置的 Sink：Apple Speech 或兼容音频路由"]
+    sink --> targetInput["目标输入路由\n本地 Sink 接受不证明目标已消费"]
+    read --> drain["本地 drain 与可选最终转写"]
+    drain --> text["Apple 路由可向按下时捕获的文本目标投递一次"]
 
-    pcm --> meter["同次 Read 的 RMS / peak 与可选频谱\n仅当前 token 快照，不保存录音"]
-    core --> snapshot["当前 Core Snapshot 与完整 SessionToken"]
+    source -.-> overflow["ErrSourceQueueFull 时：typed QueueOverflowError\nSnapshot 是冻结的 SourceSnapshot 诊断"]
+    wait -.-> waitTrace["可选 I/O 明细跨度：receiver.wait\n不等于收音就绪或 PCM 消费确认"]
+    overflow -.-> noFix["快照帮助定位时序；不会改变\n环形队列容量、节奏或交付"]
+
+    pcm --> meter["同次 Read 的 RMS/peak 与可选频谱\n仅当前 token；不保存录音"]
+    core --> snapshot["Core Snapshot 与完整 SessionToken"]
     meter --> projection["Host 语音呈现投影\n仅 Preparing / Capturing / Draining"]
     snapshot --> projection
     projection --> preference["show_voice_overlay 偏好"]
     preference --> panel["MyGo 非激活 Panel\n鼠标穿透；可见时 30 Hz"]
     panel --> gate{"arm64 macOS 27.0.1 build 26A434？"}
-    gate -->|是| renderer["siriglass 可选材质\n当前频谱进入 audioMeters 数组"]
+    gate -->|是| renderer["可选 siriglass 材质\n当前频谱进入 audioMeters 数组"]
     gate -->|否| unsupported["不支持：只关闭显示"]
-    renderer --> operation{"native 显示操作成功？"}
+    renderer --> operation{"原生显示调用成功？"}
     operation -->|是| material["呈现当前会话材质"]
-    operation -->|否| failure["只记录显示故障；音频会话继续"]
+    operation -->|否| failure["记录显示故障；音频会话继续"]
 
-    renderer -.-> vendor["未来：厂商语音条接管"]
-    renderer -.-> siri["未来：完整 Siri 前景、thinking 与业务语义"]
+    renderer -.-> vendor["后续：厂商语音条接管"]
+    renderer -.-> siri["后续：完整 Siri 前景、思考状态与业务语义"]

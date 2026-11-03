@@ -12,3 +12,5 @@ flowchart TD
     quit["OnBeforeQuit"] --> audio["在后台清理音频后再继续退出"]
     audio -->|清理成功| modules["逆依赖序关闭插件并销毁 tray"]
     audio -->|清理失败| retry["保留宿主并允许稍后重试关闭"]
+    live["最新固定包正常退出已验；\n断连重连、睡眠/唤醒、锁屏/解锁及撤销/恢复权限的现场矩阵仍待验"]
+    modules -.-> live
