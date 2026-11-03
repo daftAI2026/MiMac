@@ -578,5 +578,14 @@ func (t *voiceOverlayTrace) traceResources(token bridge.SessionToken, r audioses
 			r.Sink = wrapped
 		}
 	}
+	if r.WaitReceiver != nil {
+		waitReceiver := r.WaitReceiver
+		r.WaitReceiver = func(ctx context.Context) error {
+			call := calls.trace.begin(token, "receiver.wait", 0)
+			err := waitReceiver(ctx)
+			calls.trace.end(call, 0, err)
+			return err
+		}
+	}
 	return r
 }

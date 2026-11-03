@@ -498,8 +498,38 @@ func TestSourceQueueOverflowAtFixedSampleCapacity(t *testing.T) {
 					t.Fatalf("packet %d rejected before capacity: %v", i, err)
 				}
 			}
-			if err := source.HandleAudio(key, []byte{0x00}); !errors.Is(err, ErrSourceQueueFull) {
-				t.Fatalf("overflow error = %v, want ErrSourceQueueFull", err)
+			overflowErr := source.HandleAudio(key, []byte{0x00})
+			if !errors.Is(overflowErr, ErrSourceQueueFull) {
+				t.Fatalf("overflow error = %v, want ErrSourceQueueFull", overflowErr)
+			}
+			if got, want := overflowErr.Error(), ErrSourceQueueFull.Error(); got != want {
+				t.Fatalf("overflow error text = %q, want original sentinel text %q", got, want)
+			}
+			var typed *QueueOverflowError
+			if !errors.As(overflowErr, &typed) {
+				t.Fatalf("overflow error type = %T, want *QueueOverflowError", overflowErr)
+			}
+			snapshot := typed.Snapshot()
+			wantDecoded := uint64(tc.packetSize * 2 * tc.packetCount)
+			wantPackets := uint64(tc.packetCount + 1) // Includes the rejected overflow notification.
+			if snapshot.CapacitySamples != pcmQueueSamples || snapshot.QueuedSamples != pcmQueueSamples ||
+				snapshot.IncomingSamples != 2 || snapshot.HighWaterSamples != pcmQueueSamples ||
+				snapshot.SampleRate != 16000 ||
+				snapshot.DecodedSamples != wantDecoded || snapshot.ReadSamples != 0 || snapshot.Packets != wantPackets {
+				t.Fatalf("overflow snapshot = %+v, want capacity/queued/highwater=%d incoming=2 decoded=%d read=0 packets=%d",
+					snapshot, pcmQueueSamples, wantDecoded, wantPackets)
+			}
+			if snapshot.StartAt.IsZero() || snapshot.FirstPacketAt.IsZero() || snapshot.OverflowAt.IsZero() ||
+				snapshot.StartAt.After(snapshot.FirstPacketAt) || snapshot.FirstPacketAt.After(snapshot.OverflowAt) {
+				t.Fatalf("overflow timestamps are missing or out of order: %+v", snapshot)
+			}
+			if snapshot.MonotonicElapsed != snapshot.OverflowAt.Sub(snapshot.StartAt) || snapshot.MonotonicElapsed < 0 {
+				t.Fatalf("monotonic elapsed = %s, want overflow-start interval %s", snapshot.MonotonicElapsed, snapshot.OverflowAt.Sub(snapshot.StartAt))
+			}
+			mutableCopy := typed.Snapshot()
+			mutableCopy.QueuedSamples = 0
+			if got := typed.Snapshot().QueuedSamples; got != pcmQueueSamples {
+				t.Fatalf("mutating returned snapshot changed frozen error snapshot queued=%d", got)
 			}
 			if _, err := source.Read(context.Background(), make([]int16, 4)); !errors.Is(err, ErrSourceQueueFull) {
 				t.Fatalf("Read after overflow = %v, want ErrSourceQueueFull", err)
@@ -507,7 +537,86 @@ func TestSourceQueueOverflowAtFixedSampleCapacity(t *testing.T) {
 			if err := source.Close(); err != nil {
 				t.Fatal(err)
 			}
+			if got := typed.Snapshot().QueuedSamples; got != pcmQueueSamples {
+				t.Fatalf("overflow error snapshot changed after Source.Close: queued=%d", got)
+			}
 		})
+	}
+}
+
+func TestSourceSnapshotIsValueCopyAndCountsDecodedAndReadSamples(t *testing.T) {
+	key := StreamKey{Generation: 10, Session: 18}
+	source := newArmedSource(t, key, newFakeStreamTransport())
+	if got := source.Snapshot().SampleRate; got != 0 {
+		t.Fatalf("sample rate before AUDIO_START = %d, want 0", got)
+	}
+	start16k(t, source, key)
+	if err := source.HandleAudio(key, []byte{0x70}); err != nil {
+		t.Fatal(err)
+	}
+	beforeRead := source.Snapshot()
+	if beforeRead.CapacitySamples != pcmQueueSamples || beforeRead.QueuedSamples != 2 || beforeRead.SampleRate != 16000 ||
+		beforeRead.IncomingSamples != 0 || beforeRead.HighWaterSamples != 2 ||
+		beforeRead.DecodedSamples != 2 || beforeRead.ReadSamples != 0 || beforeRead.Packets != 1 {
+		t.Fatalf("snapshot after one 1-byte packet = %+v", beforeRead)
+	}
+	if beforeRead.StartAt.IsZero() || beforeRead.FirstPacketAt.IsZero() || beforeRead.StartAt.After(beforeRead.FirstPacketAt) ||
+		!beforeRead.OverflowAt.IsZero() || beforeRead.MonotonicElapsed != 0 {
+		t.Fatalf("non-overflow snapshot timestamps = %+v", beforeRead)
+	}
+
+	pcm := make([]int16, 1)
+	n, err := source.Read(context.Background(), pcm)
+	if err != nil || n != 1 {
+		t.Fatalf("Read() = (%d, %v), want one sample", n, err)
+	}
+	if err := source.HandleAudio(key, []byte{0x70}); err != nil {
+		t.Fatal(err)
+	}
+	afterRead := source.Snapshot()
+	if afterRead.QueuedSamples != 3 || afterRead.HighWaterSamples != 3 ||
+		afterRead.DecodedSamples != 4 || afterRead.ReadSamples != 1 || afterRead.Packets != 2 {
+		t.Fatalf("snapshot after read and second packet = %+v", afterRead)
+	}
+	if beforeRead.QueuedSamples != 2 || beforeRead.DecodedSamples != 2 || beforeRead.ReadSamples != 0 || beforeRead.Packets != 1 {
+		t.Fatalf("earlier snapshot changed after later Source operations: %+v", beforeRead)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSourceDiagnosticsPreserveSteadyWakeAllocation(t *testing.T) {
+	key := StreamKey{Generation: 10, Session: 19}
+	source := newArmedSource(t, key, newFakeStreamTransport())
+	start16k(t, source, key)
+	packet := []byte{0x70}
+	pcm := make([]int16, 2)
+	ctx := context.Background()
+	if err := source.HandleAudio(key, packet); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := source.Read(ctx, pcm); err != nil || n != 2 {
+		t.Fatalf("warmup Read() = (%d, %v), want two samples", n, err)
+	}
+
+	var handleErr, readErr error
+	var readSamples int
+	allocs := testing.AllocsPerRun(100, func() {
+		handleErr = source.HandleAudio(key, packet)
+		readSamples, readErr = source.Read(ctx, pcm)
+	})
+	if handleErr != nil || readErr != nil || readSamples != 2 {
+		t.Fatalf("steady callback/read = (%v, %d, %v), want nil/2/nil", handleErr, readSamples, readErr)
+	}
+	// The existing signalLocked broadcast replaces its wake channel once per
+	// packet. A frozen pre-diagnostics source also allocates exactly one object;
+	// the counters and timestamps must not add allocations to that path.
+	if allocs != 1 {
+		t.Fatalf("steady audio callback/read allocated %v objects, want the existing one wake channel", allocs)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

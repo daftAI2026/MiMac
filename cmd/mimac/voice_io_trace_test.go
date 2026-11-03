@@ -178,6 +178,116 @@ func TestVoiceIOSpansExposeBlockedCalls(t *testing.T) {
 	}
 }
 
+func TestVoiceIOTraceExposesBlockedReceiverWaitWithoutChangingResult(t *testing.T) {
+	trace := &voiceOverlayTrace{}
+	token := voiceIOTraceTestToken(t, 83)
+	entered, release, done := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	waitErr := errors.New("private receiver wait failure")
+	var calls int
+	var receivedContext context.Context
+	resources := audiosession.Resources{WaitReceiver: func(ctx context.Context) error {
+		calls++
+		receivedContext = ctx
+		close(entered)
+		<-release
+		return waitErr
+	}}
+	wrapped := trace.traceResources(token, resources)
+	if calls != 0 {
+		t.Fatal("WaitReceiver ran during decoration")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var gotErr error
+	go func() {
+		defer close(done)
+		gotErr = wrapped.WaitReceiver(ctx)
+	}()
+	waitHostSignal(t, entered)
+	if calls != 1 || receivedContext != ctx {
+		t.Fatalf("WaitReceiver passthrough: calls=%d same_context=%t", calls, receivedContext == ctx)
+	}
+
+	blocked := trace.io.snapshot()
+	if len(blocked.Entries) != 1 {
+		t.Fatalf("blocked wait entry count=%d", len(blocked.Entries))
+	}
+	entry := blocked.Entries[0]
+	if entry.Operation != "receiver.wait" || !entry.FinishedAt.IsZero() || entry.RequestedSamples != 0 ||
+		entry.Samples != 0 || entry.SamplesKnown {
+		t.Fatalf("blocked wait span has incorrect fields: %+v", entry)
+	}
+	if len(blocked.Sessions) != 1 || blocked.Sessions[0].CallsStarted != 1 ||
+		blocked.Sessions[0].CallsCompleted != 0 || blocked.Sessions[0].CallsInFlight != 1 {
+		t.Fatalf("blocked wait missing from generic call summary: %+v", blocked.Sessions)
+	}
+
+	var inFlightReport bytes.Buffer
+	if err := trace.write(&inFlightReport); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(inFlightReport.Bytes(), []byte(waitErr.Error())) {
+		t.Fatal("in-flight report retained a receiver error")
+	}
+
+	release <- struct{}{}
+	waitHostSignal(t, done)
+	if gotErr != waitErr || calls != 1 || receivedContext != ctx {
+		t.Fatalf("WaitReceiver result changed: calls=%d same_context=%t err=%v", calls, receivedContext == ctx, gotErr)
+	}
+	if !entry.FinishedAt.IsZero() {
+		t.Fatal("late wait completion mutated an earlier snapshot")
+	}
+
+	after := trace.io.snapshot()
+	if len(after.Entries) != 1 || after.Entries[0].FinishedAt.IsZero() ||
+		after.Entries[0].Result != "error" || after.Entries[0].SamplesKnown {
+		t.Fatalf("completed wait span incorrect: %+v", after.Entries)
+	}
+	if len(after.Sessions) != 1 || after.Sessions[0].CallsCompleted != 1 ||
+		after.Sessions[0].CallsInFlight != 0 || after.Sessions[0].ErrorCalls != 1 {
+		t.Fatalf("completed wait missing from generic summary: %+v", after.Sessions)
+	}
+
+	var report bytes.Buffer
+	if err := trace.write(&report); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(report.Bytes(), []byte("receiver.wait")) ||
+		!bytes.Contains(report.Bytes(), []byte(`"result":"error"`)) ||
+		bytes.Contains(report.Bytes(), []byte(waitErr.Error())) {
+		t.Fatal("receiver wait report missing operation/result or retained raw error text")
+	}
+}
+
+func TestVoiceIOTracePreservesNilAndDisabledReceiverWait(t *testing.T) {
+	token := voiceIOTraceTestToken(t, 84)
+	trace := &voiceOverlayTrace{}
+	if got := trace.traceResources(token, audiosession.Resources{}); got.WaitReceiver != nil {
+		t.Fatal("tracing invented a receiver wait callback")
+	}
+
+	waitErr := errors.New("disabled receiver wait sentinel")
+	var calls int
+	var receivedContext context.Context
+	resources := audiosession.Resources{WaitReceiver: func(ctx context.Context) error {
+		calls++
+		receivedContext = ctx
+		return waitErr
+	}}
+	var disabled *voiceOverlayTrace
+	got := disabled.traceResources(token, resources)
+	if got.WaitReceiver == nil {
+		t.Fatal("disabled tracing removed the receiver wait callback")
+	}
+	ctx := context.Background()
+	if err := got.WaitReceiver(ctx); err != waitErr || calls != 1 || receivedContext != ctx {
+		t.Fatalf("disabled receiver wait passthrough: calls=%d same_context=%t err=%v", calls, receivedContext == ctx, err)
+	}
+}
+
 type voiceIOTestSource struct {
 	read func(context.Context, []int16) (int, error)
 }

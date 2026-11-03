@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 )
 
 const (
@@ -46,6 +47,47 @@ type StreamTransport interface {
 	Close() error
 }
 
+// SourceSnapshot is a value copy of one Source's bounded queue and lifetime
+// counters. QueuedSamples is the current occupancy; IncomingSamples is the
+// upper-bound sample request of the packet that overflowed, or zero when no
+// overflow has occurred. Packets counts nonempty, size-valid audio
+// notifications, including the overflowing notification. The timestamps are
+// host-side Go times captured while handling AUDIO_START, the first packet,
+// and overflow; they are not hardware capture timestamps. MonotonicElapsed is
+// the AUDIO_START-to-overflow interval from Go's monotonic clock.
+type SourceSnapshot struct {
+	CapacitySamples  int           `json:"capacity_samples"`
+	QueuedSamples    int           `json:"queued_samples"`
+	IncomingSamples  int           `json:"incoming_samples"`
+	HighWaterSamples int           `json:"high_water_samples"`
+	SampleRate       int           `json:"sample_rate_hz"`
+	DecodedSamples   uint64        `json:"decoded_samples"`
+	ReadSamples      uint64        `json:"read_samples"`
+	Packets          uint64        `json:"packets"`
+	StartAt          time.Time     `json:"start_at,omitempty"`
+	FirstPacketAt    time.Time     `json:"first_packet_at,omitempty"`
+	OverflowAt       time.Time     `json:"overflow_at,omitempty"`
+	MonotonicElapsed time.Duration `json:"monotonic_elapsed_ns,omitempty"`
+}
+
+// QueueOverflowError reports a full PCM ring while preserving the original
+// ErrSourceQueueFull text and errors.Is behavior. Snapshot returns the frozen
+// state captured at the overflow boundary.
+type QueueOverflowError struct {
+	snapshot SourceSnapshot
+}
+
+func (e *QueueOverflowError) Error() string { return ErrSourceQueueFull.Error() }
+
+func (e *QueueOverflowError) Unwrap() error { return ErrSourceQueueFull }
+
+func (e *QueueOverflowError) Snapshot() SourceSnapshot {
+	if e == nil {
+		return SourceSnapshot{}
+	}
+	return e.snapshot
+}
+
 type sourceState uint8
 
 const (
@@ -85,6 +127,16 @@ type Source struct {
 	pcm   [pcmQueueSamples]int16
 	head  int
 	count int
+
+	startAt          time.Time
+	firstPacketAt    time.Time
+	overflowAt       time.Time
+	monotonicElapsed time.Duration
+	incomingSamples  int
+	highWaterSamples int
+	decodedSamples   uint64
+	readSamples      uint64
+	packets          uint64
 }
 
 // NewSource creates a source for the host's session key. The caller must arm
@@ -171,6 +223,7 @@ func (s *Source) HandleControl(key StreamKey, raw []byte) error {
 		}
 		s.codec = message.Codec
 		s.streamID = message.StreamID
+		s.startAt = time.Now()
 		s.started = true
 		s.state = sourceActive
 		s.hasSync = false
@@ -234,9 +287,13 @@ func (s *Source) HandleAudio(key StreamKey, raw []byte) error {
 	if len(raw) == 0 || len(raw) > maxAudioPacket {
 		return s.failLocked(ErrMalformedPacket)
 	}
+	if s.firstPacketAt.IsZero() {
+		s.firstPacketAt = time.Now()
+	}
+	s.packets++
 	packetSampleCount := len(raw) * 2
 	if packetSampleCount > len(s.pcm)-s.count {
-		return s.failLocked(ErrSourceQueueFull)
+		return s.failQueueOverflowLocked(packetSampleCount)
 	}
 
 	var packet [maxPacketSamples]int16
@@ -248,8 +305,55 @@ func (s *Source) HandleAudio(key StreamKey, raw []byte) error {
 	first := copy(s.pcm[tail:], packet[:count])
 	copy(s.pcm[:], packet[first:count])
 	s.count += count
+	s.decodedSamples += uint64(count)
+	if s.count > s.highWaterSamples {
+		s.highWaterSamples = s.count
+	}
 	s.signalLocked()
 	return nil
+}
+
+// Snapshot returns current queue occupancy and cumulative Source counters.
+// It copies timestamps and counters while holding the same lock as callbacks
+// and reads; later Source operations do not mutate the returned value.
+func (s *Source) Snapshot() SourceSnapshot {
+	if s == nil {
+		return SourceSnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func (s *Source) snapshotLocked() SourceSnapshot {
+	sampleRateHz := 0
+	if s.started {
+		sampleRateHz, _ = sampleRate(s.codec)
+	}
+	return SourceSnapshot{
+		CapacitySamples:  len(s.pcm),
+		QueuedSamples:    s.count,
+		IncomingSamples:  s.incomingSamples,
+		HighWaterSamples: s.highWaterSamples,
+		SampleRate:       sampleRateHz,
+		DecodedSamples:   s.decodedSamples,
+		ReadSamples:      s.readSamples,
+		Packets:          s.packets,
+		StartAt:          s.startAt,
+		FirstPacketAt:    s.firstPacketAt,
+		OverflowAt:       s.overflowAt,
+		MonotonicElapsed: s.monotonicElapsed,
+	}
+}
+
+func (s *Source) failQueueOverflowLocked(incomingSamples int) error {
+	now := time.Now()
+	s.incomingSamples = incomingSamples
+	s.overflowAt = now
+	if !s.startAt.IsZero() {
+		s.monotonicElapsed = now.Sub(s.startAt)
+	}
+	return s.failLocked(&QueueOverflowError{snapshot: s.snapshotLocked()})
 }
 
 // Ready waits for the negotiated AUDIO_START codec, which supplies the actual
@@ -340,6 +444,7 @@ func (s *Source) Read(ctx context.Context, dst []int16) (int, error) {
 			}
 			s.head = (s.head + written) % len(s.pcm)
 			s.count -= written
+			s.readSamples += uint64(written)
 			s.mu.Unlock()
 			return written, nil
 		}

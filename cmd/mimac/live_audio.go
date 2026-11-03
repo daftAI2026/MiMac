@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 
 	"github.com/egoist/mygo"
+	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/voicetools"
 )
@@ -231,6 +233,14 @@ func (s *shell) blockUnpreparedLiveAudio() {
 func (s *shell) logAudioCompletion(event bridge.Event, failed bool, err error) {
 	if s.audioRequested() {
 		log.Printf("audio completion: event=%T cleanup_failed=%t error=%v", event, failed, err)
+	}
+	if s.voiceOverlay.meter.trace != nil {
+		var overflow *atvv.QueueOverflowError
+		if errors.As(err, &overflow) {
+			if data, encodeErr := json.Marshal(overflow.Snapshot()); encodeErr == nil {
+				log.Printf("audio source queue: %s", data)
+			}
+		}
 	}
 }
 
