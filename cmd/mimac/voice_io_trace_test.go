@@ -132,6 +132,15 @@ func TestVoiceIOSpansExposeBlockedCalls(t *testing.T) {
 			if len(snap.Entries) != 1 || snap.Entries[0].Operation != operation || !snap.Entries[0].FinishedAt.IsZero() || snap.Entries[0].RequestedSamples != 3 {
 				t.Fatalf("missing unfinished call: %+v", snap)
 			}
+			if len(snap.Sessions) != 1 || snap.Sessions[0].CallsStarted != 1 || snap.Sessions[0].CallsCompleted != 0 || snap.Sessions[0].CallsInFlight != 1 {
+				t.Fatalf("blocked call missing from aggregate: %+v", snap.Sessions)
+			}
+			if operation == "source.read" && snap.Sessions[0].SourceReadSamplesComplete {
+				t.Fatal("in-flight read presented as a complete sample total")
+			}
+			if operation == "sink.try_write" && snap.Sessions[0].SinkAcceptedSamplesKnown {
+				t.Fatal("in-flight write presented as a known acceptance total")
+			}
 			var report bytes.Buffer
 			if err := trace.write(&report); err != nil {
 				t.Fatal(err)
@@ -145,6 +154,16 @@ func TestVoiceIOSpansExposeBlockedCalls(t *testing.T) {
 			after := trace.io.snapshot().Entries[0]
 			if after.FinishedAt.IsZero() || after.DurationNS <= 0 || after.Call != snap.Entries[0].Call {
 				t.Fatalf("completion missing: %+v", after)
+			}
+			afterSummary := trace.io.snapshot().Sessions[0]
+			if afterSummary.CallsCompleted != 1 || afterSummary.CallsInFlight != 0 {
+				t.Fatalf("late aggregate completion missing: %+v", afterSummary)
+			}
+			if operation == "source.read" && (afterSummary.SourceReadSamples != 1 || !afterSummary.SourceReadSamplesComplete) {
+				t.Fatalf("read total not completed: %+v", afterSummary)
+			}
+			if operation == "sink.try_write" && (afterSummary.SinkBackpressureCalls != 1 || !afterSummary.SinkAcceptedSamplesKnown) {
+				t.Fatalf("backpressure acceptance semantics changed: %+v", afterSummary)
 			}
 			if !snap.Entries[0].FinishedAt.IsZero() {
 				t.Fatal("late completion mutated an earlier snapshot")
@@ -173,33 +192,183 @@ func (s *voiceIOTestSink) TryWrite(p []int16) error  { return s.write(p) }
 func (*voiceIOTestSink) Drain(context.Context) error { return nil }
 func (*voiceIOTestSink) Close() error                { return nil }
 
+func voiceIOTraceTestToken(t *testing.T, generation uint64) bridge.SessionToken {
+	t.Helper()
+	core, err := bridge.NewCore(bridge.NewAudioBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := bridge.NewDevice("voice-io-trace-test", generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []bridge.Event{
+		bridge.DeviceConnected(device), bridge.RouteAvailable(true), bridge.ScopeAvailable(true),
+	} {
+		if _, err := core.Step(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	press, err := bridge.NewPressToken(device, "voice", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := core.Step(bridge.VoiceBegan(press))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, effect := range effects {
+		if prepared, ok := effect.(bridge.PrepareSourceEffect); ok {
+			return prepared.Token
+		}
+	}
+	t.Fatal("voice start did not create a preparation token")
+	return bridge.SessionToken{}
+}
+
+func TestVoiceIOSummariesSurviveDetailCapAcrossSessions(t *testing.T) {
+	var trace voiceIOTrace
+	trace.prepare()
+	firstToken := voiceIOTraceTestToken(t, 81)
+	secondToken := voiceIOTraceTestToken(t, 82)
+	for range voiceIOTraceLimit - voiceIOTraceLifecycleReserve {
+		call := trace.begin(firstToken, "source.read", 1)
+		trace.end(call, 1, nil)
+	}
+	for _, c := range []struct {
+		token           bridge.SessionToken
+		readSamples     int
+		acceptedSamples int
+	}{
+		{firstToken, 4, 3},
+		{secondToken, 5, 2},
+	} {
+		read := trace.begin(c.token, "source.read", c.readSamples)
+		trace.end(read, c.readSamples, nil)
+		accepted := trace.begin(c.token, "sink.try_write", c.acceptedSamples)
+		trace.end(accepted, c.acceptedSamples, nil)
+		backpressure := trace.begin(c.token, "sink.try_write", 7)
+		backpressure.startedAt = backpressure.startedAt.Add(-17 * time.Millisecond)
+		trace.end(backpressure, 0, audiooutput.ErrBackpressure)
+		unknown := trace.begin(c.token, "sink.try_write", 9)
+		trace.end(unknown, 0, errors.New("native acceptance unknown"))
+	}
+
+	snapshot := trace.snapshot()
+	if len(snapshot.Entries) != voiceIOTraceLimit-voiceIOTraceLifecycleReserve || snapshot.Dropped != 8 {
+		t.Fatalf("detail cap changed: entries=%d dropped=%d", len(snapshot.Entries), snapshot.Dropped)
+	}
+	if snapshot.SessionSummaryCoverage != "complete" || snapshot.SessionOverflowCalls != 0 || len(snapshot.Sessions) != 2 {
+		t.Fatalf("session summary coverage missing: %+v", snapshot)
+	}
+	for i, want := range []struct {
+		samples  int64
+		accepted int64
+	}{
+		{int64(voiceIOTraceLimit - voiceIOTraceLifecycleReserve + 4), 3},
+		{5, 2},
+	} {
+		got := snapshot.Sessions[i]
+		if got.SourceReadSamples != want.samples || got.SinkAcceptedSamples != want.accepted || got.SinkAcceptedSamplesKnown {
+			t.Fatalf("session %d cumulative samples/known flag: %+v", i, got)
+		}
+		if got.SinkUnknownAcceptanceCalls != 1 || got.SinkBackpressureCalls != 1 || got.SinkBackpressureDurationNS < int64(17*time.Millisecond) || got.SinkBackpressureMaxDurationNS < int64(17*time.Millisecond) {
+			t.Fatalf("session %d sink outcomes/duration: %+v", i, got)
+		}
+		if got.DetailCoverage != "truncated" || got.DetailSpansDropped != 4 || got.CallsStarted != got.CallsCompleted || got.CallsInFlight != 0 {
+			t.Fatalf("session %d detail/call coverage: %+v", i, got)
+		}
+	}
+}
+
+func TestVoiceIOSessionSummaryOverflowIsExplicit(t *testing.T) {
+	var trace voiceIOTrace
+	trace.prepare()
+	for generation := uint64(1); generation <= voiceIOTraceSessionLimit; generation++ {
+		token := voiceIOTraceTestToken(t, generation)
+		read := trace.begin(token, "source.read", 1)
+		trace.end(read, 1, nil)
+		write := trace.begin(token, "sink.try_write", 1)
+		trace.end(write, 1, nil)
+	}
+	firstOverflowToken := voiceIOTraceTestToken(t, voiceIOTraceSessionLimit+1)
+	read := trace.begin(firstOverflowToken, "source.read", 5)
+	trace.end(read, 5, nil)
+	write := trace.begin(firstOverflowToken, "sink.try_write", 5)
+	trace.end(write, 5, nil)
+	backpressure := trace.begin(firstOverflowToken, "sink.try_write", 3)
+	backpressure.startedAt = backpressure.startedAt.Add(-11 * time.Millisecond)
+	trace.end(backpressure, 0, audiooutput.ErrBackpressure)
+	unknown := trace.begin(firstOverflowToken, "sink.try_write", 3)
+	trace.end(unknown, 0, errors.New("overflow acceptance unknown"))
+
+	lateToken := voiceIOTraceTestToken(t, voiceIOTraceSessionLimit+2)
+	late := trace.begin(lateToken, "source.read", 7)
+	blocked := trace.snapshot()
+	if blocked.SessionLimit != voiceIOTraceSessionLimit || len(blocked.Sessions) != voiceIOTraceSessionLimit ||
+		blocked.SessionSummaryCoverage != "overflow" || blocked.SessionOverflowCalls != 5 ||
+		blocked.SessionOverflowStarted != 5 || blocked.SessionOverflowCompleted != 4 || blocked.SessionOverflowInFlight != 1 {
+		t.Fatalf("session overflow counts not explicit: %+v", blocked)
+	}
+	overflow := blocked.OverflowSummary
+	if overflow.Scope != "mixed_untracked_sessions" || overflow.CallsStarted != 5 || overflow.CallsCompleted != 4 || overflow.CallsInFlight != 1 {
+		t.Fatalf("untracked calls were not aggregated: %+v", overflow)
+	}
+	if overflow.SourceReadSamples != 5 || overflow.SourceReadSamplesComplete ||
+		overflow.SinkAcceptedSamples != 5 || overflow.SinkAcceptedSamplesKnown ||
+		overflow.SinkUnknownAcceptanceCalls != 1 || overflow.SinkBackpressureCalls != 1 ||
+		overflow.SinkBackpressureDurationNS < int64(11*time.Millisecond) || overflow.SinkBackpressureMaxDurationNS < int64(11*time.Millisecond) {
+		t.Fatalf("untracked sample/error/backpressure totals incorrect: %+v", overflow)
+	}
+
+	trace.end(late, 7, nil)
+	after := trace.snapshot().OverflowSummary
+	if after.SourceReadSamples != 12 || !after.SourceReadSamplesComplete ||
+		after.CallsStarted != 5 || after.CallsCompleted != 5 || after.CallsInFlight != 0 ||
+		after.SinkAcceptedSamples != 5 || after.SinkAcceptedSamplesKnown {
+		t.Fatalf("late completion did not update overflow aggregate: %+v", after)
+	}
+	if blocked.OverflowSummary.SourceReadSamples != 5 || blocked.OverflowSummary.CallsInFlight != 1 {
+		t.Fatal("late completion mutated earlier overflow snapshot")
+	}
+	var totalRead, totalAccepted int64
+	for _, session := range blocked.Sessions {
+		totalRead += session.SourceReadSamples
+		totalAccepted += session.SinkAcceptedSamples
+	}
+	if totalRead+after.SourceReadSamples != voiceIOTraceSessionLimit+12 ||
+		totalAccepted+after.SinkAcceptedSamples != voiceIOTraceSessionLimit+5 {
+		t.Fatal("tracked and mixed summaries lost or double-counted samples")
+	}
+}
+
 func TestVoiceIOBufferBoundAndLateCompletion(t *testing.T) {
 	var trace voiceIOTrace
 	trace.prepare()
 	first := trace.begin(bridge.SessionToken{}, "source.stop", 0)
 	for range voiceIOTraceLimit - 1 {
-		i := trace.begin(bridge.SessionToken{}, "sink.drain", 0)
-		trace.end(i, 0, nil)
+		call := trace.begin(bridge.SessionToken{}, "sink.drain", 0)
+		trace.end(call, 0, nil)
 	}
 	for range 3 {
-		i := trace.begin(bridge.SessionToken{}, "source.close", 0)
-		trace.end(i, 0, nil)
+		call := trace.begin(bridge.SessionToken{}, "source.close", 0)
+		trace.end(call, 0, nil)
 	}
 	before := trace.snapshot()
-	if len(before.Entries) != voiceIOTraceLimit || before.Dropped != 3 || !before.Entries[first].FinishedAt.IsZero() {
+	if len(before.Entries) != voiceIOTraceLimit || before.Dropped != 3 || !before.Entries[first.entryIndex].FinishedAt.IsZero() {
 		t.Fatal("capacity/drop or unfinished span incorrect")
 	}
 	trace.end(first, 0, nil)
 	after := trace.snapshot()
-	if after.Entries[first].FinishedAt.IsZero() || after.Entries[first].SamplesKnown || after.Entries[first].Samples != 0 || after.Entries[first].Result != "ok" || after.Dropped != 3 || !before.Entries[first].FinishedAt.IsZero() {
+	if after.Entries[first.entryIndex].FinishedAt.IsZero() || after.Entries[first.entryIndex].SamplesKnown || after.Entries[first.entryIndex].Samples != 0 || after.Entries[first.entryIndex].Result != "ok" || after.Dropped != 3 || !before.Entries[first.entryIndex].FinishedAt.IsZero() {
 		t.Fatal("full buffer lost late completion or aliased snapshot")
 	}
-	if n := testing.AllocsPerRun(100, func() { i := trace.begin(bridge.SessionToken{}, "source.read", 1); trace.end(i, 1, nil) }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { call := trace.begin(bridge.SessionToken{}, "source.read", 1); trace.end(call, 1, nil) }); n != 0 {
 		t.Fatalf("full buffer allocates: %v", n)
 	}
 	var steady voiceIOTrace
 	steady.prepare()
-	if n := testing.AllocsPerRun(100, func() { i := steady.begin(bridge.SessionToken{}, "sink.try_write", 1); steady.end(i, 1, nil) }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { call := steady.begin(bridge.SessionToken{}, "sink.try_write", 1); steady.end(call, 1, nil) }); n != 0 {
 		t.Fatalf("span collection allocates: %v", n)
 	}
 }
@@ -208,8 +377,8 @@ func TestVoiceIOTerminalSpansSurvivePCMBudget(t *testing.T) {
 	trace := &voiceOverlayTrace{}
 	trace.io.prepare()
 	for range voiceIOTraceLimit {
-		i := trace.io.begin(bridge.SessionToken{}, "source.read", 320)
-		trace.io.end(i, 320, nil)
+		call := trace.io.begin(bridge.SessionToken{}, "source.read", 320)
+		trace.io.end(call, 320, nil)
 	}
 	resources := trace.traceResources(bridge.SessionToken{}, audiosession.Resources{
 		Source: &voiceIOTestSource{}, Sink: &voiceIOTestSink{},
@@ -246,8 +415,8 @@ func TestVoiceIOConcurrentSnapshotsAndClassification(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range 500 {
-			i := trace.begin(bridge.SessionToken{}, "source.read", 320)
-			trace.end(i, 0, context.Canceled)
+			call := trace.begin(bridge.SessionToken{}, "source.read", 320)
+			trace.end(call, 0, context.Canceled)
 		}
 	}()
 	for range 50 {
@@ -281,6 +450,21 @@ func TestVoiceIOSinkFailureDoesNotClaimZeroAcceptance(t *testing.T) {
 			wrapped := trace.traceResources(bridge.SessionToken{}, audiosession.Resources{Sink: sink})
 			if err := wrapped.Sink.TryWrite([]int16{1, 2, 3}); err != c.err {
 				t.Fatal("changed original result")
+			}
+			summary := trace.io.snapshot().Sessions[0]
+			if c.known {
+				if !summary.SinkAcceptedSamplesKnown || summary.SinkUnknownAcceptanceCalls != 0 {
+					t.Fatalf("known sink result marked unknown: %+v", summary)
+				}
+				wantAccepted := int64(3)
+				if c.err == audiooutput.ErrBackpressure {
+					wantAccepted = 0
+				}
+				if summary.SinkAcceptedSamples != wantAccepted {
+					t.Fatalf("accepted samples=%d want %d", summary.SinkAcceptedSamples, wantAccepted)
+				}
+			} else if summary.SinkAcceptedSamplesKnown || summary.SinkAcceptedSamples != 0 || summary.SinkUnknownAcceptanceCalls != 1 {
+				t.Fatalf("unknown acceptance was represented as zero: %+v", summary)
 			}
 			var out bytes.Buffer
 			if err := trace.write(&out); err != nil {
@@ -393,8 +577,8 @@ func (s *voiceLifecycleTraceSink) Close() error                    { return s.cl
 func TestVoiceIOReportNamesItsSharedEntryThreshold(t *testing.T) {
 	trace := &voiceOverlayTrace{}
 	// Lifecycle entries count toward the threshold too.
-	i := trace.io.begin(bridge.SessionToken{}, "source.stop", 0)
-	trace.io.end(i, 0, nil)
+	call := trace.io.begin(bridge.SessionToken{}, "source.stop", 0)
+	trace.io.end(call, 0, nil)
 	var out bytes.Buffer
 	if err := trace.write(&out); err != nil {
 		t.Fatal(err)
