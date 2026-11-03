@@ -61,7 +61,12 @@ func TestVoiceReportIncludesRuntimeIOWithoutChangingDelivery(t *testing.T) {
 		t.Fatalf("report lacks source/sink timing: schema=%d entries=%d", report.Schema, len(report.IO.Entries))
 	}
 	var read, write, eof int
+	lifecycle := map[string]int{}
 	for _, e := range report.IO.Entries {
+		switch e.Operation {
+		case "source.stop", "source.close", "sink.drain", "sink.close":
+			lifecycle[e.Operation]++
+		}
 		if e.Session == 0 || e.Generation == 0 {
 			t.Fatal("missing session attribution")
 		}
@@ -83,6 +88,11 @@ func TestVoiceReportIncludesRuntimeIOWithoutChangingDelivery(t *testing.T) {
 	}
 	if read != 2 || write != 2 || eof != 1 {
 		t.Fatalf("missing exact delivery/tail lifecycle: reads=%d writes=%d eof=%d", read, write, eof)
+	}
+	for _, operation := range []string{"source.stop", "sink.drain", "source.close", "sink.close"} {
+		if lifecycle[operation] != 1 {
+			t.Fatalf("Runtime lifecycle %s count=%d", operation, lifecycle[operation])
+		}
 	}
 }
 
@@ -166,22 +176,22 @@ func (*voiceIOTestSink) Close() error                { return nil }
 func TestVoiceIOBufferBoundAndLateCompletion(t *testing.T) {
 	var trace voiceIOTrace
 	trace.prepare()
-	first := trace.begin(bridge.SessionToken{}, "source.read", 320)
+	first := trace.begin(bridge.SessionToken{}, "source.stop", 0)
 	for range voiceIOTraceLimit - 1 {
-		i := trace.begin(bridge.SessionToken{}, "sink.try_write", 320)
-		trace.end(i, 0, audiooutput.ErrBackpressure)
+		i := trace.begin(bridge.SessionToken{}, "sink.drain", 0)
+		trace.end(i, 0, nil)
 	}
 	for range 3 {
-		i := trace.begin(bridge.SessionToken{}, "source.read", 320)
-		trace.end(i, 320, nil)
+		i := trace.begin(bridge.SessionToken{}, "source.close", 0)
+		trace.end(i, 0, nil)
 	}
 	before := trace.snapshot()
 	if len(before.Entries) != voiceIOTraceLimit || before.Dropped != 3 || !before.Entries[first].FinishedAt.IsZero() {
 		t.Fatal("capacity/drop or unfinished span incorrect")
 	}
-	trace.end(first, 1, io.EOF)
+	trace.end(first, 0, nil)
 	after := trace.snapshot()
-	if after.Entries[first].FinishedAt.IsZero() || after.Dropped != 3 || !before.Entries[first].FinishedAt.IsZero() {
+	if after.Entries[first].FinishedAt.IsZero() || after.Entries[first].SamplesKnown || after.Entries[first].Samples != 0 || after.Entries[first].Result != "ok" || after.Dropped != 3 || !before.Entries[first].FinishedAt.IsZero() {
 		t.Fatal("full buffer lost late completion or aliased snapshot")
 	}
 	if n := testing.AllocsPerRun(100, func() { i := trace.begin(bridge.SessionToken{}, "source.read", 1); trace.end(i, 1, nil) }); n != 0 {
@@ -191,6 +201,41 @@ func TestVoiceIOBufferBoundAndLateCompletion(t *testing.T) {
 	steady.prepare()
 	if n := testing.AllocsPerRun(100, func() { i := steady.begin(bridge.SessionToken{}, "sink.try_write", 1); steady.end(i, 1, nil) }); n != 0 {
 		t.Fatalf("span collection allocates: %v", n)
+	}
+}
+
+func TestVoiceIOTerminalSpansSurvivePCMBudget(t *testing.T) {
+	trace := &voiceOverlayTrace{}
+	trace.io.prepare()
+	for range voiceIOTraceLimit {
+		i := trace.io.begin(bridge.SessionToken{}, "source.read", 320)
+		trace.io.end(i, 320, nil)
+	}
+	resources := trace.traceResources(bridge.SessionToken{}, audiosession.Resources{
+		Source: &voiceIOTestSource{}, Sink: &voiceIOTestSink{},
+	})
+	if err := resources.Source.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.Sink.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.Source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.Sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snap := trace.io.snapshot()
+	if snap.Dropped == 0 || len(snap.Entries) > voiceIOTraceLimit {
+		t.Fatal("unbounded PCM history")
+	}
+	tail := snap.Entries[len(snap.Entries)-4:]
+	for i, name := range []string{"source.stop", "sink.drain", "source.close", "sink.close"} {
+		span := tail[i]
+		if span.Operation != name || span.FinishedAt.IsZero() || span.Result != "ok" || span.SamplesKnown {
+			t.Fatalf("terminal boundary missing or claims PCM acceptance: %+v", span)
+		}
 	}
 }
 
@@ -254,5 +299,116 @@ func TestVoiceIOSinkFailureDoesNotClaimZeroAcceptance(t *testing.T) {
 				t.Fatalf("acceptance certainty: got %v present=%v want %v", got, present, c.known)
 			}
 		})
+	}
+}
+
+// A blocked lifecycle call must remain visible without changing its context,
+// result, or call count. PCM acceptance does not apply to lifecycle operations.
+func TestVoiceIOLifecycleCallsRemainObservable(t *testing.T) {
+	for _, operation := range []string{"source.stop", "source.close", "sink.drain", "sink.close"} {
+		t.Run(operation, func(t *testing.T) {
+			trace := &voiceOverlayTrace{}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			defer close(release)
+			wantErr := errors.New("private lifecycle failure must not be retained")
+			calls := 0
+			block := func(got context.Context) error {
+				calls++
+				if got != ctx {
+					t.Error("changed lifecycle context")
+				}
+				close(entered)
+				<-release
+				return wantErr
+			}
+			source := &voiceLifecycleTraceSource{stop: block, close: func() error { return block(ctx) }}
+			sink := &voiceLifecycleTraceSink{drain: block, close: func() error { return block(ctx) }}
+			resources := trace.traceResources(bridge.SessionToken{}, audiosession.Resources{Source: source, Sink: sink})
+			var invoke func() error
+			switch operation {
+			case "source.stop":
+				invoke = func() error { return resources.Source.Stop(ctx) }
+			case "source.close":
+				invoke = resources.Source.Close
+			case "sink.drain":
+				invoke = func() error { return resources.Sink.Drain(ctx) }
+			case "sink.close":
+				invoke = resources.Sink.Close
+			}
+			go func() {
+				defer close(done)
+				if err := invoke(); err != wantErr {
+					t.Error("changed lifecycle error")
+				}
+			}()
+			waitHostSignal(t, entered)
+			before := trace.io.snapshot()
+			if len(before.Entries) != 1 || before.Entries[0].Operation != operation || !before.Entries[0].FinishedAt.IsZero() {
+				t.Errorf("blocked lifecycle missing: %+v", before)
+			}
+			release <- struct{}{}
+			waitHostSignal(t, done)
+			after := trace.io.snapshot()
+			if len(after.Entries) != 1 {
+				t.Fatalf("expected one lifecycle span: %+v", after)
+			}
+			span := after.Entries[0]
+			if calls != 1 || span.FinishedAt.IsZero() || span.DurationNS <= 0 || span.Result != "error" || span.SamplesKnown {
+				t.Fatalf("incorrect lifecycle completion: calls=%d span=%+v", calls, span)
+			}
+			if len(before.Entries) == 1 && !before.Entries[0].FinishedAt.IsZero() {
+				t.Fatal("completion mutated old snapshot")
+			}
+			var out bytes.Buffer
+			if err := trace.write(&out); err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(out.Bytes(), []byte(wantErr.Error())) {
+				t.Fatal("raw private error was retained")
+			}
+		})
+	}
+}
+
+type voiceLifecycleTraceSource struct {
+	stop  func(context.Context) error
+	close func() error
+}
+
+func (*voiceLifecycleTraceSource) Read(context.Context, []int16) (int, error) { return 0, io.EOF }
+func (s *voiceLifecycleTraceSource) Stop(ctx context.Context) error           { return s.stop(ctx) }
+func (s *voiceLifecycleTraceSource) Close() error                             { return s.close() }
+
+type voiceLifecycleTraceSink struct {
+	drain func(context.Context) error
+	close func() error
+}
+
+func (*voiceLifecycleTraceSink) TryWrite([]int16) error            { return nil }
+func (s *voiceLifecycleTraceSink) Drain(ctx context.Context) error { return s.drain(ctx) }
+func (s *voiceLifecycleTraceSink) Close() error                    { return s.close() }
+
+func TestVoiceIOReportNamesItsSharedEntryThreshold(t *testing.T) {
+	trace := &voiceOverlayTrace{}
+	// Lifecycle entries count toward the threshold too.
+	i := trace.io.begin(bridge.SessionToken{}, "source.stop", 0)
+	trace.io.end(i, 0, nil)
+	var out bytes.Buffer
+	if err := trace.write(&out); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		IO struct {
+			Limit     int `json:"limit"`
+			Threshold int `json:"pcm_entry_threshold"`
+		} `json:"io"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.IO.Limit != 4096 || report.IO.Threshold != 4064 {
+		t.Fatalf("misreported shared budget: %+v", report.IO)
 	}
 }

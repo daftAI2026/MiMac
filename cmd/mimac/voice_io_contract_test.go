@@ -88,7 +88,7 @@ func TestVoiceIOTraceEnabledPreservesOptionalSourceErr(t *testing.T) {
 		t.Fatalf("Close passthrough: calls=%d err=%v", inner.closeCalls, err)
 	}
 	report := voiceIOContractReport(t, trace)
-	assertVoiceIOContractOperations(t, report, "source.read", "source.read")
+	assertVoiceIOContractOperations(t, report, "source.read", "source.read", "source.stop", "source.close")
 	for _, secret := range []string{readErr.Error(), stopErr.Error(), closeErr.Error(), asyncErr.Error()} {
 		if bytes.Contains(report, []byte(secret)) {
 			t.Fatalf("trace report retained source error %q", secret)
@@ -175,7 +175,7 @@ func TestVoiceIOTraceEnabledPreservesSinkCapabilitySetsAndMethods(t *testing.T) 
 			}
 
 			report := voiceIOContractReport(t, trace)
-			assertVoiceIOContractOperations(t, report, "sink.try_write")
+			assertVoiceIOContractOperations(t, report, "sink.try_write", "sink.drain", "sink.close")
 			for _, secret := range []string{
 				candidate, writeErr.Error(), startErr.Error(), transcriptErr.Error(), drainErr.Error(), closeErr.Error(),
 			} {

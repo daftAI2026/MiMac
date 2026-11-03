@@ -12,7 +12,13 @@ import (
 	"mimac.local/mimac/internal/bridge"
 )
 
-const voiceIOTraceLimit = 4096
+const (
+	voiceIOTraceLimit = 4096
+	// Preserve terminal boundaries after a long recording exhausts PCM spans.
+	// This is shared headroom, not a per-session guarantee. All spans still
+	// share the same fixed total budget.
+	voiceIOTraceLifecycleReserve = 32
+)
 
 // Independent from the UI trace: audio workers never touch UI entries. These
 // spans describe host I/O calls, not capture timestamps or receiver/GPU ACKs.
@@ -39,10 +45,11 @@ type voiceIOSpan struct {
 }
 
 type voiceIOSnapshot struct {
-	Limit      int           `json:"limit"`
-	Dropped    uint64        `json:"dropped"`
-	SnapshotAt time.Time     `json:"snapshot_at"`
-	Entries    []voiceIOSpan `json:"entries"`
+	Limit             int           `json:"limit"`
+	PCMEntryThreshold int           `json:"pcm_entry_threshold"`
+	Dropped           uint64        `json:"dropped"`
+	SnapshotAt        time.Time     `json:"snapshot_at"`
+	Entries           []voiceIOSpan `json:"entries"`
 }
 
 func (t *voiceIOTrace) prepare() {
@@ -57,7 +64,11 @@ func (t *voiceIOTrace) begin(token bridge.SessionToken, operation string, sample
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.nextCall++
-	if len(t.entries) >= voiceIOTraceLimit {
+	limit := voiceIOTraceLimit
+	if operation == "source.read" || operation == "sink.try_write" {
+		limit -= voiceIOTraceLifecycleReserve
+	}
+	if len(t.entries) >= limit {
 		t.dropped++
 		return -1
 	}
@@ -78,7 +89,8 @@ func (t *voiceIOTrace) end(index int, samples int, err error) {
 	span.FinishedAt = at
 	span.DurationNS = at.Sub(span.StartedAt).Nanoseconds()
 	span.Samples = samples
-	span.SamplesKnown = span.Operation == "source.read" || result == "ok" || result == "backpressure"
+	span.SamplesKnown = span.Operation == "source.read" ||
+		(span.Operation == "sink.try_write" && (result == "ok" || result == "backpressure"))
 	span.Result = result
 }
 
@@ -102,7 +114,8 @@ func voiceIOResult(err error) string {
 func (t *voiceIOTrace) snapshot() voiceIOSnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return voiceIOSnapshot{Limit: voiceIOTraceLimit, Dropped: t.dropped, SnapshotAt: time.Now(), Entries: append([]voiceIOSpan{}, t.entries...)}
+	return voiceIOSnapshot{Limit: voiceIOTraceLimit, PCMEntryThreshold: voiceIOTraceLimit - voiceIOTraceLifecycleReserve,
+		Dropped: t.dropped, SnapshotAt: time.Now(), Entries: append([]voiceIOSpan{}, t.entries...)}
 }
 
 type voiceIOCallTrace struct {
@@ -122,6 +135,20 @@ func (s *voiceTracedSource) Read(ctx context.Context, pcm []int16) (int, error) 
 	return n, err
 }
 
+func (s *voiceTracedSource) Stop(ctx context.Context) error {
+	index := s.calls.trace.begin(s.calls.token, "source.stop", 0)
+	err := s.Source.Stop(ctx)
+	s.calls.trace.end(index, 0, err)
+	return err
+}
+
+func (s *voiceTracedSource) Close() error {
+	index := s.calls.trace.begin(s.calls.token, "source.close", 0)
+	err := s.Source.Close()
+	s.calls.trace.end(index, 0, err)
+	return err
+}
+
 type voiceTracedSink struct {
 	audiosession.Sink
 	calls voiceIOCallTrace
@@ -138,6 +165,20 @@ func (s *voiceTracedSink) TryWrite(pcm []int16) error {
 		n = len(pcm)
 	}
 	s.calls.trace.end(index, n, err)
+	return err
+}
+
+func (s *voiceTracedSink) Drain(ctx context.Context) error {
+	index := s.calls.trace.begin(s.calls.token, "sink.drain", 0)
+	err := s.Sink.Drain(ctx)
+	s.calls.trace.end(index, 0, err)
+	return err
+}
+
+func (s *voiceTracedSink) Close() error {
+	index := s.calls.trace.begin(s.calls.token, "sink.close", 0)
+	err := s.Sink.Close()
+	s.calls.trace.end(index, 0, err)
 	return err
 }
 
