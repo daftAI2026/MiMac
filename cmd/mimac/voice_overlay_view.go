@@ -105,18 +105,20 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 
 func (v *mygoVoiceOverlay) draw(c *ui.Context) {
 	// Transparent NSWindow does not clear MyGo's theme-backed content root.
-	c.Root().Background(ui.Transparent)
-	if v.closed || !v.visible {
-		return
-	}
-	if err := v.render(v.read()); err != nil {
-		v.failed(err)
-		return
-	}
-	if !v.visible {
-		return
-	}
-	c.After(voiceOverlayFrameInterval)
+	// Only the embedded native material changes. Repaint at the existing
+	// interval without rebuilding the unchanged MyGo layout each time.
+	c.Root().Background(ui.Transparent).Draw(func(p *ui.Painter, _ ui.Rect) {
+		if v.closed || !v.visible {
+			return
+		}
+		if err := v.render(v.read()); err != nil {
+			v.failed(err)
+			return
+		}
+		if v.visible {
+			p.After(voiceOverlayFrameInterval)
+		}
+	})
 }
 
 func (v *mygoVoiceOverlay) Hide() error {
