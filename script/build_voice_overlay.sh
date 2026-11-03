@@ -47,6 +47,7 @@ for symbol in \
 	mimac_siri_glass_attach_rect \
 	mimac_siri_glass_attach_rect_with_clip \
 	mimac_siri_glass_update \
+	mimac_siri_glass_update_frame \
 	mimac_siri_glass_destroy \
 	mimac_siri_glass_last_error; do
 	if ! /usr/bin/nm -gU "$library_source" | /usr/bin/grep -Eq " _$symbol$"; then

@@ -101,13 +101,13 @@ func nativeDisplayDBFromSourceDBFS(sourceDBFS float32) float32 {
 }
 
 type nativeAPI struct {
-	library   uintptr // Deliberately retained until process exit.
-	version   func() uint32
-	create    func(unsafe.Pointer, int32) uint64
-	attach    func(uint64, uintptr, float64, float64, float64, float64, int32) int32
-	update    func(uint64, unsafe.Pointer, int32) int32
-	destroy   func(uint64) int32
-	lastError func(unsafe.Pointer, int32) int32
+	library     uintptr // Deliberately retained until process exit.
+	version     func() uint32
+	create      func(unsafe.Pointer, int32) uint64
+	attach      func(uint64, uintptr, float64, float64, float64, float64, int32) int32
+	updateFrame func(uint64, uint64, int32, float32, unsafe.Pointer, unsafe.Pointer, int32) int32
+	destroy     func(uint64) int32
+	lastError   func(unsafe.Pointer, int32) int32
 }
 
 var (
@@ -124,14 +124,15 @@ var (
 // failed and its first destroy attempt also failed; the caller must retain the
 // renderer and retry Close.
 type Renderer struct {
-	api      *nativeAPI
-	handle   uint64
-	revision uint64
-	visible  bool
-	db       float32
-	meters   Meters
-	closing  bool
-	closed   bool
+	api        *nativeAPI
+	handle     uint64
+	revision   uint64
+	visible    bool
+	db         float32
+	meters     Meters
+	wireMeters Meters // Inline synchronous transfer storage, not retained by Swift.
+	closing    bool
+	closed     bool
 }
 
 // Open checks the exact supported host before loading any native image, then
@@ -236,24 +237,38 @@ func (r *Renderer) UpdateMeters(visible bool, db float32, meters Meters) error {
 			return
 		}
 		nextRevision := r.revision + 1
-		parameters := rendererMeterParameters(nextRevision, visible, db, meters)
-		data, err := json.Marshal(parameters)
-		if err != nil {
-			resultErr = fmt.Errorf("siriglass: encode update parameters: %w", err)
-			return
-		}
-		if r.api.update(r.handle, unsafe.Pointer(&data[0]), int32(len(data))) != 1 {
-			runtime.KeepAlive(data)
+		if !r.submitFrame(nextRevision, visible, db, meters) {
 			resultErr = fmt.Errorf("siriglass: update renderer: %s", r.api.errorText())
 			return
 		}
-		runtime.KeepAlive(data)
 		r.revision, r.visible, r.db, r.meters = nextRevision, visible, db, meters
 	})
 	if !ran {
 		return errors.New("siriglass: MyGo main loop is unavailable")
 	}
 	return resultErr
+}
+
+// submitFrame transfers the fixed-capacity meter arrays synchronously. Keeping
+// the scratch storage inline avoids escaping a new array through the FFI call.
+func (r *Renderer) submitFrame(revision uint64, visible bool, db float32, meters Meters) bool {
+	r.wireMeters = meters
+	var flag int32
+	if visible {
+		flag = 1
+	}
+	var amplitudes, frequencies unsafe.Pointer
+	if meters.Count > 0 {
+		amplitudes = unsafe.Pointer(&r.wireMeters.Amplitudes[0])
+		frequencies = unsafe.Pointer(&r.wireMeters.StopFrequenciesHz[0])
+	}
+	displayDB := float32(initialDB)
+	if visible && meters.Count == 0 {
+		displayDB = nativeDisplayDBFromSourceDBFS(db)
+	}
+	result := r.api.updateFrame(r.handle, revision, flag, displayDB, amplitudes, frequencies, int32(meters.Count))
+	runtime.KeepAlive(r)
+	return result == 1
 }
 
 // Close destroys the attached view. A native failure leaves its handle intact
@@ -332,7 +347,7 @@ func loadNativeAPI() (*nativeAPI, error) {
 			{"mimac_siri_glass_abi_version", &api.version},
 			{"mimac_siri_glass_create", &api.create},
 			{"mimac_siri_glass_attach_rect_with_clip", &api.attach},
-			{"mimac_siri_glass_update", &api.update},
+			{"mimac_siri_glass_update_frame", &api.updateFrame},
 			{"mimac_siri_glass_destroy", &api.destroy},
 			{"mimac_siri_glass_last_error", &api.lastError},
 		}

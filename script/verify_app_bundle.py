@@ -40,6 +40,8 @@ def verify(bundle, arch, require_siri=False):
         hashes[str(path.relative_to(contents))] = hashlib.sha256(path.read_bytes()).hexdigest()
     for name, symbol in libraries.items():
         exports = subprocess.check_output(["/usr/bin/nm", "-gU", str(resources / name)], text=True)
+        if name == SIRI and not any(line.split()[-1:] == ["_mimac_siri_glass_update_frame"] for line in exports.splitlines()):
+            raise ValueError("missing typed frame export in " + name)
         if not any(line.split()[-1:] == ["_" + symbol] for line in exports.splitlines()):
             raise ValueError(f"missing export {symbol} in {name}")
     subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(bundle)], check=True)

@@ -369,38 +369,86 @@ public func siriGlassUpdate(_ handle: UInt64, _ bytes: UnsafePointer<UInt8>?, _ 
         case .success(let value): parameters = value
         case .failure(let message): recordError(message); return 0
         }
-        guard parameters.revision > entry.state.parameters.revision else {
-            recordError("update revision must be strictly greater than the current revision")
-            return 0
-        }
-        do {
-            let current = entry.state.compositionParameters
-            let plan = entry.renderPlan(for: parameters)
-            let next = plan.compositionParameters
-            let compositionChanged = current.kind != next.kind
-                || current.personality != next.personality
-                || current.variant != next.variant
-                || current.excludesShadow != next.excludesShadow
-                || current.audioMeters != next.audioMeters
-                || current.audioPowerDB != next.audioPowerDB
-            let glass: Glass
-            if compositionChanged {
-                glass = try PrivateGlassAdapter.shared.compose(next)
-            } else if let currentGlass = entry.state.glass {
-                glass = currentGlass
-            } else {
-                recordError("current Glass value was unavailable during a render-only update")
-                return 0
-            }
-            entry.update(parameters, plan: plan, glass: glass)
-            GlassRegistry.lastError = ""
-            return 1
-        } catch {
-            recordError(error.localizedDescription)
-            return 0
-        }
+        return applyFrame(entry, parameters: parameters)
     }
 }
+
+// The live meter path uses bounded SoA buffers instead of per-frame JSON.
+// Buffer ownership stays with the caller; Array copies finish before return.
+@_cdecl("mimac_siri_glass_update_frame")
+public func siriGlassUpdateFrame(
+    _ handle: UInt64, _ revision: UInt64, _ visible: Int32, _ power: Float,
+    _ amplitudes: UnsafePointer<Float>?, _ frequencies: UnsafePointer<Float>?, _ count: Int32
+) -> Int32 {
+    guard Thread.isMainThread else { return 0 }
+    let amplitudeAddress = UInt(bitPattern: amplitudes)
+    let frequencyAddress = UInt(bitPattern: frequencies)
+    return onMain(Int32(0)) {
+        let amplitudes = UnsafePointer<Float>(bitPattern: amplitudeAddress)
+        let frequencies = UnsafePointer<Float>(bitPattern: frequencyAddress)
+        guard let entry = GlassRegistry.entries[handle] else {
+            recordError("frame received an unknown or destroyed handle")
+            return 0
+        }
+        guard visible == 0 || visible == 1, (0...16).contains(count),
+            count == 0 || (amplitudes != nil && frequencies != nil)
+        else {
+            recordError("frame flags, band count or buffer is invalid")
+            return 0
+        }
+        var parameters = entry.state.parameters
+        parameters.revision = revision
+        parameters.visible = visible == 1
+        parameters.audioPowerDB = power
+        if count > 0, let amplitudes, let frequencies {
+            parameters.audioMeters = AudioMetersInput(
+                normalizedPowerAmplitudes: Array(UnsafeBufferPointer(start: amplitudes, count: Int(count))),
+                stopFrequenciesHz: Array(UnsafeBufferPointer(start: frequencies, count: Int(count))))
+        } else {
+            parameters.audioMeters = nil
+        }
+        if let error = parameters.validationError() {
+            recordError(error)
+            return 0
+        }
+        return applyFrame(entry, parameters: parameters)
+    }
+}
+
+@MainActor private func applyFrame(_ entry: GlassEntry, parameters: GlassParameters) -> Int32 {
+    guard parameters.revision > entry.state.parameters.revision else {
+        recordError("update revision must be strictly greater than the current revision")
+        return 0
+    }
+    do {
+        let current = entry.state.compositionParameters
+        let plan = entry.renderPlan(for: parameters)
+        let next = plan.compositionParameters
+        let compositionChanged =
+            current.kind != next.kind
+            || current.personality != next.personality
+            || current.variant != next.variant
+            || current.excludesShadow != next.excludesShadow
+            || current.audioMeters != next.audioMeters
+            || current.audioPowerDB != next.audioPowerDB
+        let glass: Glass
+        if compositionChanged {
+            glass = try PrivateGlassAdapter.shared.compose(next)
+        } else if let currentGlass = entry.state.glass {
+            glass = currentGlass
+        } else {
+            recordError("current Glass value was unavailable during a render-only update")
+            return 0
+        }
+        entry.update(parameters, plan: plan, glass: glass)
+        GlassRegistry.lastError = ""
+        return 1
+    } catch {
+        recordError(error.localizedDescription)
+        return 0
+    }
+}
+
 
 @_cdecl("mimac_siri_glass_destroy")
 public func siriGlassDestroy(_ handle: UInt64) -> Int32 {
