@@ -4,6 +4,8 @@ package siriglass
 
 import (
 	"encoding/json"
+	"github.com/ebitengine/purego"
+	"os"
 	"testing"
 	"unsafe"
 )
@@ -88,4 +90,43 @@ func TestFlatFramePreservesLegacyDisplayRange(t *testing.T) {
 			t.Fatal("frame refused")
 		}
 	}
+}
+
+// This opt-in benchmark includes purego's real call trampoline, but excludes
+// Swift material composition and rendering. Build testdata/frame_ffi_fixture.c.
+func BenchmarkRendererRealFFI(b *testing.B) {
+	path := os.Getenv("MIMAC_FRAME_FFI_LIBRARY")
+	if path == "" {
+		b.Skip("set MIMAC_FRAME_FFI_LIBRARY to the C fixture library")
+	}
+	library, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer purego.Dlclose(library)
+	var old func(uint64, unsafe.Pointer, int32) int32
+	purego.RegisterLibFunc(&old, library, "frame_fixture_json")
+	r := &Renderer{handle: 1, api: &nativeAPI{}}
+	purego.RegisterLibFunc(&r.api.updateFrame, library, "frame_fixture_typed")
+	meters := Meters{Count: 6, StopFrequenciesHz: [MaxMeterBands]float32{200, 500, 1200, 2400, 4800, 8000}}
+	b.Run("JSON", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			data, err := json.Marshal(rendererMeterParameters(uint64(i+1), true, -60, meters))
+			if err != nil {
+				b.Fatal(err)
+			}
+			if old(1, unsafe.Pointer(&data[0]), int32(len(data))) != 1 {
+				b.Fatal("old call refused")
+			}
+		}
+	})
+	b.Run("Typed", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if !r.submitFrame(uint64(i+1), true, -60, meters) {
+				b.Fatal("typed call refused")
+			}
+		}
+	})
 }
