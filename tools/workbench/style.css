@@ -47,7 +47,7 @@ code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-
 .source-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: var(--spaceMD); color: var(--TextMuted); }.source-list a { overflow-wrap: anywhere; }
 .diagram-list { display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 28px; align-items: start; }.diagram-nav { display: grid; gap: 4px; }.diagram-nav button { text-align: left; border-color: transparent; background: transparent; padding: 9px 10px; }.diagram-nav button[aria-pressed="true"] { background: var(--Surface); font-weight: 600; }
 .diagram-panel { min-width: 0; }.diagram-panel .toolbar { justify-content: space-between; margin-bottom: var(--spaceMD); }.zoom-actions { display: flex; align-items: center; gap: var(--spaceSM); }
-.diagram-viewport { overflow: auto; border: var(--lineWidth) solid var(--Border); min-height: 330px; max-height: 650px; padding: var(--spaceLG); background: var(--Background); }
+.diagram-viewport { overflow: auto; border: var(--lineWidth) solid var(--Border); height: clamp(330px, 65vh, 650px); padding: var(--spaceLG); background: var(--Background); }
 .diagram-viewport svg { display: block; min-width: 0; height: auto; max-width: none !important; }
 .pele { --pele-bg: var(--Background); --pele-fg: var(--Text); --pele-muted: var(--TextMuted); --pele-line: var(--Text); --pele-surface: var(--Surface); --pele-surface-alt: var(--SurfaceHover); --pele-border: var(--Border); --pele-accent: var(--Text); --pele-font: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; --pele-radius: 5px; }
 .pele-edges, .pele-nodes { stroke-width: .5; }
