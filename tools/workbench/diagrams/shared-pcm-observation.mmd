@@ -1,8 +1,10 @@
 flowchart TD
-    device["设备插件 Source：小米 ATVV / 后续设备"] --> read["audiosession：唯一 PCM Read"]
-    read --> sink["Sink：原样 PCM / 原采样率"]
+    device["设备插件 Source：小米 ATVV / 后续设备"] --> read["audiosession：会话唯一 Source.Read 任务"]
+    read --> fifo["两秒有界 PCM FIFO"]
+    fifo --> consume["Runtime 消费：receiver 与 Core gate 都已开启"]
+    consume --> sink["Sink：原样 PCM / 原采样率"]
     sink --> target["语音工具适配器：豆包 / Apple 等"]
-    read --> observer["PCMObserver：已有 worker 内只读调用"]
+    consume --> observer["PCMObserver：消费任务内只读调用；不另采音"]
     enabled{"显示开启且可用？"} --> observer
     observer --> bands["Siri显示适配器：128样本周期Hamming / FFT线性幅值求和"]
     bands --> mailbox["完整 session token 的最新原始频带快照"]

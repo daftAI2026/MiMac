@@ -280,6 +280,7 @@ func TestAppleRoutePartialRecognizerFailureReopensWithFreshTarget(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	observer := &receiverChainObserver{}
 	host := &shell{}
 	if err := host.setupPluginsWith(func(func(xiaomi.MonitorEvent)) (hidMonitor, error) {
 		t.Fatal("hardware opened")
@@ -291,6 +292,7 @@ func TestAppleRoutePartialRecognizerFailureReopensWithFreshTarget(t *testing.T) 
 	host.audioPost = func(fn func()) { tasks <- fn }
 	host.audioResources = func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
 		resources, prepareErr := route.Prepare(ctx, token)
+		resources.Observer = observer
 		lease, ok := resources.Source.(preparedAudioSource)
 		if !ok {
 			leasedSources <- leasedSource{err: errors.New("Apple route did not return a prepared source lease")}
@@ -353,6 +355,8 @@ func TestAppleRoutePartialRecognizerFailureReopensWithFreshTarget(t *testing.T) 
 		t.Fatal("first recognizer Open did not start")
 	}
 	firstSource := leasedSourceFor("first")
+	firstSource.samples <- []int16{31, -17, 5}
+	waitHostSignal(t, firstSource.reading) // Prove staging during blocked Open.
 	releaseFirst()
 	waitAppleRouteReady(t, route)
 
@@ -367,8 +371,16 @@ func TestAppleRoutePartialRecognizerFailureReopensWithFreshTarget(t *testing.T) 
 	if snapshot := host.coordinator.core.Snapshot(); snapshot.HasSession {
 		t.Fatalf("failed first session remained active: %+v", snapshot)
 	}
-	if got := firstSource.reading; len(got) != 0 {
-		t.Fatal("source Read began after recognizer Open failed")
+	select {
+	case pcm := <-firstRecognizer.writes:
+		t.Fatalf("failed recognizer Open received staged PCM: %v", pcm)
+	default:
+	}
+	if firstRecognizer.drains.Load() != 0 || observer.observations.Load() != 0 {
+		t.Fatalf("failed recognizer Open drained or observed PCM: drains=%d observations=%d", firstRecognizer.drains.Load(), observer.observations.Load())
+	}
+	if _, available := host.audioSession.runtime.InputLevel(firstToken); available {
+		t.Fatal("failed recognizer Open exposed an input level")
 	}
 	if got := firstTarget.inserted(); len(got) != 0 {
 		t.Fatalf("failed session inserted text into old target: %v", got)

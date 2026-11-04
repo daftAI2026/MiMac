@@ -146,6 +146,7 @@ func TestObserverClearsWhenSessionNeverOpensPCMGate(t *testing.T) {
 				if completion.Err != nil {
 					t.Fatal(completion.Err)
 				}
+				waitSignal(t, source.readStarted)
 				if err := r.Submit(bridge.CloseGateEffect{Token: token}); err != nil {
 					t.Fatal(err)
 				}
@@ -161,10 +162,8 @@ func TestObserverClearsWhenSessionNeverOpensPCMGate(t *testing.T) {
 			if clears == 0 || n != 0 {
 				t.Fatalf("unopened gate skipped observer retirement: clears=%d samples=%d", clears, n)
 			}
-			select {
-			case <-source.readStarted:
-				t.Fatal("gate never opened but source was read")
-			default:
+			if sink.writeCalls.Load() != 0 {
+				t.Fatalf("unopened gate delivered %d PCM writes", sink.writeCalls.Load())
 			}
 		})
 	}

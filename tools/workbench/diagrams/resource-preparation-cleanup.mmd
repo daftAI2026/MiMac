@@ -1,42 +1,40 @@
 flowchart TD
-    owner["Runtime 登记本次会话 owner"] --> prepare["准备 Source/Sink 并校验 PCM 格式"]
-    prepare --> sessionSink{"Sink 实现 StartSession？"}
+    owner["Runtime 登记本次会话 owner"] --> prepare["取得 Source/Sink 租约并校验 PCM 格式与源健康"]
+    prepare --> readerStart["启动本会话唯一 Source.Read 任务"]
+    readerStart --> sessionSink{"Sink 实现 StartSession？"}
     sessionSink -->|是| startSink["启动本次会话 Sink"]
-    sessionSink -->|否| health
-    startSink --> health["检查 source health"]
-    health --> receiverCheck{"Resources 提供 WaitReceiver？"}
-    receiverCheck -->|否| watch
-    receiverCheck -->|是| wait["WaitReceiver：核验活动目标输入的精确 PID/UID；\n2 秒失败期限，不是固定延时"]
-    wait -->|成功| healthAfter["再次检查 source health"]
-    healthAfter --> watch["启动可选接收器 watcher"]
-    watch --> publish["发出 SourcePrepared"]
-    publish --> gate["等待 Core OpenGate"]
-    gate --> read["此后才启动 Runtime Source.Read 并交付 PCM"]
-    stop["Core StopSourceEffect"] --> sourceStop["Runtime 请求正常 Source.Stop"]
+    sessionSink -->|否| receiverCheck
+    startSink --> receiverCheck{"提供 WaitReceiver？"}
+    receiverCheck -->|否| healthAfter
+    receiverCheck -->|是| wait["核验活动目标输入精确 PID/UID\n两秒失败期限，不是固定延时"]
+    wait -->|成功| healthAfter["准备后检查源健康；启动可选 receiver watcher"]
+    healthAfter --> publish["发出 SourcePrepared"]
+    publish --> gate["等待 Core OpenGate 后再次检查源健康"]
+    gate --> consumer["Runtime 消费 FIFO；此后才写 Sink 与观察器"]
+    atvv["ATVV 通知与已验证的尾部"] --> sourceQueue["原 Source 环：15,360 个样本"]
+    sourceQueue --> reader["唯一 Source.Read 生产者：活动会话期间持续取源"]
+    readerStart --> reader
+    reader --> fifo["最多两秒 PCM FIFO；满时等待，不丢样本"]
+    fifo --> consumer
+    stop["Core StopSourceEffect"] --> sourceStop["请求 Source.Stop；保留原设备尾部规则"]
     sourceStop --> sourceQueue
-    read --> eof["Source 结束后 drain Sink"]
-    eof -->|Core 接受匹配的 SourceDrained| cleanup["关闭本会话的 Source/Sink 租约"]
-
-    atvv["ATVV 回调可送达 AUDIO_START 与音频包"] --> sourceQueue["有界 Source PCM 环形队列"]
-    sourceQueue -.-> overflow["发生溢出时：ErrSourceQueueFull 携带\n冻结的 QueueOverflowError.Snapshot() / atvv.SourceSnapshot"]
-    overflow -.-> snapshot["快照包含容量、占用、输入样本上限、\n高水位、协商采样率、decoded/read 总数和包数。\nStart/首包/overflow 是 Go 主机时间；monotonic elapsed\n为 AUDIO_START 至 overflow，不是硬件采音时间戳。"]
-    wait -.-> trace["可选有界 I/O trace 记录 receiver.wait 明细；\n明细截断不停止 Source/Sink 累计计数"]
-    wait -.-> waitBoundary["WaitReceiver 期间 Runtime Source.Read 尚未开始；\nSourcePrepared 后还要等 Core OpenGate"]
-    snapshot -.-> boundary["仅提供诊断：队列容量和交付行为不变。\n旧启动溢出的精确时序与根因仍待查。"]
-    trace -.-> boundary
-
-    prepare -->|错误或取消| fail["取消并 join watcher/stop 工作"]
+    consumer -->|合法 EOF 且已 Stop| drain["清电平与观察器；等待 Stop 完成，再 Sink.Drain"]
+    drain --> result["停止并 join watcher；取得可选 Transcript"]
+    result --> drained["投递 SourceDrained，由 Core 关闭本次 gate"]
+    drained --> join
+    prepare -->|错误| fail
     startSink -->|错误| fail
-    health -->|source 故障| fail
-    wait -->|错误、取消或超时| fail
-    healthAfter -->|source 故障| fail
-    watch -->|receiver watcher 报错| fail
-    sourceStop -->|Source.Stop 失败| fail
-    read -->|Read 或交付失败| fail
-    eof -->|Sink.Drain 失败| fail
-    fail --> cleanup
-    cleanup -->|关闭成功| released["释放会话 owner；连接可准备下一轮"]
-    cleanup -->|关闭失败| retained["保留原 owner；不转交给下一会话"]
-    retained -->|后续 Dispose/Close 重试| cleanup
-    quit["最终停用路由或退出 App"] --> runtimeClosed["等待 Runtime 会话资源关闭"]
-    runtimeClosed --> routeClosed["host 关闭连接级路由 owner"]
+    wait -->|错误或超时| fail
+    healthAfter -->|错误| fail
+    gate -->|源错误| fail
+    consumer -->|有序 Read 错误或写入失败| fail
+    sourceStop -->|错误| fail
+    drain -->|失败| fail
+    cancel["Core 取消、失权、断连或 watcher 失败"] --> fail["取消上下文；有故障则及时投递 SourceFailed"]
+    fail --> join["无锁 join Reader、watcher 与 Stop；忽略取消则继续持有资源"]
+    join --> cleanup["清 FIFO、观察器与电平，再关闭 Source/Sink 租约"]
+    cleanup -->|成功| released["释放 owner；连接可准备下一轮"]
+    cleanup -->|失败| retained["保留原 owner；后续显式重试清理"]
+    retained --> cleanup
+    sourceQueue -.-> overflow["超界保留 typed overflow 快照；明确失败"]
+    wait -.-> trace["有界 receiver.wait 明细与全程计数分开"]

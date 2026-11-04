@@ -10,29 +10,31 @@ flowchart LR
     identity -->|路由就绪| prepare["Core 发出 PrepareSource"]
     prepare --> runtime["audio-session Runtime\n拥有本会话的 Source 和 Sink"]
     remoteAudio["ATVV 控制/音频通知"] --> source["当前 ATVV Source\n有界 PCM 环形队列"]
-    runtime --> resources["准备 Source/Sink，校验格式与 source health"]
-    source --> resources
+    runtime --> resources["取得连接期已准备的 Source/Sink 租约；校验格式与源健康"]
+    resources --> reader["会话唯一 Source.Read 任务"]
+    source --> reader
+    reader --> stage["有界 PCM FIFO：两秒采样量；满时停读"]
     resources --> wait["可选 WaitReceiver\n核验活动接收器的精确 PID/UID"]
     wait -->|就绪| prepared["SourcePrepared"]
     prepared --> open["Core 开启本 token 的 PCM gate"]
-    open --> read["Runtime Source.Read"]
-    source --> read
-    read --> pcm["有界 PCM 数据块"]
+    open --> consume["Runtime 消费 FIFO；双门前零输出与观测"]
+    stage --> consume
+    consume --> pcm["有序 PCM 数据块"]
     pcm --> sink["配置的 Sink：Apple Speech 或兼容音频路由"]
     sink --> targetInput["目标输入路由\n本地 Sink 接受不证明目标已消费"]
-    read --> drain["本地 drain 与可选最终转写"]
+    consume -->|合法 EOF 且 Stop 已请求| drain["本地 drain 与可选最终转写"]
     drain --> text["Apple 路由可向按下时捕获的文本目标投递一次"]
 
     source -.-> overflow["ErrSourceQueueFull 时：typed QueueOverflowError\nSnapshot 是冻结的 SourceSnapshot 诊断"]
     wait -.-> waitTrace["可选 I/O 明细跨度：receiver.wait\n不等于收音就绪或 PCM 消费确认"]
-    overflow -.-> noFix["快照帮助定位时序；不会改变\n环形队列容量、节奏或交付"]
+    overflow -.-> noFix["原源环容量不变；FIFO 另有上限\n超界明确失败，不覆盖或丢弃样本"]
 
-    pcm --> meter["同次 Read 的 RMS/peak 与可选频谱\n仅当前 token；不保存录音"]
+    pcm --> meter["同次消费块的 RMS/peak 与可选频谱\n仅当前 token；不保存录音"]
     core --> snapshot["Core Snapshot 与完整 SessionToken"]
     meter --> projection["Host 语音呈现投影\n仅 Preparing / Capturing / Draining"]
     snapshot --> projection
     projection --> preference["show_voice_overlay 偏好"]
-    preference --> panel["MyGo 非激活 Panel\n鼠标穿透；可见时 30 Hz"]
+    preference --> panel["MyGo 非激活 Panel\n鼠标穿透；可见时请求 30 Hz；实测节拍单列"]
     panel --> gate{"arm64 macOS 27.0.1 build 26A434？"}
     gate -->|是| renderer["可选 siriglass 材质\n当前频谱进入 audioMeters 数组"]
     gate -->|否| unsupported["不支持：只关闭显示"]

@@ -63,12 +63,14 @@ func TestTranscriptOnlyAccompaniesSuccessfulDrain(t *testing.T) {
 	}
 }
 
-func TestSinkPreparationFailureNeverReadsOrEmitsTranscript(t *testing.T) {
+func TestSinkPreparationFailureDoesNotDeliverPCMOrTranscript(t *testing.T) {
 	want := errors.New("model missing")
 	source := newSourceStub()
-	sink := &transcriptSinkStub{Sink: newSinkStub(), startErr: want}
+	baseSink := newSinkStub()
+	sink := &transcriptSinkStub{Sink: baseSink, startErr: want}
+	observer := &countingPCMObserver{}
 	r := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
-		return Resources{Source: source, Sink: sink, SampleRate: 16000}, nil
+		return Resources{Source: source, Sink: sink, Observer: observer, SampleRate: 16000}, nil
 	})
 	core, device := newCoreForSessionTest(t, "prepare-failure")
 	_, _, prepare := beginVoiceSession(t, core, device, 1)
@@ -84,9 +86,7 @@ func TestSinkPreparationFailureNeverReadsOrEmitsTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	applySourceEffects(t, r, effects)
-	select {
-	case <-source.readStarted:
-		t.Fatal("read after preparation failed")
-	default:
+	if baseSink.writeCalls.Load() != 0 || observer.observations.Load() != 0 {
+		t.Fatalf("failed SessionSink startup delivered PCM: writes=%d observes=%d", baseSink.writeCalls.Load(), observer.observations.Load())
 	}
 }

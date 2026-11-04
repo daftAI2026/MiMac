@@ -552,12 +552,6 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 	}
 	prepared := waitCompletion(t, runtime)
 	openEffects := applyCompletion(t, core, prepared)
-	select {
-	case <-source.readStarted:
-		t.Fatal("source read began before OpenGate")
-	default:
-	}
-	applySourceEffects(t, runtime, openEffects)
 	waitSignal(t, source.readStarted)
 	select {
 	case frames := <-source.readLengths:
@@ -565,8 +559,14 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 			t.Fatalf("Read buffer = %d frames, want 20 ms / 320 frames", frames)
 		}
 	default:
-		t.Fatal("source did not receive a bounded read buffer")
+		t.Fatal("pre-gate Reader did not receive a bounded read buffer")
 	}
+	select {
+	case <-sink.writes:
+		t.Fatal("pre-gate Reader delivered PCM before Core opened the gate")
+	default:
+	}
+	applySourceEffects(t, runtime, openEffects)
 	source.reads <- readResult{pcm: []int16{4, -7, 11}}
 	select {
 	case got := <-sink.writes:

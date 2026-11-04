@@ -44,13 +44,19 @@ func TestReceiverReadyPrecedesSourcePreparedAndPCM(t *testing.T) {
 		t.Fatalf("premature completion: %+v", c)
 	default:
 	}
-	select {
-	case <-source.readStarted:
-		t.Fatal("read before receiver ready")
-	default:
+	waitSignal(t, source.readStarted)
+	if sink.writeCalls.Load() != 0 {
+		t.Fatal("pre-receiver staged PCM reached the sink")
 	}
 	close(release)
-	applySourceEffects(t, r, applyCompletion(t, core, waitCompletion(t, r)))
+	prepared := waitCompletion(t, r)
+	if prepared.Err != nil {
+		t.Fatalf("receiver readiness failed: %v", prepared.Err)
+	}
+	if sink.writeCalls.Load() != 0 {
+		t.Fatal("SourcePrepared alone opened PCM delivery before Core processed it")
+	}
+	applySourceEffects(t, r, applyCompletion(t, core, prepared))
 	source.reads <- readResult{pcm: []int16{11, 22, 33}}
 	select {
 	case got := <-sink.writes:
@@ -83,10 +89,8 @@ func TestReceiverWaitReleaseCancelsWithoutPCM(t *testing.T) {
 	applySourceEffects(t, r, effects)
 	waitSignal(t, source.closeStart)
 	waitSignal(t, sink.closeStart)
-	select {
-	case <-source.readStarted:
-		t.Fatal("cancelled receiver started source")
-	default:
+	if sink.writeCalls.Load() != 0 {
+		t.Fatal("cancelled receiver delivered staged PCM")
 	}
 	select {
 	case c := <-r.Completions():
@@ -115,10 +119,8 @@ func TestReceiverFailureClosesWithoutPCM(t *testing.T) {
 	applySourceEffects(t, r, applyExpectedFailure(t, core, completion))
 	waitSignal(t, source.closeStart)
 	waitSignal(t, sink.closeStart)
-	select {
-	case <-source.readStarted:
-		t.Fatal("failed receiver started source")
-	default:
+	if sink.writeCalls.Load() != 0 {
+		t.Fatal("failed receiver delivered staged PCM")
 	}
 }
 
@@ -150,10 +152,8 @@ func TestReceiverDeadlineDoesNotTreatLateNilAsReady(t *testing.T) {
 	}
 	waitSignal(t, source.closeStart)
 	waitSignal(t, sink.closeStart)
-	select {
-	case <-source.readStarted:
-		t.Fatal("timeout started source")
-	default:
+	if sink.writeCalls.Load() != 0 {
+		t.Fatal("receiver timeout delivered staged PCM")
 	}
 }
 
@@ -178,6 +178,10 @@ func TestReceiverIgnoringCancellationRetainsOwnedResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitSignal(t, entered)
+	// Startup Read is intentionally active before the receiver wait ends. Mark
+	// that in-flight read before cancellation so this test checks that a late
+	// WaitReceiver return does not start a second read after the session closed.
+	waitSignal(t, source.readStarted)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := r.Close(ctx); !errors.Is(err, ErrCleanupPending) {
@@ -246,10 +250,8 @@ func TestReceiverGateRejectsSourceFaultBeforePublishingPrepared(t *testing.T) {
 			applySourceEffects(t, r, applyExpectedFailure(t, core, completion))
 			waitSignal(t, source.closeStart)
 			waitSignal(t, sink.closeStart)
-			select {
-			case <-source.readStarted:
-				t.Fatal("faulted source started PCM")
-			default:
+			if sink.writeCalls.Load() != 0 {
+				t.Fatal("faulted source delivered staged PCM")
 			}
 		})
 	}

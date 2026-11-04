@@ -21,14 +21,23 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		f := newReceiverChainFixture(t)
 		f.pressDown(t)
 		waitReceiverChainSignal(t, f.sink.waiting)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		waitReceiverChainSignal(t, f.source.readStarted) // Prove pre-gate reading is active.
+		assertReceiverChainNoPCM(t, f)
 		if f.resolveCalls.Load() != 1 {
 			t.Fatalf("physical voice start resolved tool action %d times, want 1", f.resolveCalls.Load())
 		}
 		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
 
 		f.sink.receiverDecision <- nil
-		runHostTask(t, f.tasks) // SourcePrepared on the Core owner opens Runtime's read gate.
+		var sourcePrepared func()
+		select {
+		case sourcePrepared = <-f.tasks:
+		case <-time.After(2 * time.Second):
+			t.Fatal("SourcePrepared did not reach the Core owner")
+		}
+		assertReceiverChainNoPCM(t, f) // Receiver is ready; Core has not opened output.
+		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
+		sourcePrepared()
 		pcm := waitReceiverChainPCM(t, f.sink.writes)
 		if !reflect.DeepEqual(pcm, []int16{17, -4, 3}) {
 			t.Fatalf("copied PCM = %v", pcm)
@@ -62,7 +71,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		f := newReceiverChainFixture(t)
 		f.pressDown(t)
 		waitReceiverChainSignal(t, f.sink.waiting)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
 
 		f.pressUp(t)
@@ -71,7 +80,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 			t.Fatalf("early physical release did not retain the draining voice lease: %+v", snapshot)
 		}
 		assertReceiverChainTargetStart(t, f.keySink, false)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 
 		f.sink.receiverDecision <- nil
 		runHostTask(t, f.tasks) // Late SourcePrepared opens the already-draining session's gate.
@@ -97,7 +106,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		f := newReceiverChainFixture(t)
 		f.pressDown(t)
 		waitReceiverChainSignal(t, f.sink.waiting)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 		assertReceiverChainCore(t, f, true, bridge.PhasePreparing)
 
 		if err := f.host.coordinator.step(bridge.DeviceDisconnected(f.device)); err != nil {
@@ -105,7 +114,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		}
 		waitReceiverChainSignal(t, f.source.closed)
 		waitReceiverChainSignal(t, f.sink.closed)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.PressedButtons) != 0 || len(snapshot.HeldKeys) != 0 {
 			t.Fatalf("device disconnect left audio/Core state: %+v", snapshot)
 		}
@@ -120,14 +129,14 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		f := newReceiverChainFixture(t)
 		f.pressDown(t)
 		waitReceiverChainSignal(t, f.sink.waiting)
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 
 		f.sink.receiverDecision <- io.ErrUnexpectedEOF
 		runHostTask(t, f.tasks) // SourceFailed is applied on the same Core owner as physical input.
 		waitReceiverChainSignal(t, f.source.closed)
 		waitReceiverChainSignal(t, f.sink.closed)
 
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 		if snapshot := f.host.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.HeldKeys) != 0 || len(snapshot.PressedButtons) != 1 {
 			t.Fatalf("receiver failure left action/session state before physical release: %+v", snapshot)
 		}
@@ -159,7 +168,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		if snapshot := f.host.coordinator.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != bridge.PhaseDraining || len(snapshot.PressedButtons) != 0 || !reflect.DeepEqual(snapshot.HeldKeys, []bridge.Key{"RightCommand"}) {
 			t.Fatalf("early release did not retain the draining voice lease: %+v", snapshot)
 		}
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 
 		f.sink.receiverDecision <- io.ErrUnexpectedEOF
 		runHostTask(t, f.tasks) // SourceFailed must retire the already-draining Core session.
@@ -171,7 +180,7 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		if f.host.report.AudioError == "" || f.sink.drainCalls.Load() != 0 {
 			t.Fatalf("receiver failure looked like a successful drain: report=%+v drains=%d", f.host.report, f.sink.drainCalls.Load())
 		}
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
 		assertReceiverChainTargetStart(t, f.keySink, true)
 		assertReceiverChainNoMainTask(t, f.tasks)
 		if f.host.audioResourcesReady() {
@@ -266,7 +275,10 @@ func TestReceiverChainPhysicalVoiceWaitsForReceiverBeforeCopy(t *testing.T) {
 		if len(f.keySink.batches) != 0 || f.sink.waitCalls.Load() != 0 {
 			t.Fatalf("unready resources emitted target/audio work: keys=%v receiver waits=%d", f.keySink.batches, f.sink.waitCalls.Load())
 		}
-		assertReceiverChainNoPCM(t, f.source, f.sink)
+		assertReceiverChainNoPCM(t, f)
+		if f.source.readCalls.Load() != 0 {
+			t.Fatal("unready route started source work without an admitted session")
+		}
 
 		f.pressUp(t)
 		if len(f.host.coordinator.core.Snapshot().PressedButtons) != 0 || len(f.keySink.batches) != 0 {
@@ -280,6 +292,8 @@ type receiverChainFixture struct {
 	host         *shell
 	tasks        chan func()
 	keySink      *routedEffectsKeySink
+	observer     *receiverChainObserver
+	token        bridge.SessionToken
 	device       bridge.Device
 	press        bridge.PressToken
 	source       *receiverChainSource
@@ -317,7 +331,12 @@ func newReceiverChainFixtureWithReadiness(t *testing.T, ready func() bool) *rece
 	}
 	tasks := make(chan func(), 8)
 	host.audioPost = func(fn func()) { tasks <- fn }
-	host.audioResources = route.Prepare
+	observer := &receiverChainObserver{}
+	host.audioResources = func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
+		resources, err := route.Prepare(ctx, token)
+		resources.Observer = observer
+		return resources, err
+	}
 	host.audioResourcesClose = route.Close
 	if ready == nil {
 		ready = route.Ready
@@ -340,7 +359,7 @@ func newReceiverChainFixtureWithReadiness(t *testing.T, ready func() bool) *rece
 	press := voiceAudioTestPress(t, device, 1)
 	f := &receiverChainFixture{
 		host: host, tasks: tasks, keySink: keySink, device: device, press: press,
-		source: source, sink: sink, sources: sources, sinks: sinks,
+		source: source, sink: sink, sources: sources, sinks: sinks, observer: observer,
 	}
 	host.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) {
 		f.resolveCalls.Add(1)
@@ -454,6 +473,7 @@ func newXiaomiAudioRouteForReceiverChain(t *testing.T, generation uint64, config
 func (f *receiverChainFixture) pressDown(t *testing.T) {
 	t.Helper()
 	acceptVoiceAudioEdge(t, f.host.coordinator, f.device, f.press, devices.EdgeDown)
+	f.token = f.host.coordinator.core.Snapshot().Session.Token
 }
 
 func (f *receiverChainFixture) pressUp(t *testing.T) {
@@ -542,13 +562,20 @@ func assertReceiverChainTargetKeyEffects(t *testing.T, sink *routedEffectsKeySin
 	}
 }
 
-func assertReceiverChainNoPCM(t *testing.T, source *receiverChainSource, sink *receiverChainSink) {
+// Reading into the bounded stage is allowed; neither receiver readiness nor
+// a queued SourcePrepared event alone may authorize output or display levels.
+func assertReceiverChainNoPCM(t *testing.T, f *receiverChainFixture) {
 	t.Helper()
-	if source.readCalls.Load() != 0 || sink.writeCalls.Load() != 0 {
-		t.Fatalf("PCM crossed receiver gate early: reads=%d writes=%d", source.readCalls.Load(), sink.writeCalls.Load())
+	if f.sink.writeCalls.Load() != 0 || f.observer.observations.Load() != 0 {
+		t.Fatalf("PCM crossed receiver/Core gates: writes=%d observations=%d", f.sink.writeCalls.Load(), f.observer.observations.Load())
+	}
+	if f.token.ID() != 0 {
+		if _, available := f.host.audioSession.runtime.InputLevel(f.token); available {
+			t.Fatal("input level appeared before receiver and Core gates opened")
+		}
 	}
 	select {
-	case pcm := <-sink.writes:
+	case pcm := <-f.sink.writes:
 		t.Fatalf("PCM appeared before receiver confirmation: %v", pcm)
 	default:
 	}
@@ -584,22 +611,24 @@ func assertReceiverChainNoMainTask(t *testing.T, tasks <-chan func()) {
 }
 
 type receiverChainSource struct {
-	readCalls atomic.Int32
-	stopCalls atomic.Int32
-	closeOnce sync.Once
-	stopOnce  sync.Once
-	stopped   chan struct{}
-	closed    chan struct{}
+	readCalls   atomic.Int32
+	readStarted chan struct{}
+	stopCalls   atomic.Int32
+	closeOnce   sync.Once
+	stopOnce    sync.Once
+	stopped     chan struct{}
+	closed      chan struct{}
 }
 
 func newReceiverChainSource() *receiverChainSource {
-	return &receiverChainSource{stopped: make(chan struct{}), closed: make(chan struct{})}
+	return &receiverChainSource{stopped: make(chan struct{}), closed: make(chan struct{}), readStarted: make(chan struct{}, 1)}
 }
 
 func (s *receiverChainSource) Ready(ctx context.Context) (int, error) { return 16000, ctx.Err() }
 func (*receiverChainSource) Err() error                               { return nil }
 func (s *receiverChainSource) Read(ctx context.Context, dst []int16) (int, error) {
 	if s.readCalls.Add(1) == 1 {
+		s.readStarted <- struct{}{}
 		return copy(dst, []int16{17, -4, 3}), nil
 	}
 	select {
@@ -684,3 +713,9 @@ func (s *receiverChainSink) Close() error {
 
 var _ audiosession.Source = (*receiverChainSource)(nil)
 var _ xiaomiPreparedSink = (*receiverChainSink)(nil)
+
+// The host fixture observes the same borrowed PCM hook as the real display.
+type receiverChainObserver struct{ observations atomic.Int32 }
+
+func (o *receiverChainObserver) Observe([]int16, time.Time) { o.observations.Add(1) }
+func (*receiverChainObserver) Clear()                       {}

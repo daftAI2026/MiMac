@@ -64,8 +64,10 @@ type Resources struct {
 	// WaitReceiver is supplied by an external-consumer adapter. It must verify
 	// the session's exact input route and active consumer, not merely that a
 	// shortcut was sent. Nil is for routes requiring no external readiness.
-	// It runs before SourcePrepared/Read and must honor cancellation. A late
-	// return after cancellation never opens the gate; resources remain owned.
+	// It runs before SourcePrepared and PCM delivery. Source.Read may already be
+	// staging bounded PCM, but no output is delivered until Core opens the gate.
+	// It must honor cancellation; a late return never opens the gate and the
+	// resources remain owned.
 	WaitReceiver func(context.Context) error
 	// WatchReceiver runs for the rest of the session after WaitReceiver succeeds.
 	// It should return a non-nil error when the verified receiver stops matching
@@ -93,6 +95,8 @@ var (
 )
 
 const resourceID = "audio-stream"
+
+const receiverWaitBudget = 2 * time.Second
 
 // Runtime starts no goroutine until PrepareSource. The two-slot completion
 // channel carries control events only. A consumer must process these on the
@@ -303,18 +307,26 @@ func (r *Runtime) run(s *resource) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
 	}
 	if s.ctx.Err() == nil && err == nil {
+		// The resources now belong to Runtime and have a valid negotiated PCM
+		// format. Consume an armed source before sink setup or receiver readiness
+		// can leave its bounded producer queue idle; the reader can only stage.
+		err = sourceHealth(resources.Source)
+	}
+	var reader *startupReader
+	if s.ctx.Err() == nil && err == nil {
+		reader = newStartupReader(r, s)
+		reader.start()
+	}
+	if s.ctx.Err() == nil && err == nil {
 		if sink, ok := resources.Sink.(SessionSink); ok {
 			err = sink.StartSession(s.ctx)
 		}
-	}
-	if s.ctx.Err() == nil && err == nil {
-		err = sourceHealth(resources.Source)
 	}
 	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
 		// This is a failure deadline, not a startup delay. Core decides whether
 		// physical release cancels this wait or keeps the prepared source alive
 		// long enough to open the gate and drain its captured tail.
-		readyCtx, cancelReady := context.WithTimeout(s.ctx, 2*time.Second)
+		readyCtx, cancelReady := context.WithTimeout(s.ctx, receiverWaitBudget)
 		err = resources.WaitReceiver(readyCtx)
 		err = errors.Join(err, readyCtx.Err())
 		cancelReady()
@@ -333,15 +345,16 @@ func (r *Runtime) run(s *resource) {
 		select {
 		case <-s.gate:
 			if s.ctx.Err() == nil {
-				err = r.copyPCM(s, watcher)
+				// A source can fault asynchronously while the Core gate is closed.
+				// Recheck it before the first staged sample can reach the sink.
+				err = sourceHealth(resources.Source)
+				if err == nil {
+					reader.openDelivery()
+					err = r.copyPCM(s, reader, watcher)
+				}
 			}
 		case <-s.ctx.Done():
 		}
-	}
-	if resources.Observer != nil {
-		// Includes failed preparation/receiver readiness and gate cancellation,
-		// which never enter copyPCM. Clear before completion or resource close.
-		resources.Observer.Clear()
 	}
 	r.mu.Lock()
 	if s.cause == nil && err != nil && s.ctx.Err() == nil {
@@ -349,10 +362,22 @@ func (r *Runtime) run(s *resource) {
 	}
 	cause := s.cause
 	r.mu.Unlock()
+	// Cancel before notifying Core, so a blocked startup read cannot continue
+	// producing while the failure event releases the target's held shortcut.
+	s.cancel()
 	if cause != nil {
 		r.emit(Completion{Event: bridge.SourceFailed(s.token), Err: cause})
 	}
-	s.cancel()
+	// The reader owns Source.Read until it joins. Never wait under Runtime.mu.
+	if reader != nil {
+		<-reader.done
+		reader.stage.release()
+	}
+	r.clearInputLevel(s)
+	if resources.Observer != nil {
+		// Includes failed preparation/receiver readiness and gate cancellation.
+		resources.Observer.Clear()
+	}
 	watcher.cancelAndWait()
 	r.mu.Lock()
 	stopDone := s.stopDone
@@ -365,15 +390,18 @@ func (r *Runtime) run(s *resource) {
 	r.cleanup(s)
 }
 
-func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
+func (r *Runtime) copyPCM(s *resource, reader *startupReader, watcher *receiverWatch) error {
 	defer r.clearInputLevel(s)
+	if reader == nil {
+		return errors.New("audiosession: missing session PCM reader")
+	}
 	var storage [320]int16
 	pcm := storage[:s.resources.SampleRate/50]
 	for {
 		if err := s.ctx.Err(); err != nil {
 			return err
 		}
-		n, readErr := s.resources.Source.Read(s.ctx, pcm)
+		n, readErr := reader.read(pcm)
 		if n < 0 || n > len(pcm) {
 			return errors.New("audiosession: invalid PCM block length")
 		}
@@ -390,63 +418,7 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 			}
 		}
 		if readErr == io.EOF {
-			// The source has ended even if the output still needs time to drain.
-			r.clearInputLevel(s)
-			if s.resources.Observer != nil {
-				s.resources.Observer.Clear()
-			}
-			r.mu.Lock()
-			stopDone, stopCtx := s.stopDone, s.stopCtx
-			r.mu.Unlock()
-			if stopDone == nil {
-				return errors.New("audiosession: source ended without a stop request")
-			}
-			select {
-			case <-stopDone:
-			case <-s.ctx.Done():
-				return s.ctx.Err()
-			}
-			if err := s.resources.Sink.Drain(stopCtx); err != nil {
-				return err
-			}
-			if err := s.ctx.Err(); err != nil {
-				return err
-			}
-			r.mu.Lock()
-			if s.stopWatch != nil {
-				s.stopWatch()
-			}
-			deadlineErr := stopCtx.Err()
-			r.mu.Unlock()
-			if deadlineErr != nil {
-				return deadlineErr
-			}
-			watcher.cancelAndWait()
-			if err := s.ctx.Err(); err != nil {
-				return err
-			}
-			r.mu.Lock()
-			cause := s.cause
-			r.mu.Unlock()
-			if cause != nil {
-				return cause
-			}
-			completion := Completion{Event: bridge.SourceDrained(s.token)}
-			if sink, ok := s.resources.Sink.(TranscriptSink); ok {
-				text, present, err := sink.Transcript()
-				if err != nil {
-					return err
-				}
-				if present {
-					completion.Transcript = &Transcript{Token: s.token, Text: text}
-				}
-			}
-			if err := s.ctx.Err(); err != nil {
-				return err
-			}
-			r.emit(completion)
-			<-s.ctx.Done() // Core decides when to close its gate and resource.
-			return nil
+			return r.drainEOF(s, watcher)
 		}
 		if readErr != nil {
 			return readErr
@@ -455,6 +427,66 @@ func (r *Runtime) copyPCM(s *resource, watcher *receiverWatch) error {
 			return io.ErrNoProgress
 		}
 	}
+}
+
+func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
+	// The source has ended even if the output still needs time to drain.
+	r.clearInputLevel(s)
+	if s.resources.Observer != nil {
+		s.resources.Observer.Clear()
+	}
+	r.mu.Lock()
+	stopDone, stopCtx := s.stopDone, s.stopCtx
+	r.mu.Unlock()
+	if stopDone == nil {
+		return errors.New("audiosession: source ended without a stop request")
+	}
+	select {
+	case <-stopDone:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	if err := s.resources.Sink.Drain(stopCtx); err != nil {
+		return err
+	}
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if s.stopWatch != nil {
+		s.stopWatch()
+	}
+	deadlineErr := stopCtx.Err()
+	r.mu.Unlock()
+	if deadlineErr != nil {
+		return deadlineErr
+	}
+	watcher.cancelAndWait()
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	cause := s.cause
+	r.mu.Unlock()
+	if cause != nil {
+		return cause
+	}
+	completion := Completion{Event: bridge.SourceDrained(s.token)}
+	if sink, ok := s.resources.Sink.(TranscriptSink); ok {
+		text, present, err := sink.Transcript()
+		if err != nil {
+			return err
+		}
+		if present {
+			completion.Transcript = &Transcript{Token: s.token, Text: text}
+		}
+	}
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	r.emit(completion)
+	<-s.ctx.Done() // Core decides when to close its gate and resource.
+	return nil
 }
 
 func sourceHealth(source Source) error {

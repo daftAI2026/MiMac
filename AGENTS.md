@@ -47,3 +47,6 @@
 - 功能边界、会话时序或插件生命周期变化时，同步工作台对应的 `tools/workbench/diagrams/*.mmd` 和 `manifest.json`，用 Pele 重新构建并核对源码入口。架构图中的实现路径与验收范围分开，不能把端点准备当活动目标 ACK，也不能把诊断快照当成功修复。
 
 - 性能证据先核实际 profile PID、可执行文件和原生库 SHA 与身份清单一致。MyGo 根绘制入口、SwiftUI body、采样栈命中和进程 CPU 是不同计数；名义刷新率与实测帧间隔分别记录，不反复调整调度只为凑名义 Hz，也不把 compose-only 耗时当可见渲染 CPU。
+
+- PCM 预读与目标交付是两个 I/O 职责，Core 仍是唯一业务状态机。修改前用真实 Source 加有界、按采样时长回收的 Sink 验证持续流；无限快 fake Sink 会漏掉冲刷积压时源无人读的问题。当前 AudioQueue 仅四个 20ms buffer，不能开 gate 就撤掉 Reader。准备期 Source.Err 快照与有序 Source.Read 结果分别处理；active n>0+error 必须先交付合法样本，不用额外健康短路丢弃已排队数据。
+- 每次实验使用唯一结果目录，编译失败、预期红测与功能绿测分别留存；文件名不决定验收结果。失败时停止依赖阶段，在已授权范围修正后可自主重跑。文件路径先从 rg --files 或 manifest 定位；对同一快照的读取与更新必须串行，不能边复制旧源边覆盖它。

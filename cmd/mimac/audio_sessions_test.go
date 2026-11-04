@@ -299,12 +299,18 @@ func TestAudioQuitRetryPreservesUnrelatedReportError(t *testing.T) {
 
 func TestAudioCompletionQueuedBeforeShutdownCannotReopenGate(t *testing.T) {
 	s, tasks, source, sink := newSessionHostTest(t)
+	source.samples <- []int16{23, -7, 11}
 	beginHostVoice(t, s)
+	token := s.coordinator.core.Snapshot().Session.Token
 	var prepared func()
 	select {
 	case prepared = <-tasks:
 	case <-time.After(time.Second):
 		t.Fatal("prepared callback missing")
+	}
+	waitHostSignal(t, source.reading) // Pre-gate staging is allowed, delivery is not.
+	if snapshot := s.coordinator.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != bridge.PhasePreparing {
+		t.Fatalf("positive control: queued completion already changed Core: %+v", snapshot)
 	}
 	quitCalls := 0
 	s.deferAudioQuit(func() {}, func(fn func()) { tasks <- fn }, func() { quitCalls++ })
@@ -312,12 +318,21 @@ func TestAudioCompletionQueuedBeforeShutdownCannotReopenGate(t *testing.T) {
 	runHostTask(t, tasks)
 	waitHostSignal(t, sink.closed)
 	select {
-	case <-source.reading:
-		t.Fatal("late completion opened the source gate")
+	case pcm := <-sink.writes:
+		t.Fatalf("late completion delivered staged PCM during shutdown: %v", pcm)
 	default:
 	}
-	if quitCalls != 1 {
-		t.Fatal(quitCalls)
+	if sink.drains.Load() != 0 {
+		t.Fatal("shutdown cancellation was treated as a normal drain")
+	}
+	if _, available := s.audioSession.runtime.InputLevel(token); available {
+		t.Fatal("late completion exposed an input level after shutdown")
+	}
+	if snapshot := s.coordinator.core.Snapshot(); snapshot.HasSession || len(snapshot.HeldKeys) != 0 {
+		t.Fatalf("late completion restored the retired Core session: %+v", snapshot)
+	}
+	if quitCalls != 1 || source.closed.Load() != 1 {
+		t.Fatalf("shutdown counts: quits=%d source close=%d", quitCalls, source.closed.Load())
 	}
 }
 

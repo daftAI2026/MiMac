@@ -26,7 +26,8 @@
       "internal/platform/runningapp/runningapp.go",
       "internal/platform/siriglass/siriglass.go",
       "internal/platform/siriglass/siriglass_other.go",
-      "internal/platform/siriglass/siriglass_darwin_arm64.go"
+      "internal/platform/siriglass/siriglass_darwin_arm64.go",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
@@ -44,7 +45,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "HID 边沿由主线程协调器交给 Core；工具音频路由为每轮准备 Source/Sink owner。WaitReceiver 先验证精确活动目标，再发布 SourcePrepared、开放 PCM gate。receiver.wait span 与 ATVV SourceSnapshot 只增加诊断，不改变有界环形队列或交付；WeType 和豆包验收范围分别记载。",
+    "summary": "连接期准备 Source/Sink，按键后 Runtime 先启动唯一读源任务，等待接收器与 Core 期间只填有界 FIFO；双门后才写 Sink、记录电平和调用观察器。源码已通过合成与隔离宿主集成；当前固定 App 尚未替换，真实设备新链待验。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -67,7 +68,8 @@
       "internal/audiosession/level.go",
       "internal/bridge/core.go",
       "internal/platform/siriglass/meters.go",
-      "internal/platform/siriglass/spectral/spectral.go"
+      "internal/platform/siriglass/spectral/spectral.go",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
@@ -79,13 +81,14 @@
       "internal/bridge/action.go",
       "cmd/mimac/coordinator.go",
       "cmd/mimac/voice_binding.go",
-      "internal/audiosession/runtime.go"
+      "internal/audiosession/runtime.go",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
     "id": "resource-preparation-cleanup",
     "title": "资源准备、失败与清理",
-    "summary": "Runtime 先准备 Source/Sink，并按需等待精确活动目标，再发布 SourcePrepared；Core 开 gate 后才开始 PCM Read。receiver.wait 是有界明细跨度；ATVV 溢出快照只提供观测，不改容量/交付；旧启动溢出的具体时序和根因未闭合。",
+    "summary": "源读取与目标消费分开，活动会话内唯一 Reader 与原 Runtime consumer 共用两秒有界 FIFO。取消先退役控制，再 join I/O 后关闭资源；active Read 的合法样本先于其终止错误交付。旧实机故障精确时间线仍开放；不把合成绿测当新包现场验收。",
     "sourcePaths": [
       "internal/audiosession/runtime.go",
       "cmd/mimac/audio_sessions.go",
@@ -97,7 +100,8 @@
       "cmd/mimac/voice_io_trace.go",
       "internal/adapters/xiaomi/atvv/source.go",
       "internal/adapters/processinput/processinput.go",
-      "internal/pluginrt/runtime.go"
+      "internal/pluginrt/runtime.go",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
@@ -154,7 +158,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "共用 Runtime 在现有 PCM Read 上提供按 Core token 匹配的有界只读观测。Siri 恢复出的数值 profile 与合成对照已过；真人实时随声观感未验。关闭显示或显示故障不影响音频路由。",
+    "summary": "共用 Runtime 在 Core gate 后的 PCM 消费路径提供按 token 匹配的有界只读观测。Siri 数值 profile 合成对照已过；本轮等值 Bool 通知 ABBA 无 CPU 收益，未合入。真人明显随声与完整状态仍待验。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
@@ -181,13 +185,14 @@
       "internal/platform/siriglass/native/Sources/CGlassCompatibility/Compatibility.m",
       "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_abi.S",
       "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_explicit.S",
-      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_make.m"
+      "internal/platform/siriglass/native/Sources/CGlassPrivateABI/glass_make.m",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
     "id": "shared-pcm-observation",
     "title": "共享 PCM 观测",
-    "summary": "经过 MiMac PCM 通道的工具共享现有 Read worker 和可选有界观察器；不另开采音通道，也不保存录音历史。本地 Sink 接受不等于目标实际消费；自行采音的工具仍需单独适配观测。",
+    "summary": "经过 MiMac PCM 通道的工具共享同一有界数据通路；观察器只在双门后的消费任务调用，不另开麦克风、不保存录音。Source.Read 的提前暂存不触发显示；本地 Sink 接受仍不等于目标消费。",
     "sourcePaths": [
       "cmd/mimac/audio_sessions.go",
       "cmd/mimac/voice_meter.go",
@@ -198,7 +203,8 @@
       "internal/audiosession/level.go",
       "internal/platform/siriglass/meters.go",
       "internal/platform/siriglass/spectrum_profile.go",
-      "internal/platform/siriglass/spectral/spectral.go"
+      "internal/platform/siriglass/spectral/spectral.go",
+      "internal/audiosession/pcm_reader.go"
     ]
   },
   {
