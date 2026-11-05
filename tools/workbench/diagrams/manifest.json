@@ -45,7 +45,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "等待接收器与Core期间只填有界FIFO，双门后才输出。源停止与EOF完成后按有限尾部时长排空，避免停止总截止截断已接收PCM；Core仍唯一业务状态机。当前固定8c包不含本次尾部修复，新包及现场待验。",
+    "summary": "等待接收器与 Core 期间只填有界 FIFO，双门后才输出；源停止与 EOF 完成后按有限尾部时长排空。217c47d 固定包两轮真实豆包整句追加，109680/93360 源样本与已知输出接受数分别相等；旧偶发缺字与 Siri 观感仍待。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -88,7 +88,7 @@
   {
     "id": "resource-preparation-cleanup",
     "title": "资源准备、失败与清理",
-    "summary": "唯一 Reader 与 Runtime consumer 共用两秒有界 FIFO。设备停止与 EOF 双屏障前保留两秒守卫；屏障后按剩余PCM时长加I/O余量排空，旧deadline不能取消新阶段。取消仍由Core传播，join I/O后释放资源。合成原生AudioQueue通过，真人新包待验。",
+    "summary": "设备停止与 EOF 双条件完成前保留两秒守卫；之后按剩余 PCM 时长加 I/O 余量排空，旧 deadline 不能取消新阶段。合成原生 AudioQueue 和两轮真实豆包结束清理通过；8 kHz 满环边界与 native 同步调用卡住另验。",
     "sourcePaths": [
       "internal/audiosession/runtime.go",
       "cmd/mimac/audio_sessions.go",
