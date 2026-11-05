@@ -223,5 +223,16 @@
       "cmd/mimac/voice_tools.go",
       "internal/pluginrt/runtime.go"
     ]
+  },
+  {
+    "id": "release-components",
+    "title": "发行组件与校验",
+    "summary": "发行组件由显式方案决定，不随构建机偶然具备的库改变。core-only 排除 Siri 私有库；siri-glass 要求精确 ABI 门与六库整包校验。本机两类 arm64 实包已通过；预览包校验不代表签名公证或正式发布，也不自动替换现用全功能包。",
+    "sourcePaths": [
+      "script/build_voice_overlay.sh",
+      "script/verify_release.py",
+      "script/verify_app_bundle.py",
+      ".github/workflows/release.yml"
+    ]
   }
 ]

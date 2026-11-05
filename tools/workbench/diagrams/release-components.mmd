@@ -1,0 +1,11 @@
+flowchart LR
+    source["冻结源码与日期版本"] --> profile{"显式组件方案"}
+    profile -->|core-only| core["五个原生库；排除 Siri 私有库"]
+    profile -->|siri-glass| gate{"arm64 + 精确系统 ABI 门满足？"}
+    gate -->|否| reject["停止构建；不复用旧库"]
+    gate -->|是| siri["五个原生库 + SiriGlassBridge"]
+    core --> verify["核对源码、版本、架构、符号、签名与 SHA"]
+    siri --> verify
+    verify --> manifest["manifest 记录方案、实际组件与 ABI 门结果"]
+    manifest --> preview["可复核预览包；不自动替换当前 App"]
+    preview --> distribution["签名、公证、升级验收与正式发版另设门"]
