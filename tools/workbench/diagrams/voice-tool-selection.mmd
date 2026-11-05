@@ -25,3 +25,13 @@ flowchart LR
     verify --> preflight
     revoke["改选 / 停用 / 退出 / 新读取替代"] --> dropped
     background["登录启动 / 自动恢复 / 仅启用插件"] --> unchanged
+    assets["Apple 缺模型：显式下载"] --> owner["复用发现任务；持有 sequence 与 cancel"]
+    owner --> preparing["正在准备；可取消"]
+    preparing -->|取消或停用| cancelling["请求取消；保留任务直到回调"]
+    cancelling --> terminal{"原生清理完成？"}
+    terminal -->|否| pending["保留 native owner；提示重新检查"]
+    pending -->|显式重新检查| closePending["先 Close 旧 owner；失败不新建"]
+    closePending --> terminal
+    terminal -->|是| retryAsset["记录本轮结果；允许显式重试"]
+    retryAsset --> assets
+    preparing -->|成功| sequence

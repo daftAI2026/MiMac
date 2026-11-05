@@ -122,7 +122,7 @@
   {
     "id": "voice-tool-selection",
     "title": "语音工具启用与选择",
-    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。",
+    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。",
     "sourcePaths": [
       "cmd/mimac/voice_tools.go",
       "cmd/mimac/voice_binding.go",
@@ -136,7 +136,10 @@
       "internal/adapters/doubao/actions.go",
       "internal/adapters/wetype/actions.go",
       "internal/platform/inputsource/inputsource_darwin.go",
-      "internal/platform/inputsource/select.go"
+      "internal/platform/inputsource/select.go",
+      "cmd/mimac/apple_voice_tool.go",
+      "cmd/mimac/apple_voice_lifecycle_test.go",
+      "cmd/mimac/apple_voice_existing_api_test.go"
     ]
   },
   {
