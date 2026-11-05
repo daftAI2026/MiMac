@@ -6,12 +6,34 @@ NATIVE_DIR="$ROOT_DIR/internal/platform/siriglass/native"
 RESOURCE_DIR="$ROOT_DIR/resources/darwin-arm64"
 LIBRARY_NAME="libSiriGlassBridge.dylib"
 LIBRARY_DEST="$RESOURCE_DIR/$LIBRARY_NAME"
+MODE="${1:-auto}"
+
+if (( $# > 1 )); then
+	echo "usage: $0 [auto|core-only|siri-required]" >&2
+	exit 2
+fi
+case "$MODE" in
+	auto|core-only|siri-required) ;;
+	*)
+		echo "usage: $0 [auto|core-only|siri-required]" >&2
+		exit 2
+		;;
+esac
 
 # This is an owned generated resource. Remove only it, including when another
 # host must not reuse a stale ABI image from this checkout.
 rm -f "$LIBRARY_DEST"
 
+if [[ "$MODE" == core-only ]]; then
+	echo "Selected core-only release profile; Siri glass bridge excluded."
+	exit 0
+fi
+
 if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+	if [[ "$MODE" == siri-required ]]; then
+		echo "Cannot build required Siri glass bridge: requires macOS arm64." >&2
+		exit 1
+	fi
 	echo "Skipping Siri glass bridge: requires macOS arm64."
 	exit 0
 fi
@@ -19,6 +41,10 @@ fi
 product_version="$(/usr/bin/sw_vers -productVersion)"
 build_version="$(/usr/bin/sw_vers -buildVersion)"
 if [[ "$product_version" != 27.0.1 || "$build_version" != 26A434 ]]; then
+	if [[ "$MODE" == siri-required ]]; then
+		echo "Cannot build required Siri glass bridge: requires macOS 27.0.1 build 26A434; found $product_version build $build_version." >&2
+		exit 1
+	fi
 	echo "Skipping Siri glass bridge: requires macOS 27.0.1 build 26A434; found $product_version build $build_version."
 	exit 0
 fi

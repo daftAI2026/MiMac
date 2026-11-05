@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from release_version import apply_versions
-from verify_release import verify_build_info, verify_release, verify_source, verify_versions
+from verify_app_bundle import REQUIRED, SIRI
+from verify_release import SIRI_ABI_HOST_GATE, verify_build_info, verify_release, verify_source, verify_versions
 
 
 RELEASE_DATE = "2026.11.01"
@@ -99,52 +100,95 @@ def set_build_setting(info: dict, key: str, value: str) -> None:
     info["Settings"].append({"Key": key, "Value": value})
 
 
+def make_bundle(root: Path, include_siri: bool) -> Path:
+    bundle = root / "MiMac.app"
+    contents = bundle / "Contents"
+    resources = contents / "Resources"
+    (contents / "MacOS").mkdir(parents=True)
+    resources.mkdir(parents=True)
+    (contents / "Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": "dev.mimac.app",
+        "CFBundleExecutable": "MiMac",
+        "CFBundleShortVersionString": RELEASE_DATE,
+        "CFBundleVersion": BUILD_NUMBER,
+    }))
+    (contents / "MacOS" / "MiMac").write_bytes(b"fixture executable")
+    for name in REQUIRED:
+        (resources / name).write_bytes(("fixture " + name).encode())
+    if include_siri:
+        (resources / SIRI).write_bytes(b"fixture Siri bridge")
+    return bundle
+
+
+def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = None) -> dict:
+    def fake_check_output(command, text=None):
+        if command[:3] == ["go", "version", "-m"]:
+            return json.dumps(build_info(arch))
+        if command[0] == "/usr/bin/nm":
+            name = Path(command[-1]).name
+            if name == SIRI:
+                return "_mimac_siri_glass_abi_version\n_mimac_siri_glass_update_frame\n"
+            return "_" + REQUIRED[name] + "\n"
+        raise AssertionError("unexpected command: " + " ".join(command))
+
+    def fake_run(command, **kwargs):
+        if command[0] not in {"/usr/bin/lipo", "/usr/bin/codesign"}:
+            raise AssertionError("unexpected command: " + " ".join(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
+         patch("verify_release.current_siri_abi_host", return_value=host), \
+         patch("verify_release.subprocess.check_output", side_effect=fake_check_output), \
+         patch("verify_release.subprocess.run", side_effect=fake_run):
+        return verify_release(bundle, arch, Path(bundle.parent), REVISION, RELEASE_DATE, BUILD_NUMBER, profile)
+
+
 class VerifyReleaseTests(unittest.TestCase):
-    def test_manifest_records_actual_optional_component_and_bundle_identity(self):
-        for arch, included in (("arm64", True), ("amd64", False)):
-            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as directory:
-                bundle = Path(directory) / "MiMac.app"
-                contents = bundle / "Contents"
-                contents.mkdir(parents=True)
-                (contents / "Info.plist").write_bytes(plistlib.dumps({
-                    "CFBundleIdentifier": "dev.mimac.app", "CFBundleExecutable": "MiMac",
-                    "CFBundleShortVersionString": RELEASE_DATE, "CFBundleVersion": BUILD_NUMBER,
-                }))
-                hashes = {"MacOS/MiMac": "binary-sha"}
-                if included:
-                    hashes["Resources/libSiriGlassBridge.dylib"] = "siri-sha"
-                with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
-                     patch("verify_release.subprocess.check_output", return_value=json.dumps(build_info(arch))), \
-                     patch("verify_release.verify", return_value={"native_libraries": 6 if included else 5, "sha256": hashes}):
-                    result = verify_release(bundle, arch, Path(directory), REVISION, RELEASE_DATE, BUILD_NUMBER)
+    def test_manifest_records_explicit_profiles_and_component_hashes(self):
+        cases = (
+            ("core-only", "arm64", False, None),
+            ("core-only", "amd64", False, None),
+            ("siri-glass", "arm64", True, SIRI_ABI_HOST_GATE),
+        )
+        for profile, arch, included, host in cases:
+            with self.subTest(profile=profile, arch=arch), tempfile.TemporaryDirectory() as directory:
+                bundle = make_bundle(Path(directory), included)
+                result = verify_fixture(bundle, arch, profile, host)
+                siri_contract = result["component_contract"]["siri_glass"]
+                siri_hash = hashlib.sha256((bundle / "Contents" / "Resources" / SIRI).read_bytes()).hexdigest() if included else None
+
+                self.assertEqual(result["schema_version"], 2)
+                self.assertEqual(result["component_contract"]["profile"], profile)
+                self.assertEqual(siri_contract["selection"], "required" if included else "excluded")
+                self.assertIs(siri_contract["included"], included)
+                self.assertEqual(siri_contract["sha256"], siri_hash)
+                self.assertEqual(result["sha256"].get("Resources/" + SIRI), siri_hash)
+                self.assertIs(result["optional_components"]["siri_glass"]["included"], included)
                 self.assertEqual(result["identifier"], "dev.mimac.app")
                 self.assertEqual(result["executable"], "MiMac")
-                self.assertIs(result["optional_components"]["siri_glass"]["included"], included)
-                self.assertEqual(result["sha256"]["Info.plist"], hashlib.sha256((contents / "Info.plist").read_bytes()).hexdigest())
+                self.assertEqual(result["sha256"]["Info.plist"], hashlib.sha256((bundle / "Contents" / "Info.plist").read_bytes()).hexdigest())
+                gate = siri_contract["private_abi_host_gate"]
+                self.assertEqual(gate["required"], SIRI_ABI_HOST_GATE)
+                self.assertEqual(gate["status"], "satisfied" if included else "not-required")
+                self.assertEqual(gate["observed"], host)
 
-    def test_expected_optional_library_cannot_be_silently_omitted(self):
+    def test_profiles_reject_component_and_host_mismatches(self):
         with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "MiMac.app"
-            contents = bundle / "Contents"
-            contents.mkdir(parents=True)
-            (contents / "Info.plist").write_bytes(plistlib.dumps({
-                "CFBundleIdentifier": "dev.mimac.app", "CFBundleExecutable": "MiMac",
-                "CFBundleShortVersionString": RELEASE_DATE, "CFBundleVersion": BUILD_NUMBER,
-            }))
+            root = Path(directory)
+            siri_bundle = make_bundle(root / "with-siri", True)
+            with self.assertRaisesRegex(ValueError, "Siri glass to be forbidden"):
+                verify_fixture(siri_bundle, "arm64", "core-only")
 
-            def native(_bundle, _arch, require_siri=False):
-                if require_siri:
-                    raise ValueError("missing native libraries: libSiriGlassBridge.dylib")
-                return {"native_libraries": 5, "sha256": {"MacOS/MiMac": "binary-sha"}}
+            missing_siri_bundle = make_bundle(root / "without-siri", False)
+            with self.assertRaisesRegex(ValueError, "missing native libraries: libSiriGlassBridge.dylib"):
+                verify_fixture(missing_siri_bundle, "arm64", "siri-glass", SIRI_ABI_HOST_GATE)
 
-            with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
-                 patch("verify_release.subprocess.check_output", return_value=json.dumps(build_info())), \
-                 patch("verify_release.verify", side_effect=native):
-                # Absence is valid only when the build did not require it.
-                result = verify_release(bundle, "arm64", Path(directory), REVISION, RELEASE_DATE, BUILD_NUMBER)
-                self.assertFalse(result["optional_components"]["siri_glass"]["included"])
-                with self.assertRaisesRegex(ValueError, "missing native libraries"):
-                    verify_release(bundle, "arm64", Path(directory), REVISION, RELEASE_DATE, BUILD_NUMBER, require_siri=True)
+            with self.assertRaisesRegex(ValueError, "only for arm64"):
+                verify_fixture(siri_bundle, "amd64", "siri-glass", SIRI_ABI_HOST_GATE)
+
+            unsupported_host = {**SIRI_ABI_HOST_GATE, "build_version": "unsupported-build"}
+            with self.assertRaisesRegex(ValueError, "requires host"):
+                verify_fixture(siri_bundle, "arm64", "siri-glass", unsupported_host)
 
     def test_planned_version_edit_is_the_only_allowed_source_change(self):
         with tempfile.TemporaryDirectory() as directory:

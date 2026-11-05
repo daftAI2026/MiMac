@@ -48,10 +48,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test release version planner
+      - name: Test release version planner and component profiles
         run: |
           python3 script/release_version_test.py
           python3 script/test_verify_release.py
+          python3 script/test_build_voice_overlay.py
           python3 script/test_verify_app_bundle_frame.py
 
       - name: Test and vet
@@ -80,8 +81,8 @@ jobs:
       - name: Build native settings libraries
         run: script/build_native_settings.sh
 
-      - name: Build optional Siri bridge on supported hosts
-        run: script/build_voice_overlay.sh
+      - name: Select core-only Siri component profile
+        run: script/build_voice_overlay.sh core-only
 
       - name: Build macOS arm64 app
         run: go tool mygo build -platform darwin/arm64 -skip-dmg -skip-notarize
@@ -102,10 +103,8 @@ jobs:
             verify_args=("dist/darwin-$arch/MiMac.app" \
               --arch "$arch" --revision "$GITHUB_SHA" \
               --version "$RELEASE_VERSION" --build-number "$BUILD_NUMBER" \
+              --component-profile core-only \
               --output "$release_dir/MiMac-${ASSET_STEM}-darwin-${arch}.json")
-            if [[ -f "resources/darwin-$arch/libSiriGlassBridge.dylib" ]]; then
-              verify_args+=(--require-siri)
-            fi
             python3 script/verify_release.py "${verify_args[@]}"
           done
 
@@ -144,8 +143,8 @@ jobs:
           cat > "$release_dir/RELEASE-NOTES.txt" <<'EOF'
           Preview build: ad hoc signed and not notarized; this is not a Developer ID distribution.
 
-          Each architecture includes an identity manifest with versions, source revision and binary/native-library checksums.
-          The manifest records whether the optional Siri glass bridge is included. It is built only on supported hosts; inclusion does not establish runtime compatibility on every Mac.
+          Each architecture includes an identity manifest with versions, source revision, explicit component profile and binary/native-library checksums.
+          This preview uses the core-only profile. A separate Siri glass profile requires the recorded private ABI host gate; its inclusion does not establish runtime compatibility on every Mac.
           EOF
           gh release create "$RELEASE_TAG" \
             --title "$RELEASE_TITLE" \

@@ -8,11 +8,21 @@ import hashlib
 import json
 from pathlib import Path
 import plistlib
+import platform
 import re
 import subprocess
 
 from release_version import apply_versions, validate_build_number, validate_date
 from verify_app_bundle import SIRI, verify
+
+
+SIRI_ABI_HOST_GATE = {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "product_version": "27.0.1",
+    "build_version": "26A434",
+}
+COMPONENT_PROFILES = ("core-only", "siri-glass")
 
 
 def git(repo: Path, *args: str) -> str:
@@ -86,8 +96,62 @@ def verify_build_info(info: dict, arch: str, revision: str) -> dict:
     }
 
 
-def verify_release(bundle: Path, arch: str, repo: Path, revision: str, version: str, build_number: str, require_siri: bool = False) -> dict:
+def current_siri_abi_host() -> dict:
+    host = {"os": platform.system(), "architecture": platform.machine()}
+    if host["os"] != "Darwin":
+        return {**host, "product_version": None, "build_version": None}
+
+    product = subprocess.run(
+        ["/usr/bin/sw_vers", "-productVersion"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    build = subprocess.run(
+        ["/usr/bin/sw_vers", "-buildVersion"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return {**host, "product_version": product, "build_version": build}
+
+
+def verify_component_profile(component_profile: str, arch: str) -> tuple[bool, dict]:
+    if component_profile not in COMPONENT_PROFILES:
+        raise ValueError("component profile must be one of: " + ", ".join(COMPONENT_PROFILES))
+
+    selection = "required" if component_profile == "siri-glass" else "excluded"
+    gate = {
+        "required": SIRI_ABI_HOST_GATE,
+        "status": "not-required",
+        "observed": None,
+    }
+    require_siri = component_profile == "siri-glass"
+    if require_siri:
+        if arch != "arm64":
+            raise ValueError("siri-glass component profile is supported only for arm64 releases")
+        observed = current_siri_abi_host()
+        if observed != SIRI_ABI_HOST_GATE:
+            raise ValueError(
+                "siri-glass component profile requires host "
+                "Darwin arm64 macOS 27.0.1 build 26A434; found " + json.dumps(observed, sort_keys=True)
+            )
+        gate = {"required": SIRI_ABI_HOST_GATE, "status": "satisfied", "observed": observed}
+
+    return require_siri, {
+        "profile": component_profile,
+        "siri_glass": {
+            "selection": selection,
+            "private_abi_host_gate": gate,
+        },
+    }
+
+
+def verify_release(
+    bundle: Path,
+    arch: str,
+    repo: Path,
+    revision: str,
+    version: str,
+    build_number: str,
+    component_profile: str,
+) -> dict:
     source = verify_source(repo, revision, version, build_number)
+    require_siri, component_contract = verify_component_profile(component_profile, arch)
     contents = bundle / "Contents"
     with (contents / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
@@ -101,8 +165,16 @@ def verify_release(bundle: Path, arch: str, repo: Path, revision: str, version: 
     native = verify(bundle, arch, require_siri)
     hashes = dict(native["sha256"])
     hashes["Info.plist"] = hashlib.sha256((contents / "Info.plist").read_bytes()).hexdigest()
+    siri_library_sha256 = native["sha256"].get("Resources/" + SIRI)
+    siri_included = siri_library_sha256 is not None
+    selected_siri = component_contract["siri_glass"]["selection"] == "required"
+    if siri_included != selected_siri:
+        expected = "required" if selected_siri else "forbidden"
+        raise ValueError(f"{component_profile} component profile requires Siri glass to be {expected}")
+    component_contract["siri_glass"]["included"] = siri_included
+    component_contract["siri_glass"]["sha256"] = siri_library_sha256
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "bundle": bundle.name,
         "identifier": info["CFBundleIdentifier"],
         "executable": executable_name,
@@ -113,8 +185,9 @@ def verify_release(bundle: Path, arch: str, repo: Path, revision: str, version: 
         "binary": binary,
         "native_libraries": native["native_libraries"],
         "sha256": hashes,
+        "component_contract": component_contract,
         "optional_components": {
-            "siri_glass": {"included": "Resources/" + SIRI in native["sha256"]},
+            "siri_glass": {"included": siri_included},
         },
         "distribution": "preview; not a Developer ID or notarization attestation",
     }
@@ -129,10 +202,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-number", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--require-siri", action="store_true")
+    parser.add_argument("--component-profile", choices=COMPONENT_PROFILES, required=True)
     args = parser.parse_args(argv)
     try:
-        manifest = verify_release(args.bundle, args.arch, args.repo, args.revision, args.version, args.build_number, args.require_siri)
+        manifest = verify_release(
+            args.bundle,
+            args.arch,
+            args.repo,
+            args.revision,
+            args.version,
+            args.build_number,
+            args.component_profile,
+        )
         # Never overwrite a previous successful manifest after a failed check.
         # The workflow uses its per-job temporary directory for these sidecars.
         with args.output.open("x", encoding="utf-8") as stream:
