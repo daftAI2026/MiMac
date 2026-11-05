@@ -2,6 +2,12 @@ name: Release preview
 
 on:
   workflow_dispatch:
+    inputs:
+      build_only:
+        description: Build and verify artifacts without creating a tag or release
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write
@@ -117,7 +123,16 @@ jobs:
           shasum -a 256 "$arm64_zip" "$amd64_zip" \
             "MiMac-${ASSET_STEM}-darwin-arm64.json" "MiMac-${ASSET_STEM}-darwin-amd64.json" > SHA256SUMS
 
+      - name: Upload verified build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MiMac-${{ steps.version.outputs.asset_stem }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/mimac-release/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Create draft preview release
+        if: ${{ !inputs.build_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
