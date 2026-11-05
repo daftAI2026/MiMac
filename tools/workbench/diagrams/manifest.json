@@ -88,7 +88,7 @@
   {
     "id": "resource-preparation-cleanup",
     "title": "资源准备、失败与清理",
-    "summary": "设备停止与 EOF 双条件完成前保留两秒守卫；之后按剩余 PCM 时长加 I/O 余量排空，旧 deadline 不能取消新阶段。合成原生 AudioQueue 和两轮真实豆包结束清理通过；8 kHz 满环边界与 native 同步调用卡住另验。",
+    "summary": "设备停止与 EOF 双条件后按有限 PCM 时长排空。截止回调可在原生 Drain 阻塞时单次通知 SourceFailed；原 worker 继续独占资源，迟到成功不再提交，清理错误单独报告。假阻塞红绿与 race 通过；不代表原生调用可被强制中断或永久阻塞已实机复现。",
     "sourcePaths": [
       "internal/audiosession/runtime.go",
       "cmd/mimac/audio_sessions.go",
@@ -101,7 +101,8 @@
       "internal/adapters/xiaomi/atvv/source.go",
       "internal/adapters/processinput/processinput.go",
       "internal/pluginrt/runtime.go",
-      "internal/audiosession/pcm_reader.go"
+      "internal/audiosession/pcm_reader.go",
+      "internal/audiosession/runtime_terminal_test.go"
     ]
   },
   {

@@ -131,6 +131,7 @@ type resource struct {
 	stopReturned bool
 	tailSamples  int
 	cause        error
+	terminalSent bool // Protected by Runtime.mu; arbitrates Core terminal events.
 	finished     bool
 	cleanupErr   error
 	inputLevel   InputLevel // Protected by Runtime.mu; never contains PCM.
@@ -246,10 +247,36 @@ func (r *Runtime) cancelPendingLocked() *resource {
 
 func (r *Runtime) fail(s *resource, err error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !s.finished && s.ctx.Err() == nil && s.cause == nil {
+	if !s.finished && !s.terminalSent && s.ctx.Err() == nil && s.cause == nil {
 		s.cause = err
 		s.cancel()
+	}
+	completion, claimed := r.claimFailureLocked(s)
+	r.mu.Unlock()
+	if claimed {
+		r.emit(completion)
+	}
+}
+
+// claimFailureLocked is the single arbiter for terminal SourceFailed events.
+// Resource cleanup faults remain a separate CleanupFailed completion.
+func (r *Runtime) claimFailureLocked(s *resource) (Completion, bool) {
+	if s.finished || s.terminalSent || s.cause == nil {
+		return Completion{}, false
+	}
+	s.terminalSent = true
+	r.stopDeadlineLocked(s)
+	return Completion{Event: bridge.SourceFailed(s.token), Err: s.cause}, true
+}
+
+func (r *Runtime) stopDeadlineLocked(s *resource) {
+	if s.stopWatch != nil {
+		s.stopWatch()
+		s.stopWatch = nil
+	}
+	if s.stopCancel != nil {
+		s.stopCancel()
+		s.stopCancel = nil
 	}
 }
 
@@ -300,8 +327,11 @@ func (r *Runtime) stop(s *resource) {
 	}
 	r.mu.Lock()
 	s.stopReturned = true
-	r.advanceStopDeadlineLocked(s)
+	completion, claimed := r.advanceStopDeadlineLocked(s)
 	r.mu.Unlock()
+	if claimed {
+		r.emit(completion)
+	}
 }
 
 // Each deadline belongs to one I/O phase. A retired timer must never fail the
@@ -317,10 +347,16 @@ func (r *Runtime) armStopDeadlineLocked(s *resource, budget time.Duration) {
 	s.stopCtx, s.stopCancel = ctx, cancel
 	s.stopWatch = context.AfterFunc(ctx, func() {
 		r.mu.Lock()
-		defer r.mu.Unlock()
-		if s.stopCtx == ctx && errors.Is(ctx.Err(), context.DeadlineExceeded) && !s.finished && s.ctx.Err() == nil && s.cause == nil {
+		var completion Completion
+		claimed := false
+		if s.stopCtx == ctx && errors.Is(ctx.Err(), context.DeadlineExceeded) && !s.finished && !s.terminalSent && s.ctx.Err() == nil && s.cause == nil {
 			s.cause = context.DeadlineExceeded
 			s.cancel()
+			completion, claimed = r.claimFailureLocked(s)
+		}
+		r.mu.Unlock()
+		if claimed {
+			r.emit(completion)
 		}
 	})
 }
@@ -331,23 +367,27 @@ func (r *Runtime) sourceReachedEOF(s *resource, queued int) {
 	// The copy worker can have one block outside the FIFO. The sink's accepted
 	// buffers and finalization remain covered by the existing I/O allowance.
 	s.tailSamples = queued + s.resources.SampleRate/50
-	r.advanceStopDeadlineLocked(s)
+	completion, claimed := r.advanceStopDeadlineLocked(s)
 	r.mu.Unlock()
+	if claimed {
+		r.emit(completion)
+	}
 }
 
-func (r *Runtime) advanceStopDeadlineLocked(s *resource) {
+func (r *Runtime) advanceStopDeadlineLocked(s *resource) (Completion, bool) {
 	if !s.sourceEOF || !s.stopReturned || s.ctx.Err() != nil {
-		return
+		return Completion{}, false
 	}
 	if err := s.stopCtx.Err(); err != nil {
 		if s.cause == nil {
 			s.cause = err
 			s.cancel()
 		}
-		return
+		return r.claimFailureLocked(s)
 	}
 	playout := time.Duration(s.tailSamples) * time.Second / time.Duration(s.resources.SampleRate)
 	r.armStopDeadlineLocked(s, playout+2*time.Second)
+	return Completion{}, false
 }
 
 func (r *Runtime) run(s *resource) {
@@ -389,10 +429,8 @@ func (r *Runtime) run(s *resource) {
 	}
 	var watcher *receiverWatch
 	if s.ctx.Err() == nil && err == nil {
-		watcher = r.startReceiverWatch(s, resources.WatchReceiver)
-	}
-	if s.ctx.Err() == nil && err == nil {
 		r.emit(Completion{Event: bridge.SourcePrepared(s.token, resourceID)})
+		watcher = r.startReceiverWatch(s, resources.WatchReceiver)
 		select {
 		case <-s.gate:
 			if s.ctx.Err() == nil {
@@ -408,16 +446,16 @@ func (r *Runtime) run(s *resource) {
 		}
 	}
 	r.mu.Lock()
-	if s.cause == nil && err != nil && s.ctx.Err() == nil {
+	if !s.terminalSent && s.cause == nil && err != nil && s.ctx.Err() == nil {
 		s.cause = err
 	}
-	cause := s.cause
+	completion, claimed := r.claimFailureLocked(s)
 	r.mu.Unlock()
 	// Cancel before notifying Core, so a blocked startup read cannot continue
 	// producing while the failure event releases the target's held shortcut.
 	s.cancel()
-	if cause != nil {
-		r.emit(Completion{Event: bridge.SourceFailed(s.token), Err: cause})
+	if claimed {
+		r.emit(completion)
 	}
 	// The reader owns Source.Read until it joins. Never wait under Runtime.mu.
 	if reader != nil {
@@ -508,25 +546,7 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	if s.stopWatch != nil {
-		s.stopWatch()
-	}
-	deadlineErr := stopCtx.Err()
-	r.mu.Unlock()
-	if deadlineErr != nil {
-		return deadlineErr
-	}
 	watcher.cancelAndWait()
-	if err := s.ctx.Err(); err != nil {
-		return err
-	}
-	r.mu.Lock()
-	cause := s.cause
-	r.mu.Unlock()
-	if cause != nil {
-		return cause
-	}
 	completion := Completion{Event: bridge.SourceDrained(s.token)}
 	if sink, ok := s.resources.Sink.(TranscriptSink); ok {
 		text, present, err := sink.Transcript()
@@ -537,12 +557,58 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 			completion.Transcript = &Transcript{Token: s.token, Text: text}
 		}
 	}
-	if err := s.ctx.Err(); err != nil {
-		return err
+	if !r.claimDrain(s, stopCtx, completion) {
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		cause := s.cause
+		r.mu.Unlock()
+		if cause != nil {
+			return cause
+		}
+		return errors.New("audiosession: terminal result was already claimed")
 	}
-	r.emit(completion)
 	<-s.ctx.Done() // Core decides when to close its gate and resource.
 	return nil
+}
+
+// claimDrain serializes success with deadline/watch failures. In particular,
+// it checks the phase context while holding Runtime.mu so a late nil Drain
+// cannot win merely because context.AfterFunc has not run yet.
+func (r *Runtime) claimDrain(s *resource, stopCtx context.Context, completion Completion) bool {
+	r.mu.Lock()
+	if s.finished || s.terminalSent {
+		r.mu.Unlock()
+		return false
+	}
+	if s.cause != nil {
+		failed, claimed := r.claimFailureLocked(s)
+		r.mu.Unlock()
+		if claimed {
+			r.emit(failed)
+		}
+		return false
+	}
+	if s.ctx.Err() != nil {
+		r.mu.Unlock()
+		return false
+	}
+	if stopCtx.Err() != nil {
+		s.cause = stopCtx.Err()
+		s.cancel()
+		failed, claimed := r.claimFailureLocked(s)
+		r.mu.Unlock()
+		if claimed {
+			r.emit(failed)
+		}
+		return false
+	}
+	s.terminalSent = true
+	r.stopDeadlineLocked(s)
+	r.mu.Unlock()
+	r.emit(completion)
+	return true
 }
 
 func sourceHealth(source Source) error {

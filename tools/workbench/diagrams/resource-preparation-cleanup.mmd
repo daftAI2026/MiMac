@@ -7,9 +7,10 @@ flowchart TD
     startSink --> receiverCheck{"提供 WaitReceiver？"}
     receiverCheck -->|否| healthAfter
     receiverCheck -->|是| wait["核验活动目标输入精确 PID/UID\n两秒失败期限，不是固定延时"]
-    wait -->|成功| healthAfter["准备后检查源健康；启动可选 receiver watcher"]
+    wait -->|成功| healthAfter["准备后检查源健康"]
     healthAfter --> publish["发出 SourcePrepared"]
-    publish --> gate["等待 Core OpenGate 后再次检查源健康"]
+    publish --> watcher["启动可选 receiver watcher"]
+    watcher --> gate["等待 Core OpenGate 后再次检查源健康"]
     gate --> consumer["Runtime 消费 FIFO；此后才写 Sink 与观察器"]
     atvv["ATVV 通知与已验证的尾部"] --> sourceQueue["原 Source 环：15,360 个样本"]
     sourceQueue --> reader["唯一 Source.Read 生产者：活动会话期间持续取源"]
@@ -25,7 +26,9 @@ flowchart TD
     playout -.-> consumer
     consumer -->|合法 EOF 且已 Stop| drain["清电平与观察器；等待 Stop 完成，再使用排空截止调用 Sink.Drain"]
     drain --> result["停止并 join watcher；取得可选 Transcript"]
-    result --> drained["投递 SourceDrained，由 Core 关闭本次 gate"]
+    result --> claim["锁内复核 deadline、取消与故障；认领唯一终态"]
+    claim -->|成功| drained["投递 SourceDrained，由 Core 关闭本次 gate"]
+    claim -->|失败| fail
     drained --> join
     prepare -->|错误| fail
     startSink -->|错误| fail
@@ -35,11 +38,15 @@ flowchart TD
     consumer -->|有序 Read 错误或写入失败| fail
     sourceStop -->|错误| fail
     drain -->|失败| fail
-    cancel["Core 取消、失权、断连或 watcher 失败"] --> fail["取消上下文；有故障则及时投递 SourceFailed"]
-    fail --> join["无锁 join Reader、watcher 与 Stop；忽略取消则继续持有资源"]
+    cancel["Core 取消、失权、断连或 watcher 失败"] --> fail["取消上下文；有故障则单次认领并投递 SourceFailed"]
+    sourceStop -.-> deadline["现有截止回调独立通知失败；不等待阻塞的原生调用"]
+    drain -.-> deadline
+    deadline --> fail
+    fail --> nativeWait["原 worker 保留唯一资源所有权；原生调用返回前不 Close、不启动待办"]
+    nativeWait --> join["无锁 join Reader、watcher 与 Stop；忽略取消则继续持有资源"]
     join --> cleanup["清 FIFO、观察器与电平，再关闭 Source/Sink 租约"]
     cleanup -->|成功| released["释放 owner；连接可准备下一轮"]
-    cleanup -->|失败| retained["保留原 owner；后续显式重试清理"]
+    cleanup -->|失败| retained["单独报告 CleanupFailed；保留原 owner，后续显式重试清理"]
     retained --> cleanup
     sourceQueue -.-> overflow["超界保留 typed overflow 快照；明确失败"]
     wait -.-> trace["有界 receiver.wait 明细与全程计数分开"]
