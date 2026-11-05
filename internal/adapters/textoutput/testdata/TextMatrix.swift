@@ -31,7 +31,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         window.contentView!.addSubview(web)
         web.loadHTMLString("""
         <!doctype html><meta charset="utf-8"><style>input,textarea,[contenteditable]{font:16px system-ui;margin:4px;width:240px} [contenteditable]{border:1px solid #777;display:inline-block;min-height:24px} #rich{width:420px} #rich p{margin:2px 0}</style>
-        <input id="input" aria-label="matrix input"><textarea id="textarea" aria-label="matrix textarea"></textarea><div id="editable" contenteditable="true" role="textbox" aria-label="matrix editable"></div><div id="rich" contenteditable="true" role="textbox" aria-multiline="true" aria-label="matrix rich editable"><p>L|<strong>ol</strong><em>d</em>|R</p><p>keep</p></div><input id="password" type="password" aria-label="matrix password">
+        <input id="input" aria-label="matrix input"><textarea id="textarea" aria-label="matrix textarea"></textarea><div id="editable" contenteditable="true" role="textbox" aria-label="matrix editable"></div><div id="rich" contenteditable="true" role="textbox" aria-multiline="true" aria-label="matrix rich editor"><p data-node="paragraph">L|<strong>ol</strong><em>d</em>|R</p><ul data-node="list"><li><p><span contenteditable="false" data-decoration="bullet">•</span> keep item</p></li></ul><p data-node="paragraph"><span contenteditable="false" data-decoration="comment">[comment]</span>tail</p></div><input id="password" type="password" aria-label="matrix password">
         """, baseURL: nil)
         window.makeKeyAndOrderFront(nil); window.makeFirstResponder(text)
         NSApp.activate(ignoringOtherApps: true)
@@ -54,13 +54,14 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         if action == "reset" {
             text.string = "L|old|R"; field.stringValue = "L|old|R"; other.stringValue = "untouched"
             secure.stringValue = "" // no password input or value recording
-            web.evaluateJavaScript("for (const id of ['input','textarea','editable']) { const e=document.getElementById(id); if(id==='editable')e.textContent='L|old|R';else e.value='L|old|R'; } document.getElementById('rich').innerHTML='<p>L|<strong>ol</strong><em>d</em>|R</p><p>keep</p>'; document.getElementById('password').value='';") { [weak self] _, error in
+            web.evaluateJavaScript("for (const id of ['input','textarea','editable']) { const e=document.getElementById(id); if(id==='editable')e.textContent='L|old|R';else e.value='L|old|R'; } document.getElementById('rich').innerHTML=`<p data-node=\"paragraph\">L|<strong>ol</strong><em>d</em>|R</p><ul data-node=\"list\"><li><p><span contenteditable=\"false\" data-decoration=\"bullet\">•</span> keep item</p></li></ul><p data-node=\"paragraph\"><span contenteditable=\"false\" data-decoration=\"comment\">[comment]</span>tail</p>`; document.getElementById('password').value='';") { [weak self] _, error in
                 if let error { self?.respond(seq, error: String(describing:error)); return }
                 self?.focus(target, seq: seq, reset: true)
             }
             return
         }
         if action == "focus" { focus(target, seq: seq, reset: false); return }
+        if action == "focus_cold" { focusCold(target, seq: seq); return }
         if action == "selection" {
             if target == "textview" { text.setSelectedRange(NSRange(location: 0, length: 0)) }
             else if target == "field" { (window.firstResponder as? NSTextView)?.setSelectedRange(NSRange(location:0,length:0)) }
@@ -76,6 +77,19 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             respond(seq); return
         }
         respond(seq, error:"unknown action")
+    }
+    func focusCold(_ target: String, seq: Int) {
+        guard target == "rich" else { respond(seq, error: "cold AX probe only supports rich target"); return }
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(web)
+        let js = """
+        (()=>{let e=document.getElementById('rich');e.focus();let a=e.querySelector('strong').firstChild;let b=e.querySelector('em').firstChild;let r=document.createRange();r.setStart(a,0);r.setEnd(b,b.length);let s=window.getSelection();s.removeAllRanges();s.addRange(r);return true;})()
+        """
+        // Return as soon as WebKit completes the focus/selection script. The
+        // parent does not poll AXDOMIdentifier before the probe child calls Capture.
+        web.evaluateJavaScript(js) { [weak self] _, error in
+            self?.respond(seq, error: error.map { String(describing: $0) })
+        }
     }
     func focus(_ target: String, seq: Int, reset: Bool) {
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -99,7 +113,7 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
     func respond(_ seq: Int, error: String? = nil) {
         // Only fixture-owned synthetic nonsecure content is inspected here.
-        web.evaluateJavaScript("({input:document.getElementById('input').value,textarea:document.getElementById('textarea').value,editable:document.getElementById('editable').textContent,rich:document.getElementById('rich').innerText,focused:document.activeElement.id})") { [weak self] value, jsError in
+        web.evaluateJavaScript("(()=>{const r=document.getElementById('rich');return {input:document.getElementById('input').value,textarea:document.getElementById('textarea').value,editable:document.getElementById('editable').textContent,rich:r.querySelector(':scope > p').innerText,richList:Array.from(r.querySelectorAll('ul li')).map(e=>e.textContent).join('|'),richTail:r.querySelector(':scope > p:last-of-type').textContent,richDecorations:Array.from(r.querySelectorAll('[data-decoration]')).map(e=>e.dataset.decoration+':'+e.getAttribute('contenteditable')+':'+e.textContent).join('|'),richStructure:Array.from(r.children).map(e=>e.tagName).join(','),focused:document.activeElement.id};})()") { [weak self] value, jsError in
             guard let self else { return }
             var state: [String: Any] = ["seq":seq,"pid":ProcessInfo.processInfo.processIdentifier,"textview":self.text.string,"field":self.field.currentEditor()?.string ?? self.field.stringValue,"other":self.other.stringValue,"web":value as? [String:Any] ?? [:]]
             if let e = error ?? jsError.map({String(describing:$0)}) { state["error"] = e }

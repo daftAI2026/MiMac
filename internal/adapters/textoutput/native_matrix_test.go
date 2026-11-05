@@ -94,9 +94,12 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 		return matrixResult{}
 	}
 	if !expectUnsupported && os.Getenv("MIMAC_TEXT_MATRIX_WEB_ONLY") != "1" {
-		// Launch a fresh test process while the rich contenteditable selection is
-		// focused. Its first native text-output call is Capture itself.
-		command(t, "reset", "rich")
+		// Focus the self-owned editor without querying AX first. The probe child
+		// calls Capture exactly once; it accepts only a successful target or the
+		// explicit not-yet-ready result. A second fresh child runs after AX settles.
+		command(t, "reset", "textview")
+		command(t, "focus_cold", "rich")
+		runNativeColdAXProbeChild(t)
 		waitForMatrixDOMFocus(t, int32(pid), "rich")
 		runNativeColdCaptureChild(t)
 	}
@@ -177,11 +180,18 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 			if got := state.value(kind); got != want {
 				t.Fatalf("actual fixture value %q, want exact selected-range replacement", got)
 			}
+			if kind == "rich" {
+				assertRichEditorPreserved(t, state)
+			}
 			if err := target.Insert("duplicate"); !errors.Is(err, ErrAlreadySubmitted) {
 				t.Fatalf("second insertion = %v", err)
 			}
-			if after := command(t, "snapshot", kind).value(kind); after != state.value(kind) {
+			afterDuplicate := command(t, "snapshot", kind)
+			if afterDuplicate.value(kind) != state.value(kind) {
 				t.Fatal("one-shot insertion changed text twice")
+			}
+			if kind == "rich" {
+				assertRichEditorPreserved(t, afterDuplicate)
 			}
 			if err := target.Close(); err != nil {
 				t.Fatal(err)
@@ -205,6 +215,9 @@ func runNativeMatrix(t *testing.T, expectUnsupported bool) {
 					t.Fatalf("second dictation did not append: %q", state.value(kind))
 				}
 				time.Sleep(20 * time.Millisecond)
+			}
+			if kind == "rich" {
+				assertRichEditorPreserved(t, state)
 			}
 		})
 	}
@@ -333,11 +346,23 @@ type matrixResult struct {
 }
 
 func matrixValue(kind, text string) string {
-	value := "L|" + text + "|R"
-	if kind == "rich" {
-		return value + "\n\nkeep"
+	_ = kind
+	return "L|" + text + "|R"
+}
+
+func assertRichEditorPreserved(t *testing.T, state matrixResult) {
+	t.Helper()
+	want := map[string]string{
+		"richList":        "• keep item",
+		"richTail":        "[comment]tail",
+		"richDecorations": "bullet:false:•|comment:false:[comment]",
+		"richStructure":   "P,UL,P",
 	}
-	return value
+	for key, value := range want {
+		if got := state.Web[key]; got != value {
+			t.Fatalf("rich editor structure %s = %q, want %q", key, got, value)
+		}
+	}
 }
 
 func waitForMatrixDOMFocus(t *testing.T, pid int32, kind string) {
@@ -368,6 +393,78 @@ func waitForMatrixDOMFocus(t *testing.T, pid int32, kind string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("fixture AX focus for %q did not settle", kind)
+}
+
+func runNativeColdAXProbeChild(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestNativeColdAXProbeChild$", "-test.v")
+	command.Env = append(os.Environ(), "MIMAC_TEXT_MATRIX_COLD_AX_PROBE=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cold AX probe child failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "COLD_AX_PROBE=ready") && !strings.Contains(string(output), "COLD_AX_PROBE=not-ready") {
+		t.Fatalf("cold AX probe child did not report a recognized first-Capture result:\n%s", output)
+	}
+	t.Logf("cold AX first-Capture probe: %s", strings.TrimSpace(string(output)))
+}
+
+// TestNativeColdAXProbeChild makes one Capture before the parent queries the
+// focused web target's AXDOMIdentifier. ErrNoFocusedElement is an expected
+// not-ready observation; this child never retries Capture or inserts text.
+func TestNativeColdAXProbeChild(t *testing.T) {
+	if os.Getenv("MIMAC_TEXT_MATRIX_COLD_AX_PROBE") != "1" {
+		t.Skip("runs only as an unprimed AX child of the native matrix")
+	}
+	dir := os.Getenv("MIMAC_TEXT_MATRIX_DIR")
+	pidBytes, err := os.ReadFile(filepath.Join(dir, "pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPID, err := strconv.Atoi(string(pidBytes))
+	if err != nil || wantPID <= 0 {
+		t.Fatal("invalid fixture PID")
+	}
+	started := time.Now()
+	target, err := Capture()
+	if errors.Is(err, ErrNoFocusedElement) {
+		if target != nil {
+			_ = target.Close()
+		}
+		t.Logf("COLD_AX_PROBE=not-ready firstCaptureErr=%v testPID=%d targetPID=%d elapsed_ms=%d", err, os.Getpid(), wantPID, time.Since(started).Milliseconds())
+		return
+	}
+	if err != nil {
+		t.Fatalf("first cold AX Capture returned unexpected error: %v", err)
+	}
+	defer target.Close()
+	if target.snapshot.processID != int32(wantPID) {
+		t.Fatalf("cold AX Capture target PID = %d, want fixture PID %d", target.snapshot.processID, wantPID)
+	}
+	api, err := loadNativeAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identifier, err := api.optionalAttribute(target.snapshot.element, "AXDOMIdentifier")
+	if err != nil || identifier == 0 {
+		t.Fatalf("first Capture succeeded without a readable AXDOMIdentifier: id=%d err=%v", identifier, err)
+	}
+	defer api.cfRelease(identifier)
+	want, err := api.makeString("rich")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer api.cfRelease(want)
+	if api.cfEqual(identifier, want) == 0 {
+		t.Fatalf("first Capture DOM ID differs from rich: pid=%d", target.snapshot.processID)
+	}
+	t.Logf("COLD_AX_PROBE=ready testPID=%d targetPID=%d domID=rich elapsed_ms=%d", os.Getpid(), target.snapshot.processID, time.Since(started).Milliseconds())
 }
 
 // TestNativeColdCaptureChild runs only in a fresh test process. Its first
