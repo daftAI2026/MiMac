@@ -11,10 +11,9 @@ import (
 	"mimac.local/mimac/internal/bridge"
 )
 
-// Source.Stop and Sink.Drain share the StopSourceEffect deadline. Leave a
-// substantial remainder after Stop so this test checks the combined budget
-// without depending on a 100 ms scheduling window.
-func TestRuntimeStopAndDrainShareTotalDeadline(t *testing.T) {
+// A successful source stop and EOF retire the device-control deadline.
+// Already captured speech then has its own bounded playout/finalization window.
+func TestRuntimeDrainGetsOwnDeadlineAfterSourceStops(t *testing.T) {
 	source := newStopDrainBudgetSource()
 	sink := newStopDrainBudgetSink()
 	runtime := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
@@ -46,11 +45,11 @@ func TestRuntimeStopAndDrainShareTotalDeadline(t *testing.T) {
 	if !drain.hasDeadline {
 		t.Fatal("Sink.Drain received no deadline")
 	}
-	if !drain.deadline.Equal(stopDeadline) {
-		t.Fatalf("Source.Stop deadline %s != Sink.Drain deadline %s", stopDeadline, drain.deadline)
+	if !drain.deadline.After(stopDeadline) {
+		t.Fatalf("Drain did not receive its own deadline: Stop=%s Drain=%s", stopDeadline, drain.deadline)
 	}
 	if drain.entryErr != nil {
-		t.Fatalf("Sink.Drain started after the shared deadline: %v", drain.entryErr)
+		t.Fatalf("Sink.Drain started after the playout deadline: %v", drain.entryErr)
 	}
 	if got := source.closeCalls.Load(); got != 0 {
 		t.Fatalf("source closed before Sink.Drain returned: calls=%d", got)
@@ -60,22 +59,22 @@ func TestRuntimeStopAndDrainShareTotalDeadline(t *testing.T) {
 	}
 
 	if drainErr := waitStopDrainValue(t, sink.drainReturned, "Sink.Drain deadline"); !errors.Is(drainErr, context.DeadlineExceeded) {
-		t.Fatalf("Sink.Drain return = %v, want shared deadline exceeded", drainErr)
+		t.Fatalf("Sink.Drain return = %v, want playout deadline exceeded", drainErr)
 	}
 	failed := waitCompletion(t, runtime)
 	if !errors.Is(failed.Err, context.DeadlineExceeded) {
-		t.Fatalf("completion after shared Stop/Drain deadline = %v, want deadline exceeded", failed.Err)
+		t.Fatalf("completion after playout deadline = %v, want deadline exceeded", failed.Err)
 	}
 	effects := applyExpectedFailure(t, core, failed)
 	applySourceEffects(t, runtime, effects)
 	if snapshot := core.Snapshot(); snapshot.HasSession || len(snapshot.HeldKeys) != 0 {
-		t.Fatalf("shared deadline failure retained the Core voice lease: %+v", snapshot)
+		t.Fatalf("playout deadline failure retained the Core voice lease: %+v", snapshot)
 	}
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), audioSessionTestTimeout)
 	defer cancel()
 	if err := runtime.Close(closeCtx); err != nil {
-		t.Fatalf("close after shared deadline failure: %v", err)
+		t.Fatalf("close after playout deadline failure: %v", err)
 	}
 	if got := source.closeCalls.Load(); got != 1 {
 		t.Fatalf("source close calls = %d, want 1", got)

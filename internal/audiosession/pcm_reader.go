@@ -303,6 +303,11 @@ func (r *startupReader) run() {
 			return
 		}
 		if readErr == io.EOF {
+			// Publish the source barrier before EOF can wake the copy worker.
+			r.stage.mu.Lock()
+			queued := r.stage.count + n
+			r.stage.mu.Unlock()
+			r.runtime.sourceReachedEOF(r.session, queued)
 			if err := r.stage.finishEOF(pcm[:n]); err != nil {
 				r.finishFault(err)
 				return

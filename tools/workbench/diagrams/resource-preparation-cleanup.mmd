@@ -16,9 +16,14 @@ flowchart TD
     readerStart --> reader
     reader --> fifo["最多两秒 PCM FIFO；满时等待，不丢样本"]
     fifo --> consumer
-    stop["Core StopSourceEffect"] --> sourceStop["请求 Source.Stop；保留原设备尾部规则"]
+    stop["Core StopSourceEffect"] --> sourceStop["请求 Source.Stop；两秒设备停止守卫"]
     sourceStop --> sourceQueue
-    consumer -->|合法 EOF 且已 Stop| drain["清电平与观察器；等待 Stop 完成，再 Sink.Drain"]
+    sourceStop -->|成功返回| sourceEnd
+    reader -->|观察 EOF| sourceEnd["停止返回与 Reader EOF 双屏障"]
+    sourceEnd --> playout["退役设备守卫；剩余 PCM 时长加两秒 I/O 余量
+旧 deadline 回调按 context 身份失效"]
+    playout -.-> consumer
+    consumer -->|合法 EOF 且已 Stop| drain["清电平与观察器；等待 Stop 完成，再使用排空截止调用 Sink.Drain"]
     drain --> result["停止并 join watcher；取得可选 Transcript"]
     result --> drained["投递 SourceDrained，由 Core 关闭本次 gate"]
     drained --> join

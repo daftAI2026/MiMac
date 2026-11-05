@@ -22,7 +22,8 @@ flowchart LR
     consume --> pcm["有序 PCM 数据块"]
     pcm --> sink["配置的 Sink：Apple Speech 或兼容音频路由"]
     sink --> targetInput["目标输入路由\n本地 Sink 接受不证明目标已消费"]
-    consume -->|合法 EOF 且 Stop 已请求| drain["本地 drain 与可选最终转写"]
+    consume -->|合法 EOF 且 Stop 已请求| drain["源停止与 EOF 后，按有限尾部时长排空
+本地 drain 与可选最终转写"]
     drain --> text["Apple 路由可向按下时捕获的文本目标投递一次"]
 
     source -.-> overflow["ErrSourceQueueFull 时：typed QueueOverflowError\nSnapshot 是冻结的 SourceSnapshot 诊断"]

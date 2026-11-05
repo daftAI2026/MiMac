@@ -45,7 +45,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "连接期准备 Source/Sink，按键后 Runtime 先启动唯一读源任务，等待接收器与 Core 期间只填有界 FIFO；双门后才写 Sink、记录电平和调用观察器。源码已通过合成与隔离宿主集成；当前固定 App 尚未替换，真实设备新链待验。",
+    "summary": "等待接收器与Core期间只填有界FIFO，双门后才输出。源停止与EOF完成后按有限尾部时长排空，避免停止总截止截断已接收PCM；Core仍唯一业务状态机。当前固定8c包不含本次尾部修复，新包及现场待验。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -88,7 +88,7 @@
   {
     "id": "resource-preparation-cleanup",
     "title": "资源准备、失败与清理",
-    "summary": "源读取与目标消费分开，活动会话内唯一 Reader 与原 Runtime consumer 共用两秒有界 FIFO。取消先退役控制，再 join I/O 后关闭资源；active Read 的合法样本先于其终止错误交付。旧实机故障精确时间线仍开放；不把合成绿测当新包现场验收。",
+    "summary": "唯一 Reader 与 Runtime consumer 共用两秒有界 FIFO。设备停止与 EOF 双屏障前保留两秒守卫；屏障后按剩余PCM时长加I/O余量排空，旧deadline不能取消新阶段。取消仍由Core传播，join I/O后释放资源。合成原生AudioQueue通过，真人新包待验。",
     "sourcePaths": [
       "internal/audiosession/runtime.go",
       "cmd/mimac/audio_sessions.go",

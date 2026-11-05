@@ -114,23 +114,26 @@ type Runtime struct {
 }
 
 type resource struct {
-	token       bridge.SessionToken
-	ctx         context.Context
-	cancel      context.CancelFunc
-	gate        chan struct{}
-	ready       chan struct{}
-	done        chan struct{}
-	resources   Resources // Immutable until the Read/Stop tasks have finished.
-	gateOpened  bool
-	stopStarted bool
-	stopDone    chan struct{}
-	stopCtx     context.Context
-	stopCancel  context.CancelFunc
-	stopWatch   func() bool
-	cause       error
-	finished    bool
-	cleanupErr  error
-	inputLevel  InputLevel // Protected by Runtime.mu; never contains PCM.
+	token        bridge.SessionToken
+	ctx          context.Context
+	cancel       context.CancelFunc
+	gate         chan struct{}
+	ready        chan struct{}
+	done         chan struct{}
+	resources    Resources // Immutable until the Read/Stop tasks have finished.
+	gateOpened   bool
+	stopStarted  bool
+	stopDone     chan struct{}
+	stopCtx      context.Context
+	stopCancel   context.CancelFunc
+	stopWatch    func() bool
+	sourceEOF    bool
+	stopReturned bool
+	tailSamples  int
+	cause        error
+	finished     bool
+	cleanupErr   error
+	inputLevel   InputLevel // Protected by Runtime.mu; never contains PCM.
 }
 
 type receiverWatch struct {
@@ -193,12 +196,7 @@ func (r *Runtime) Submit(effect bridge.Effect) error {
 		if s := r.match(e.Token); s != nil && !s.finished && !s.stopStarted && s.ctx.Err() == nil {
 			s.stopStarted = true
 			s.stopDone = make(chan struct{})
-			s.stopCtx, s.stopCancel = context.WithTimeout(s.ctx, 2*time.Second)
-			s.stopWatch = context.AfterFunc(s.stopCtx, func() {
-				if errors.Is(s.stopCtx.Err(), context.DeadlineExceeded) {
-					r.fail(s, context.DeadlineExceeded)
-				}
-			})
+			r.armStopDeadlineLocked(s, 2*time.Second)
 			go r.stop(s)
 		}
 	case bridge.CloseGateEffect:
@@ -294,9 +292,62 @@ func (r *Runtime) stop(s *resource) {
 	if s.ctx.Err() != nil || s.resources.Source == nil {
 		return
 	}
-	if err := s.resources.Source.Stop(s.stopCtx); err != nil && s.ctx.Err() == nil {
-		r.fail(s, err)
+	if err := s.resources.Source.Stop(s.stopCtx); err != nil {
+		if s.ctx.Err() == nil {
+			r.fail(s, err)
+		}
+		return
 	}
+	r.mu.Lock()
+	s.stopReturned = true
+	r.advanceStopDeadlineLocked(s)
+	r.mu.Unlock()
+}
+
+// Each deadline belongs to one I/O phase. A retired timer must never fail the
+// following phase, including when its callback was already queued.
+func (r *Runtime) armStopDeadlineLocked(s *resource, budget time.Duration) {
+	if s.stopWatch != nil {
+		s.stopWatch()
+	}
+	if s.stopCancel != nil {
+		s.stopCancel()
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, budget)
+	s.stopCtx, s.stopCancel = ctx, cancel
+	s.stopWatch = context.AfterFunc(ctx, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if s.stopCtx == ctx && errors.Is(ctx.Err(), context.DeadlineExceeded) && !s.finished && s.ctx.Err() == nil && s.cause == nil {
+			s.cause = context.DeadlineExceeded
+			s.cancel()
+		}
+	})
+}
+
+func (r *Runtime) sourceReachedEOF(s *resource, queued int) {
+	r.mu.Lock()
+	s.sourceEOF = true
+	// The copy worker can have one block outside the FIFO. The sink's accepted
+	// buffers and finalization remain covered by the existing I/O allowance.
+	s.tailSamples = queued + s.resources.SampleRate/50
+	r.advanceStopDeadlineLocked(s)
+	r.mu.Unlock()
+}
+
+func (r *Runtime) advanceStopDeadlineLocked(s *resource) {
+	if !s.sourceEOF || !s.stopReturned || s.ctx.Err() != nil {
+		return
+	}
+	if err := s.stopCtx.Err(); err != nil {
+		if s.cause == nil {
+			s.cause = err
+			s.cancel()
+		}
+		return
+	}
+	playout := time.Duration(s.tailSamples) * time.Second / time.Duration(s.resources.SampleRate)
+	r.armStopDeadlineLocked(s, playout+2*time.Second)
 }
 
 func (r *Runtime) run(s *resource) {
@@ -436,7 +487,7 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 		s.resources.Observer.Clear()
 	}
 	r.mu.Lock()
-	stopDone, stopCtx := s.stopDone, s.stopCtx
+	stopDone := s.stopDone
 	r.mu.Unlock()
 	if stopDone == nil {
 		return errors.New("audiosession: source ended without a stop request")
@@ -446,6 +497,11 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	}
+	// Stop may complete after the reader reaches EOF. Read the final phase's
+	// context only after joining Stop, rather than retaining the retired timer.
+	r.mu.Lock()
+	stopCtx := s.stopCtx
+	r.mu.Unlock()
 	if err := s.resources.Sink.Drain(stopCtx); err != nil {
 		return err
 	}
