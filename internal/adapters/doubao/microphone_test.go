@@ -25,6 +25,7 @@ func TestReadMicrophoneSelectionNarrowFieldValues(t *testing.T) {
 		{name: "absent", fields: map[string]interface{}{"unrelated": "ignored"}, automatic: true},
 		{name: "null", fields: map[string]interface{}{"selectedMicrophoneId": nil}, automatic: true},
 		{name: "empty", fields: map[string]interface{}{"selectedMicrophoneId": ""}, automatic: true, selectedIDPresent: true},
+		{name: "vendor auto-detect sentinel", fields: map[string]interface{}{"selectedMicrophoneId": autoDetectMicrophoneID}, automatic: true, selectedIDPresent: true, selectedMicrophoneID: autoDetectMicrophoneID},
 		{name: "explicit", fields: map[string]interface{}{"selectedMicrophoneId": "com.example.device.42"}, deviceUID: "com.example.device.42", selectedIDPresent: true, selectedMicrophoneID: "com.example.device.42"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -65,6 +66,7 @@ func TestMicrophoneSelectionOptionalStates(t *testing.T) {
 		{name: "field absent", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{"unrelated": json.RawMessage(`"ignored"`)}}, automatic: true},
 		{name: "null", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`null`)}}, automatic: true},
 		{name: "empty", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`""`)}}, automatic: true, selectedIDPresent: true},
+		{name: "vendor auto-detect sentinel", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`"ime_auto_detect_microphone_id"`)}}, automatic: true, selectedIDPresent: true, selectedMicrophoneID: autoDetectMicrophoneID},
 		{name: "UID", candidate: settingsCandidate{valuePresent: true, values: map[string]json.RawMessage{microphoneSelectionField.name: json.RawMessage(`"device.uid"`)}}, automatic: false, deviceUID: "device.uid", selectedIDPresent: true, selectedMicrophoneID: "device.uid"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -13,9 +13,12 @@ import (
 
 var ErrMicrophoneSelectionUnsupported = errors.New("doubao microphone selection: unsupported platform or application identity")
 
+const autoDetectMicrophoneID = "ime_auto_detect_microphone_id"
+
 // MicrophoneSelection describes only the persisted selectedMicrophoneId field.
-// Automatic preserves the route/display classification for nil or empty values;
-// it does not identify the device Doubao or Core Audio routes to at runtime.
+// Automatic preserves the route/display classification for nil, empty, or the
+// vendor's auto-detect sentinel; it does not identify the device Doubao or Core
+// Audio routes to at runtime.
 type MicrophoneSelection struct {
 	Automatic bool
 	DeviceUID string
@@ -28,8 +31,9 @@ type MicrophoneSelection struct {
 // ReadMicrophoneSelection reads only the exact selectedMicrophoneId field from
 // the CRC-verified Doubao MMKV key d. It uses the same fixed locator as
 // shortcut discovery and never writes configuration or returns other fields.
-// Automatic retains the route display meaning for nil and empty values;
-// SelectedMicrophoneID preserves the original optional string for restoration.
+// Automatic retains the route display meaning for nil, empty, and the vendor's
+// auto-detect sentinel. SelectedMicrophoneID preserves the original optional
+// string for exact restoration, including that sentinel.
 func ReadMicrophoneSelection(ctx context.Context, locator voicetools.Locator) (MicrophoneSelection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -77,7 +81,7 @@ func (candidate settingsCandidate) microphoneSelection() (MicrophoneSelection, e
 		return MicrophoneSelection{}, errMicrophoneFieldType
 	}
 	selection.SelectedMicrophoneID = &deviceUID
-	if deviceUID == "" {
+	if deviceUID == "" || deviceUID == autoDetectMicrophoneID {
 		return selection, nil
 	}
 	selection.Automatic = false
