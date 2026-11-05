@@ -52,6 +52,7 @@ jobs:
         run: |
           python3 script/release_version_test.py
           python3 script/test_verify_release.py
+          python3 script/test_verify_app_bundle_frame.py
 
       - name: Test and vet
         run: |

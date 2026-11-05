@@ -39,7 +39,7 @@ library_source="$NATIVE_DIR/.build/arm64-apple-macosx/release/$LIBRARY_NAME"
 	echo "SwiftPM bridge library missing: $library_source" >&2
 	exit 1
 }
-/usr/bin/lipo -verify_arch arm64 "$library_source"
+/usr/bin/lipo "$library_source" -verify_arch arm64
 
 for symbol in \
 	mimac_siri_glass_abi_version \

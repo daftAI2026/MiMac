@@ -29,7 +29,12 @@ class FrameExportContract(unittest.TestCase):
                     result += "00000004 T _mimac_siri_glass_update_frame\n"
                 return result
 
-            with patch.object(bundle_check.subprocess, "run"), patch.object(bundle_check.subprocess, "check_output", side_effect=exports):
+            def command(arguments, **_):
+                if arguments[0] == "/usr/bin/lipo":
+                    self.assertTrue(Path(arguments[1]).is_file())
+                    self.assertEqual(arguments[2:], ["-verify_arch", "arm64"])
+
+            with patch.object(bundle_check.subprocess, "run", side_effect=command), patch.object(bundle_check.subprocess, "check_output", side_effect=exports):
                 return bundle_check.verify(app, "arm64", require_siri=True)
 
     def test_old_library_is_rejected_before_launch(self):

@@ -36,7 +36,9 @@ def verify(bundle, arch, require_siri=False):
     files = [executable] + [resources / name for name in libraries]
     hashes = {}
     for path in files:
-        subprocess.run(["/usr/bin/lipo", "-verify_arch", native_arch, str(path)], check=True)
+        # Apple's lipo consumes every argument after -verify_arch as an arch.
+        # Put the input first; LLVM lipo also accepts this canonical ordering.
+        subprocess.run(["/usr/bin/lipo", str(path), "-verify_arch", native_arch], check=True)
         hashes[str(path.relative_to(contents))] = hashlib.sha256(path.read_bytes()).hexdigest()
     for name, symbol in libraries.items():
         exports = subprocess.check_output(["/usr/bin/nm", "-gU", str(resources / name)], text=True)
