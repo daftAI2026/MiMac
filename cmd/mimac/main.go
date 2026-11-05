@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	brand "mimac.local/mimac/Assets/Brand"
 	"mimac.local/mimac/internal/adapters/xiaomi"
+	"mimac.local/mimac/internal/audiobackendprefs"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/platform/navigation"
 	nativeprefs "mimac.local/mimac/internal/platform/preferences"
@@ -200,8 +201,18 @@ func main() {
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
 	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded I/O timing and frequency/display metadata on exit; excludes PCM and text")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
-	audioBackend := flag.String("audio-backend", "", "optional audio backend: mimac-compat; never installs a component")
+	audioBackend := flag.String("audio-backend", "", "one-run override: mimac-compat or empty; never installs a component")
+	setAudioBackend := flag.String("set-audio-backend", "", "persist mimac-compat or empty, then exit before app startup")
 	flag.Parse()
+	audioBackendProvided, setAudioBackendProvided := false, false
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "audio-backend":
+			audioBackendProvided = true
+		case "set-audio-backend":
+			setAudioBackendProvided = true
+		}
+	})
 	if err := validateAudioBackend(*audioBackend); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -218,9 +229,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, "host-capture requires show-settings and at least 2s if smoke-duration is set")
 		os.Exit(2)
 	}
+	if audioBackendProvided && setAudioBackendProvided {
+		fmt.Fprintln(os.Stderr, "set-audio-backend cannot be combined with audio-backend")
+		os.Exit(2)
+	}
+	preferencePath := ""
+	if !audioBackendProvided || setAudioBackendProvided {
+		var err error
+		preferencePath, err = audiobackendprefs.DefaultPath()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "audio backend preference path:", err)
+			os.Exit(2)
+		}
+	}
+	startup, err := audiobackendprefs.Prepare(preferencePath, *audioBackend, audioBackendProvided, *setAudioBackend, setAudioBackendProvided)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "audio backend preference:", err)
+		os.Exit(2)
+	}
+	if startup.Exit {
+		return
+	}
+	backend := startup.Backend
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: *audioBackend}}
+	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend}}
 	s.remoteState.reportRecovery = *reportPath != ""
 	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
 	if err != nil {

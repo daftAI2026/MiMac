@@ -8,11 +8,12 @@ import (
 
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
+	"mimac.local/mimac/internal/audiobackendprefs"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/voicetools"
 )
 
-const compatibilityAudioBackend = "mimac-compat"
+const compatibilityAudioBackend = audiobackendprefs.CompatibilityBackend
 
 // audioRouteConfig carries host-verified identity and resources into one
 // voice tool's route adapter. It deliberately contains no device or Core state.
@@ -36,10 +37,7 @@ type liveAudioState struct {
 }
 
 func validateAudioBackend(backend string) error {
-	if backend != "" && backend != compatibilityAudioBackend {
-		return errors.New("audio-backend must be mimac-compat or empty")
-	}
-	return nil
+	return audiobackendprefs.Validate(backend)
 }
 
 func (s *shell) desiredLiveAudioTool() *voiceTool {

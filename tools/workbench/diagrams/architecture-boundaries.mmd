@@ -1,6 +1,7 @@
 flowchart LR
     mygo["MyGo 宿主：主线程与事件循环"]
     shell["cmd/mimac 组合根"]
+    backendPrefs["启动前解析音频后端偏好\n独立文件；显式当次参数优先；无选择则关闭"]
     ui["MyGo 设置窗口与菜单栏托盘"]
     plugins["pluginrt 固定清单生命周期\n串行调用；不另建事件循环"]
     core["bridge.Core 唯一设备动作与语音会话状态"]
@@ -20,6 +21,7 @@ flowchart LR
     future["未来：厂商语音条接管\n完整 Siri 前景与业务语义"]
 
     mygo --> shell
+    backendPrefs --> shell
     mygo --> ui
     shell --> plugins
     shell --> core

@@ -2,7 +2,7 @@
   {
     "id": "architecture-boundaries",
     "title": "架构边界",
-    "summary": "MyGo 负责主线程、事件循环、菜单与窗口；cmd/mimac 作组合根。Core 持有唯一设备动作和语音会话状态，pluginrt 与设备/工具/音频/文本/显示适配分开。此前固定包 WeType 两轮真实遥控会话通过；2026-11-03 豆包固定包两轮通过。WeType 冷态首轮、外部麦克风变化和异常恢复仍待验；Pro 2 精确型号/协议仍待握手；Siri 实时随声未验。",
+    "summary": "MyGo 负责主线程、事件循环、菜单与窗口；cmd/mimac 作组合根。Core 持有唯一设备动作和语音会话状态，pluginrt 与设备/工具/音频/文本/显示适配分开。此前固定包 WeType 两轮真实遥控会话通过；2026-11-03 豆包固定包两轮通过。WeType 冷态首轮、外部麦克风变化和异常恢复仍待验；Pro 2 精确型号/协议仍待握手；Siri 实时随声未验。 后端选择在宿主启动前解析；保存选择不安装组件、不启用遥控器，也不等于路由就绪。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
@@ -27,7 +27,8 @@
       "internal/platform/siriglass/siriglass.go",
       "internal/platform/siriglass/siriglass_other.go",
       "internal/platform/siriglass/siriglass_darwin_arm64.go",
-      "internal/audiosession/pcm_reader.go"
+      "internal/audiosession/pcm_reader.go",
+      "internal/audiobackendprefs/backend.go"
     ]
   },
   {
