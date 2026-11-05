@@ -126,6 +126,22 @@ func TestSwitchDeviceProfileUsesOnlySelectedProfileMappings(t *testing.T) {
 	}
 }
 
+func TestUnknownDeviceProfileCannotReplaceSelectedIdentity(t *testing.T) {
+	profile := profileSwitchFixture("xiaomi-rc003", "hid:0007:003e")
+	s := &shell{
+		deviceProfiles:  []devicePlugin{{ModuleID: xiaomiPlugin, Profile: profile}},
+		selectedProfile: profile.ID,
+		coordinator:     newDeviceCoordinator(),
+	}
+
+	if err := s.selectDeviceProfile("apple-tv"); err == nil {
+		t.Fatal("unknown device profile was accepted")
+	}
+	if s.selectedProfile != profile.ID || s.activeProfile().ID != profile.ID {
+		t.Fatalf("unknown selection changed active identity: selected=%q active=%q", s.selectedProfile, s.activeProfile().ID)
+	}
+}
+
 func TestFaultedDeviceCleanupBlocksProfileSwitch(t *testing.T) {
 	monitor := &profileSwitchMonitor{closeErr: xiaomi.ErrMonitorRestartRequired}
 	s := &shell{}
