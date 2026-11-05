@@ -43,6 +43,7 @@ type hostReport struct {
 	Core                coreReport            `json:"core"`
 	VoiceOverlayError   string                `json:"voice_overlay_error,omitempty"`
 	AudioError          string                `json:"audio_error,omitempty"`
+	AudioBackend        string                `json:"audio_backend"` // Resolved configuration, not route readiness.
 	AudioCleanupFailed  bool                  `json:"audio_cleanup_failed,omitempty"`
 	RemoteRecovery      []remoteRecoveryEvent `json:"remote_recovery,omitempty"`
 }
@@ -254,6 +255,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend}}
+	s.report.AudioBackend = backend
 	s.remoteState.reportRecovery = *reportPath != ""
 	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
 	if err != nil {
