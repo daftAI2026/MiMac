@@ -60,6 +60,10 @@ details { margin-top: var(--spaceLG); } summary { cursor: pointer; padding: var(
 @media(prefers-reduced-motion:reduce) { button:active { transform: none; } }
 
 .preview-navigation { display: flex; flex-wrap: wrap; gap: var(--spaceSM); margin-bottom: var(--spaceLG); }
+.preview-controls { display: flex; align-items: flex-start; gap: var(--spaceLG); flex-wrap: wrap; }
+.preview-config { display: flex; align-items: center; gap: var(--spaceSM); white-space: nowrap; font-size: var(--textCaption); color: var(--TextMuted); }
+.preview-config select { font-size: var(--textBody); color: var(--Text); }
+.preview-note { margin: 0 0 var(--spaceMD); color: var(--TextMuted); font-size: var(--textCaption); }
 .native-preview { margin: 0; }
 .native-preview > a { display: block; }
 .native-preview img { display: block; width: 100%; height: auto; border: var(--lineWidth) solid var(--Border); }
