@@ -3,6 +3,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import CryptoKit
+import Darwin
 import Foundation
 import ImageIO
 
@@ -53,6 +54,17 @@ func selectPage(_ label: String, in window: AXUIElement) throws {
     try wait(8) { try matches(window, role: "AXHeading", text: label).count == 1 }
 }
 func sha(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+func processStart(_ pid: pid_t) throws -> Date {
+    // NSRunningApplication.launchDate is nil for some directly launched App
+    // executables. The kernel's start time still binds this PID to the binary.
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
+          info.pbi_pid == UInt32(pid), info.pbi_start_tvsec > 0 else {
+        throw CaptureFailure("Could not verify the running process start time")
+    }
+    return Date(timeIntervalSince1970: Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000)
+}
 func pixels(_ url: URL) throws -> (String, Int, Int) {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
           let raw = image.dataProvider?.data else { throw CaptureFailure("Window capture is not a decodable image") }
@@ -83,8 +95,8 @@ do {
     _ = NSApplication.shared
     let apps = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "dev.mimac.app" }
     guard apps.count == 1, let app = apps.first, app.bundleURL?.resolvingSymlinksInPath().path == bundleURL.path else { throw CaptureFailure("Expected exactly one running MiMac at the supplied bundle path") }
+    let launchDate = try processStart(app.processIdentifier)
     guard app.executableURL?.resolvingSymlinksInPath().path == executable.resolvingSymlinksInPath().path,
-          let launchDate = app.launchDate,
           let modified = try FileManager.default.attributesOfItem(atPath: executable.path)[.modificationDate] as? Date,
           modified <= launchDate else { throw CaptureFailure("The running App does not match the bundle executable, or that executable changed after launch") }
     let executableDigest = sha(try Data(contentsOf: executable))
@@ -158,7 +170,8 @@ do {
         print("Captured \(label): \(size.0)×\(size.1)")
     }
     try selectPage(original[0].1, in: window); restored = true
-    guard sha(try Data(contentsOf: executable)) == executableDigest else { throw CaptureFailure("Executable changed during capture; complete gallery was not published") }
+    guard try processStart(app.processIdentifier) == launchDate,
+          sha(try Data(contentsOf: executable)) == executableDigest else { throw CaptureFailure("Process or executable changed during capture; complete gallery was not published") }
     if let previousFront, previousFront.processIdentifier != app.processIdentifier {
         guard previousFront.activate(options: []) else { throw CaptureFailure("Could not restore the previous foreground application") }
         try wait(5) { NSWorkspace.shared.frontmostApplication?.processIdentifier == previousFront.processIdentifier }

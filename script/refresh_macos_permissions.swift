@@ -15,10 +15,11 @@ private let pathFieldIdentifier = "PathTextField"
 private let openWindowTitles: Set<String> = ["Open", "打开"]
 private let pollInterval: TimeInterval = 0.10
 private let pageTimeout: TimeInterval = 18
+private let stablePageConfirmationDuration: TimeInterval = 0.20
 private let uiTimeout: TimeInterval = 12
 private let toggleTimeout: TimeInterval = 18
 
-private enum Permission: String, Codable, CaseIterable {
+private enum Permission: String, Codable, CaseIterable, Equatable {
     case inputMonitoring = "input-monitoring"
     case accessibility = "accessibility"
 
@@ -39,6 +40,125 @@ private enum Permission: String, Codable, CaseIterable {
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
     }
+}
+
+private struct StablePageIdentity: Equatable {
+    var permission: Permission
+    var title: String
+}
+
+private enum PageReadinessObservation: Equatable {
+    case exact(StablePageIdentity)
+    case waiting
+    case unknownModal
+    case ambiguous
+}
+
+private struct StablePageGateState: Equatable {
+    var identity: StablePageIdentity?
+    var firstSeenAt: TimeInterval?
+}
+
+private enum StablePageGateDecision: Equatable {
+    case waiting
+    case ready(StablePageIdentity)
+    case pending
+    case refused
+}
+
+// A pure reducer: only one exact page identity with no disqualifying surface
+// observed throughout the confirmation interval can become ready. A ready
+// result only permits the caller to continue to the separate row/toggle checks.
+private func advanceStablePageGate(
+    _ state: StablePageGateState,
+    observation: PageReadinessObservation,
+    now: TimeInterval,
+    confirmationDuration: TimeInterval
+) -> (state: StablePageGateState, decision: StablePageGateDecision) {
+    switch observation {
+    case .waiting:
+        return (StablePageGateState(identity: nil, firstSeenAt: nil), .waiting)
+    case .unknownModal:
+        return (StablePageGateState(identity: nil, firstSeenAt: nil), .pending)
+    case .ambiguous:
+        return (StablePageGateState(identity: nil, firstSeenAt: nil), .refused)
+    case .exact(let identity):
+        guard state.identity == identity, let firstSeenAt = state.firstSeenAt, now >= firstSeenAt else {
+            return (StablePageGateState(identity: identity, firstSeenAt: now), .waiting)
+        }
+        guard now - firstSeenAt >= confirmationDuration else { return (state, .waiting) }
+        return (state, .ready(identity))
+    }
+}
+
+private func runOfflineStabilityTest() -> Int32 {
+    var failures: [String] = []
+    func require(_ condition: Bool, _ name: String) {
+        if !condition { failures.append(name) }
+    }
+    let englishInput = StablePageIdentity(permission: .inputMonitoring, title: "Input Monitoring")
+    let simplifiedChineseInput = StablePageIdentity(permission: .inputMonitoring, title: "输入监控")
+
+    var state = StablePageGateState(identity: nil, firstSeenAt: nil)
+    var step = advanceStablePageGate(state, observation: .exact(englishInput), now: 10.0, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting, "first exact sample must not pass")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 10.10, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting, "short exact sequence must remain pending")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 10.21, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .ready(englishInput), "stable exact sequence must pass")
+
+    state = StablePageGateState(identity: nil, firstSeenAt: nil)
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 20.0, confirmationDuration: 0.20)
+    state = step.state
+    step = advanceStablePageGate(state, observation: .waiting, now: 20.10, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting && state.identity == nil, "transient title loss must reset stability")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 20.20, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting, "title must settle again after transient loss")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 20.41, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .ready(englishInput), "new stable run after title loss must pass")
+
+    state = StablePageGateState(identity: nil, firstSeenAt: nil)
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 30.0, confirmationDuration: 0.20)
+    state = step.state
+    step = advanceStablePageGate(state, observation: .unknownModal, now: 30.10, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .pending && state.identity == nil, "unknown modal must stop and reset the gate")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 30.20, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting, "page after unknown modal must start a fresh interval")
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 30.41, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .ready(englishInput), "fresh stable page after modal dismissal must pass")
+
+    state = StablePageGateState(identity: nil, firstSeenAt: nil)
+    step = advanceStablePageGate(state, observation: .exact(englishInput), now: 40.0, confirmationDuration: 0.20)
+    state = step.state
+    step = advanceStablePageGate(state, observation: .exact(simplifiedChineseInput), now: 40.10, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .waiting && state.identity == simplifiedChineseInput, "localized title change must restart stability")
+    step = advanceStablePageGate(state, observation: .exact(simplifiedChineseInput), now: 40.31, confirmationDuration: 0.20)
+    state = step.state
+    require(step.decision == .ready(simplifiedChineseInput), "known Simplified Chinese title must settle")
+
+    step = advanceStablePageGate(state, observation: .ambiguous, now: 41.0, confirmationDuration: 0.20)
+    require(step.decision == .refused && step.state.identity == nil, "duplicate page observation must refuse and reset")
+
+    require(permissionTitles(matching: "Input Monitoring") == [.inputMonitoring], "known English page title must map uniquely")
+    require(permissionTitles(matching: "辅助功能") == [.accessibility], "known Simplified Chinese page title must map uniquely")
+    require(permissionTitles(matching: "アクセシビリティ").isEmpty, "unobserved locale must remain unrecognized")
+
+    if failures.isEmpty {
+        print("PASS: stable page gate sequences; no System Settings, AX, permission, or file operation was performed")
+        return 0
+    }
+    for failure in failures { print("FAIL: \(failure)") }
+    return 1
 }
 
 private enum Mode: String, Equatable {
@@ -322,15 +442,54 @@ private func appWindows(_ application: AXUIElement) -> [AXUIElement] {
     return axAttribute(application, "AXWindows") as? [AXUIElement] ?? []
 }
 
+private func permissionTitles(matching title: String) -> [Permission] {
+    return Permission.allCases.filter { $0.pageTitles.contains(title) }
+}
+
 private func exactPageWindows(_ windows: [AXUIElement]) -> [(AXUIElement, Permission, String)] {
     var found: [(AXUIElement, Permission, String)] = []
     for window in windows {
         guard let title = axString(window, "AXTitle") else { continue }
-        for permission in Permission.allCases where permission.pageTitles.contains(title) {
+        for permission in permissionTitles(matching: title) {
             found.append((window, permission, title))
         }
     }
     return found
+}
+
+private func directModalSurfaces(in windows: [AXUIElement]) -> [AXUIElement] {
+    let modalRoles: Set<String> = ["AXSheet", "AXDialog"]
+    var result: [AXUIElement] = []
+    for window in windows {
+        if let role = axString(window, "AXRole"), modalRoles.contains(role) {
+            result.append(window)
+        }
+        var candidates = axAttribute(window, "AXSheets") as? [AXUIElement] ?? []
+        candidates.append(contentsOf: (axAttribute(window, "AXChildren") as? [AXUIElement] ?? []).filter {
+            modalRoles.contains(axString($0, "AXRole") ?? "")
+        })
+        for candidate in candidates where !result.contains(where: { CFEqual($0, candidate) }) {
+            result.append(candidate)
+        }
+    }
+    return result
+}
+
+private func navigationPageObservation(_ permission: Permission, appElement: AXUIElement) -> PageReadinessObservation {
+    let windows = appWindows(appElement)
+    let pages = exactPageWindows(windows)
+    let opens = findOpenWindows(appElement)
+    if pages.count > 1 || opens.count > 1 { return .ambiguous }
+    if !directModalSurfaces(in: windows).isEmpty || !opens.isEmpty ||
+        windows.contains(where: { axNumber($0, "AXModal")?.boolValue == true }) {
+        return .unknownModal
+    }
+    guard pages.count == 1, let page = pages.first, page.1 == permission else {
+        return .waiting
+    }
+    guard windows.count == 1, CFEqual(windows[0], page.0),
+          axNumber(page.0, "AXModal")?.boolValue != true else { return .waiting }
+    return .exact(StablePageIdentity(permission: permission, title: page.2))
 }
 
 private func pageWindow(_ permission: Permission, windows: [AXUIElement]) throws -> (AXUIElement, String) {
@@ -370,9 +529,11 @@ private func frontmostIsSettings(_ app: NSRunningApplication) -> Bool {
 }
 
 private func activateSettings(_ app: NSRunningApplication, permission: Permission) throws {
-    _ = app.activate(options: [.activateAllWindows])
-    let ready = waitUntil(uiTimeout) { frontmostIsSettings(app) }
-    guard ready else { throw pending("settings_foreground", "System Settings did not become the foreground app", permission: permission) }
+    if !frontmostIsSettings(app) {
+        _ = app.activate(options: [.activateAllWindows])
+        let ready = waitUntil(uiTimeout) { frontmostIsSettings(app) }
+        guard ready else { throw pending("settings_foreground", "System Settings did not become the foreground app", permission: permission) }
+    }
     checkpoint("\(permission.rawValue).settings_foreground", permission: permission)
 }
 
@@ -470,7 +631,7 @@ private func selectMiMacRow(_ row: AXUIElement, permission: Permission) throws {
     checkpoint(stageKey(permission, "entry_selected"), permission: permission)
 }
 
-private func pressUniqueButton(_ roots: [AXUIElement], labels: Set<String>, identifiers: Set<String> = [], stage: String, permission: Permission, journalAction: String? = nil) throws {
+private func pressUniqueButton(_ roots: [AXUIElement], labels: Set<String>, identifiers: Set<String> = [], stage: String, permission: Permission, journalAction: String? = nil, beforeAction: ((AXUIElement) throws -> Void)? = nil) throws {
     let buttons = findButtons(roots: roots, labels: labels, identifiers: identifiers)
     guard buttons.count == 1, let button = buttons.first else {
         if buttons.count > 1 { throw refused(stage, "Multiple matching buttons are visible; refusing to choose", permission: permission) }
@@ -482,6 +643,7 @@ private func pressUniqueButton(_ roots: [AXUIElement], labels: Set<String>, iden
     if let journalAction, !markAction(permission, journalAction) {
         throw pending(stage, "This button action was already attempted in the current journal", permission: permission)
     }
+    try beforeAction?(button)
     let result = AXUIElementPerformAction(button, "AXPress" as CFString)
     guard result == .success else { throw pending(stage, "The expected button action was not accepted", permission: permission) }
     checkpoint(stage + ".requested", permission: permission)
@@ -504,29 +666,28 @@ private func ensureKnownSurfaces(_ appElement: AXUIElement, allowOrdinaryPage: B
     let pages = exactPageWindows(windows)
     guard pages.count <= 1 else { throw refused("surface_check", "More than one privacy page is visible") }
     var ordinary: [AXUIElement] = []
-    var sheets: [AXUIElement] = []
     // AXSheets is the window's modal relationship. Do not walk the entire
     // Settings content tree (which may contain thousands of unrelated rows).
-    // Some releases expose the focused sheet as an app window or a direct
-    // child instead, so include those shallow relationships as well.
-    for window in windows {
-        var candidates = axAttribute(window, "AXSheets") as? [AXUIElement] ?? []
-        if axString(window, "AXRole") == "AXSheet" { candidates.append(window) }
-        candidates.append(contentsOf: (axAttribute(window, "AXChildren") as? [AXUIElement] ?? []).filter {
-            axString($0, "AXRole") == "AXSheet"
-        })
-        for sheet in candidates where !sheets.contains(where: { CFEqual($0, sheet) }) { sheets.append(sheet) }
+    // Some releases expose a modal as an app window or a direct AXDialog child.
+    let modals = directModalSurfaces(in: windows)
+    for modal in modals {
+        guard axString(modal, "AXIdentifier") == goToIdentifier, opens.count == 1,
+              goToWindows(appElement, openWindow: opens[0]).contains(where: { CFEqual($0, modal) }) else {
+            throw pending("surface_check", "An unclassified Settings modal is open; no refresh action was sent")
+        }
     }
-    for sheet in sheets {
-        guard axString(sheet, "AXIdentifier") == goToIdentifier, opens.count == 1,
-              goToWindows(appElement, openWindow: opens[0]).contains(where: { CFEqual($0, sheet) }) else {
-            throw pending("surface_check", "An unclassified Settings sheet is open; no refresh action was sent")
+    for window in windows where axNumber(window, "AXModal")?.boolValue == true {
+        let isOpenPanel = opens.contains(where: { CFEqual($0, window) })
+        let isKnownGoTo = opens.count == 1 && axString(window, "AXIdentifier") == goToIdentifier &&
+            goToWindows(appElement, openWindow: opens[0]).contains(where: { CFEqual($0, window) })
+        guard isOpenPanel || isKnownGoTo else {
+            throw pending("surface_check", "An unclassified modal window is open; no refresh action was sent")
         }
     }
     for window in windows {
         if pages.contains(where: { CFEqual($0.0, window) }) || opens.contains(where: { CFEqual($0, window) }) { continue }
-        if sheets.contains(where: { CFEqual($0, window) }) { continue }
-        guard allowOrdinaryPage, pages.isEmpty, opens.isEmpty, sheets.isEmpty,
+        if modals.contains(where: { CFEqual($0, window) }) { continue }
+        guard allowOrdinaryPage, pages.isEmpty, opens.isEmpty, modals.isEmpty,
               axString(window, "AXRole") == "AXWindow",
               axString(window, "AXSubrole") == "AXStandardWindow",
               axNumber(window, "AXModal")?.boolValue != true else {
@@ -535,7 +696,7 @@ private func ensureKnownSurfaces(_ appElement: AXUIElement, allowOrdinaryPage: B
         ordinary.append(window)
     }
     if pages.isEmpty {
-        guard allowOrdinaryPage, ordinary.count == 1 else {
+        guard allowOrdinaryPage, ordinary.count == 1, opens.isEmpty, modals.isEmpty else {
             throw pending("surface_check", "Expected one ordinary Settings window before privacy navigation")
         }
     }
@@ -567,6 +728,11 @@ private func openPanelIsKeyWindow(_ appElement: AXUIElement, _ openWindow: AXUIE
 
 private func raiseOpenPanel(_ permission: Permission, app: NSRunningApplication, appElement: AXUIElement, openWindow: AXUIElement) throws {
     if !frontmostIsSettings(app) { try activateSettings(app, permission: permission) }
+    _ = try requireCurrentPermissionPage(permission, appElement: appElement, allowPicker: true)
+    let openWindows = findOpenWindows(appElement)
+    guard openWindows.count == 1, CFEqual(openWindows[0], openWindow) else {
+        throw pending(stageKey(permission, "open_panel_raise"), "The unique Open panel changed before it could be raised", permission: permission)
+    }
     guard actionNames(openWindow).contains("AXRaise") else {
         throw pending(stageKey(permission, "open_panel_raise"), "The Open panel does not expose AXRaise; refusing to confirm in an uncertain window", permission: permission)
     }
@@ -619,8 +785,14 @@ private func actionNames(_ element: AXUIElement) -> [String] {
 }
 
 private func prepareExistingPicker(_ permission: Permission, app: NSRunningApplication, appElement: AXUIElement, openWindow: AXUIElement) throws {
+    let page = try requireCurrentPermissionPage(permission, appElement: appElement, allowPicker: true)
+    let initialOpenWindows = findOpenWindows(appElement)
+    guard initialOpenWindows.count == 1, CFEqual(initialOpenWindows[0], openWindow) else {
+        throw pending(stageKey(permission, "file_picker"), "The unique Open panel changed before picker handling", permission: permission)
+    }
     try raiseOpenPanel(permission, app: app, appElement: appElement, openWindow: openWindow)
     try ensureNoAuthenticationPrompt(appElement, permission: permission)
+    _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
     var goToMatches = goToWindows(appElement, openWindow: openWindow)
     if goToMatches.count > 1 {
         throw refused(stageKey(permission, "goto_lookup"), "More than one GoToWindow is visible", permission: permission)
@@ -637,6 +809,10 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
                 throw pending(stageKey(permission, "goto_state_uncertain"), "GoToWindow disappeared before its dismissal was journaled; refusing to reopen or confirm an uncertain picker", permission: permission)
             }
             checkpoint(stageKey(permission, "file_picker_open"), permission: permission)
+            _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
+            guard findOpenWindows(appElement).count == 1, openPanelIsKeyWindow(appElement, openWindow) else {
+                throw pending(stageKey(permission, "file_picker_focus"), "The verified Open panel is no longer the unique focused picker", permission: permission)
+            }
             try postCommandShiftG()
             let appeared = waitUntil(uiTimeout) { goToWindows(appElement, openWindow: openWindow).count == 1 }
             guard appeared else { throw pending(stageKey(permission, "goto_wait"), "GoToWindow did not appear after one Cmd-Shift-G sequence", permission: permission) }
@@ -649,6 +825,7 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
               axString(field, "AXRole") == "AXTextField" else {
             throw refused(stageKey(permission, "path_field"), "Expected one PathTextField AXTextField inside GoToWindow", permission: permission)
         }
+        _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
         if axString(field, "AXValue") != targetBundlePath {
             let setResult = AXUIElementSetAttributeValue(field, "AXValue" as CFString, targetBundlePath as CFString)
             guard setResult == .success, axString(field, "AXValue") == targetBundlePath else {
@@ -661,6 +838,7 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
             checkpoint(stageKey(permission, "path_already_matches"), permission: permission)
         }
         if axNumber(field, "AXFocused")?.boolValue != true {
+            _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
             let focusResult = AXUIElementSetAttributeValue(field, "AXFocused" as CFString, kCFBooleanTrue)
             guard focusResult == .success, axNumber(field, "AXFocused")?.boolValue == true else {
                 throw pending(stageKey(permission, "path_focus"), "PathTextField did not become focused and read back", permission: permission)
@@ -675,7 +853,11 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
         guard suggestionReady else {
             throw pending(stageKey(permission, "path_resolution"), "The canonical path suggestion did not resolve uniquely; no key was sent", permission: permission)
         }
-        guard frontmostIsSettings(app), openPanelIsKeyWindow(appElement, openWindow),
+        _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
+        let currentGoToMatches = goToWindows(appElement, openWindow: openWindow)
+        guard currentGoToMatches.count == 1, CFEqual(currentGoToMatches[0], goTo),
+              frontmostIsSettings(app), openPanelIsKeyWindow(appElement, openWindow),
+              axNumber(field, "AXFocused")?.boolValue == true,
               axString(field, "AXValue") == targetBundlePath else {
             throw pending(stageKey(permission, "confirm_foreground"), "The verified picker or canonical path changed before submission", permission: permission)
         }
@@ -685,6 +867,16 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
         }
         journal.attemptedActions.append(actionKey)
         checkpoint(stageKey(permission, "path_confirm_requested"), permission: permission)
+        _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: true)
+        let finalGoToMatches = goToWindows(appElement, openWindow: openWindow)
+        let finalFields = finalGoToMatches.count == 1 ? findElements(roots: [finalGoToMatches[0]], identifier: pathFieldIdentifier, stopAfter: 2) : []
+        guard finalGoToMatches.count == 1, CFEqual(finalGoToMatches[0], goTo),
+              finalFields.count == 1, CFEqual(finalFields[0], field),
+              frontmostIsSettings(app), openPanelIsKeyWindow(appElement, openWindow),
+              axNumber(field, "AXFocused")?.boolValue == true,
+              axString(field, "AXValue") == targetBundlePath else {
+            throw pending(stageKey(permission, "confirm_foreground"), "The verified modal or path field changed before Return", permission: permission)
+        }
         // PathTextField AXConfirm can commit completion without navigating.
         // Submit the modal's resolved canonical suggestion with one plain
         // Return, rather than treating that field-action receipt as success.
@@ -706,10 +898,25 @@ private func prepareExistingPicker(_ permission: Permission, app: NSRunningAppli
     guard axNumber(openButton, "AXEnabled")?.boolValue == true else {
         throw pending("\(permission.rawValue).open_enabled", "The file panel Open button is not enabled", permission: permission)
     }
+    _ = try requireCurrentPermissionPage(permission, appElement: appElement, allowPicker: true)
+    let currentOpenWindows = findOpenWindows(appElement)
+    guard currentOpenWindows.count == 1, CFEqual(currentOpenWindows[0], openWindow),
+          openPanelIsKeyWindow(appElement, openWindow), goToWindows(appElement, openWindow: openWindow).isEmpty else {
+        throw pending("\(permission.rawValue).open_panel", "The verified Open panel changed before the single Open action", permission: permission)
+    }
     guard markAction(permission, "open") else {
         throw pending(stageKey(permission, "open_pending"), "Open was already attempted in this journal and the file panel remains; inspect it before retrying", permission: permission)
     }
     checkpoint(stageKey(permission, "awaiting_toggle"), permission: permission)
+    _ = try requireCurrentPermissionPage(permission, appElement: appElement, allowPicker: true)
+    let finalOpenWindows = findOpenWindows(appElement)
+    let finalOpenButtons = findButtons(roots: [openWindow], labels: ["Open", "打开"], identifiers: ["OKButton"])
+    guard finalOpenWindows.count == 1, CFEqual(finalOpenWindows[0], openWindow),
+          finalOpenButtons.count == 1, CFEqual(finalOpenButtons[0], openButton),
+          axNumber(finalOpenButtons[0], "AXEnabled")?.boolValue == true,
+          openPanelIsKeyWindow(appElement, openWindow), goToWindows(appElement, openWindow: openWindow).isEmpty else {
+        throw pending("\(permission.rawValue).open_panel", "The verified Open button or picker changed before the single Open action", permission: permission)
+    }
     let openResult = AXUIElementPerformAction(openButton, "AXPress" as CFString)
     guard openResult == .success else { throw pending("\(permission.rawValue).open_press", "The file panel Open action was not accepted", permission: permission) }
     let panelClosed = waitUntil(uiTimeout) { findOpenWindows(appElement).isEmpty }
@@ -736,18 +943,61 @@ private func currentPagePermission(_ appElement: AXUIElement) throws -> (AXUIEle
     return match
 }
 
+private func requireCurrentPermissionPage(
+    _ permission: Permission,
+    appElement: AXUIElement,
+    expectedPage: AXUIElement? = nil,
+    allowPicker: Bool = false
+) throws -> AXUIElement {
+    try ensureNoAuthenticationPrompt(appElement, permission: permission)
+    try ensureKnownSurfaces(appElement, allowOrdinaryPage: false)
+    let (page, currentPermission, _) = try currentPagePermission(appElement)
+    guard currentPermission == permission else {
+        throw pending("\(permission.rawValue).page_check", "The expected privacy page is no longer the unique visible page", permission: permission)
+    }
+    if let expectedPage, !CFEqual(page, expectedPage) {
+        throw pending("\(permission.rawValue).page_check", "The privacy page window changed before the action", permission: permission)
+    }
+    if !allowPicker && !findOpenWindows(appElement).isEmpty {
+        throw pending("\(permission.rawValue).surface_check", "A file picker appeared before the privacy-page action", permission: permission)
+    }
+    return page
+}
+
 private func navigateToPage(_ permission: Permission, app: NSRunningApplication, appElement: AXUIElement) throws -> AXUIElement {
     try ensureNoAuthenticationPrompt(appElement, permission: permission)
     checkpoint("\(permission.rawValue).navigation_requested", permission: permission)
     guard let route = URL(string: permission.systemSettingsRoute), NSWorkspace.shared.open(route) else {
         throw pending("\(permission.rawValue).navigation", "System Settings did not accept the known privacy page URL", permission: permission)
     }
-    let visible = waitUntil(pageTimeout) {
-        let windows = exactPageWindows(appWindows(appElement)).filter { $0.1 == permission }
-        return windows.count == 1
-    }
-    guard visible else { throw pending("\(permission.rawValue).page_wait", "The exact privacy page title did not appear after navigation", permission: permission) }
     try activateSettings(app, permission: permission)
+    var gateState = StablePageGateState(identity: nil, firstSeenAt: nil)
+    var gateDecision = StablePageGateDecision.waiting
+    let settled = waitUntil(pageTimeout) {
+        let step = advanceStablePageGate(
+            gateState,
+            observation: navigationPageObservation(permission, appElement: appElement),
+            now: ProcessInfo.processInfo.systemUptime,
+            confirmationDuration: stablePageConfirmationDuration
+        )
+        gateState = step.state
+        gateDecision = step.decision
+        if case .waiting = gateDecision { return false }
+        return true
+    }
+    guard settled else { throw pending("\(permission.rawValue).page_wait", "The exact privacy page title did not remain stable after navigation", permission: permission) }
+    switch gateDecision {
+    case .ready:
+        break
+    case .pending:
+        throw pending("\(permission.rawValue).page_wait", "A modal or unrecognized surface appeared during privacy navigation", permission: permission)
+    case .refused:
+        throw refused("\(permission.rawValue).page_wait", "Multiple privacy pages or file pickers appeared during navigation", permission: permission)
+    case .waiting:
+        throw pending("\(permission.rawValue).page_wait", "The exact privacy page title did not remain stable after navigation", permission: permission)
+    }
+    try ensureNoAuthenticationPrompt(appElement, permission: permission)
+    try ensureKnownSurfaces(appElement, allowOrdinaryPage: false)
     let (page, title) = try pageWindow(permission, windows: appWindows(appElement))
     journal.observations[permission.rawValue + ".page_title"] = title
     checkpoint("\(permission.rawValue).page_verified", permission: permission)
@@ -760,8 +1010,7 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
     journal.observations[permission.rawValue + ".page_title"] = pageTitle
     checkpoint("\(permission.rawValue).page_verified", permission: permission)
     try activateSettings(app, permission: permission)
-    try ensureNoAuthenticationPrompt(appElement, permission: permission)
-    try ensureKnownSurfaces(appElement, allowOrdinaryPage: false)
+    _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page, allowPicker: resumeExistingPicker)
 
     let openWindows = findOpenWindows(appElement)
     if resumeExistingPicker || !openWindows.isEmpty {
@@ -793,6 +1042,11 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
         }
         let (row, _, _) = try rowAndToggle(in: page)
         if let row {
+            _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page)
+            let (currentRow, _, _) = try rowAndToggle(in: page)
+            guard let currentRow, CFEqual(currentRow, row) else {
+                throw pending(stageKey(permission, "entry_selection"), "The verified MiMac row changed before selection", permission: permission)
+            }
             try selectMiMacRow(row, permission: permission)
             let removeButtons = findButtons(roots: [page], labels: ["Remove", "移除"])
             guard removeButtons.count == 1, let removeButton = removeButtons.first else {
@@ -804,6 +1058,12 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
             guard markAction(permission, "remove") else {
                 throw pending(stageKey(permission, "remove_pending"), "Remove was already attempted in this journal and the MiMac row remains; inspect the page before continuing", permission: permission)
             }
+            _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page)
+            let finalRemoveButtons = findButtons(roots: [page], labels: ["Remove", "移除"])
+            guard finalRemoveButtons.count == 1, CFEqual(finalRemoveButtons[0], removeButton),
+                  axNumber(finalRemoveButtons[0], "AXEnabled")?.boolValue == true else {
+                throw pending(stageKey(permission, "remove_button"), "The verified Remove button changed before its single action", permission: permission)
+            }
             guard AXUIElementPerformAction(removeButton, "AXPress" as CFString) == .success else {
                 throw pending(stageKey(permission, "remove_press"), "Remove action was not accepted", permission: permission)
             }
@@ -811,7 +1071,18 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
             guard removed else { throw pending(stageKey(permission, "remove_wait"), "MiMac_Title did not disappear after one Remove action", permission: permission) }
             checkpoint(stageKey(permission, "row_removed"), permission: permission)
         }
-        try pressUniqueButton([page], labels: ["Add", "添加"], identifiers: ["Add"], stage: stageKey(permission, "add"), permission: permission, journalAction: "add")
+        try pressUniqueButton(
+            [page], labels: ["Add", "添加"], identifiers: ["Add"],
+            stage: stageKey(permission, "add"), permission: permission, journalAction: "add",
+            beforeAction: { addButton in
+                _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page)
+                let currentAddButtons = findButtons(roots: [page], labels: ["Add", "添加"], identifiers: ["Add"])
+                guard currentAddButtons.count == 1, CFEqual(currentAddButtons[0], addButton),
+                      axNumber(currentAddButtons[0], "AXEnabled")?.boolValue == true else {
+                    throw pending(stageKey(permission, "add"), "The verified Add button changed before its single action", permission: permission)
+                }
+            }
+        )
         let panelAppeared = waitUntil(uiTimeout) { findOpenWindows(appElement).count == 1 }
         guard panelAppeared else { throw pending(stageKey(permission, "open_panel_wait"), "The open-panel window did not appear after Add", permission: permission) }
         guard findOpenWindows(appElement).count == 1, let openWindow = findOpenWindows(appElement).first else {
@@ -965,6 +1236,12 @@ private func printFinal(_ status: String, _ message: String) {
     if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
        let output = String(data: data, encoding: .utf8) { print(output) }
     else { print("\(status): \(message)") }
+}
+
+if CommandLine.arguments.dropFirst().elementsEqual(["--offline-stability-test"]) {
+    // This path only exercises the pure state reducer above. It runs before
+    // NSWorkspace, Accessibility, permission checks, caches or journal I/O.
+    exit(runOfflineStabilityTest())
 }
 
 do {
