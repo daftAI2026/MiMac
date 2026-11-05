@@ -76,18 +76,36 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 			ui.Row(c).FillWidth().MinWidth(0).MinHeight(controlHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
 				ui.Text(c, voiceToolStatus(tool)).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus).Grow(1).MinWidth(0)
 				label := "重新读取"
+				disabled := tool.busy
 				if tool.prepareAssets != nil {
 					label = "重新检查"
 					if tool.snapshot.State == voicetools.ConfigMissing {
 						label = "下载中文模型"
 					}
+					if tool.busy && tool.preparingAssets {
+						if tool.cancelRequested {
+							label = "正在取消"
+							disabled = true
+						} else {
+							label = "取消准备"
+							disabled = false
+						}
+					}
 				}
-				button := appButton(c, a, label, tool.busy).Label(label + tool.name)
-				if button.Clicked() && !tool.busy {
-					if tool.prepareAssets != nil && tool.snapshot.State == voicetools.ConfigMissing {
-						s.refreshVoiceToolUsing(tool, tool.prepareAssets)
-					} else {
-						s.refreshVoiceTool(tool)
+				if tool.busy && !tool.preparingAssets {
+					label = "正在准备"
+				}
+				button := appButton(c, a, label, disabled).Label(label + tool.name)
+				if button.Clicked() {
+					if tool.preparingAssets && tool.busy {
+						tool.requestCancel()
+						c.Invalidate()
+					} else if !tool.busy {
+						if tool.prepareAssets != nil && tool.snapshot.State == voicetools.ConfigMissing {
+							s.refreshVoiceToolAssetsUsing(tool, tool.prepareAssets)
+						} else {
+							s.refreshVoiceTool(tool)
+						}
 					}
 				}
 			})

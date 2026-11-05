@@ -22,19 +22,22 @@ import (
 )
 
 type voiceTool struct {
-	id, name            string
-	kind                voiceToolKind
-	discover            func(context.Context, voicetools.Locator) voicetools.Snapshot
-	locateApplication   func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
-	audioRouteFactory   audioRouteFactory
-	fallbackIconPNG     []byte
-	systemArtwork       string
-	prepareAssets       func(context.Context, voicetools.Locator) voicetools.Snapshot
-	requiredInputSource func(string) (string, bool)
-	active, busy        bool
-	sequence            uint64
-	cancel              context.CancelFunc
-	snapshot            voicetools.Snapshot
+	id, name             string
+	kind                 voiceToolKind
+	discover             func(context.Context, voicetools.Locator) voicetools.Snapshot
+	locateApplication    func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
+	audioRouteFactory    audioRouteFactory
+	fallbackIconPNG      []byte
+	systemArtwork        string
+	prepareAssets        func(context.Context, voicetools.Locator) voicetools.Snapshot
+	requiredInputSource  func(string) (string, bool)
+	active, busy         bool
+	preparingAssets      bool
+	cancelRequested      bool
+	lastAttemptCancelled bool
+	sequence             uint64
+	cancel               context.CancelFunc
+	snapshot             voicetools.Snapshot
 }
 
 // Kind describes the user-facing capability, independent of how the adapter
@@ -223,7 +226,21 @@ func (t *voiceTool) refresh(locator voicetools.Locator, dispatch func(func()), c
 }
 
 func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func()), changed func(uint64), discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
+	t.refreshAttempt(locator, dispatch, changed, discover, false)
+}
+
+func (t *voiceTool) refreshAssetsUsing(locator voicetools.Locator, dispatch func(func()), changed func(uint64), discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
+	t.refreshAttempt(locator, dispatch, changed, discover, true)
+}
+
+func (t *voiceTool) refreshAttempt(locator voicetools.Locator, dispatch func(func()), changed func(uint64), discover func(context.Context, voicetools.Locator) voicetools.Snapshot, preparingAssets bool) {
 	if !t.active {
+		return
+	}
+	// Asset preparation can outlive cancellation while the system finishes an
+	// installation request. Keep its owner until the existing discovery returns;
+	// re-enabling the plugin waits on that attempt instead of starting another.
+	if t.prepareAssets != nil && t.busy {
 		return
 	}
 	if t.cancel != nil {
@@ -233,26 +250,61 @@ func (t *voiceTool) refreshUsing(locator voicetools.Locator, dispatch func(func(
 	sequence := t.sequence
 	ctx, cancel := context.WithCancel(context.Background())
 	t.cancel, t.busy = cancel, true
+	t.preparingAssets = preparingAssets
+	t.cancelRequested, t.lastAttemptCancelled = false, false
 	t.snapshot = voicetools.Snapshot{}
 	go func() {
 		result := discover(ctx, locator)
 		cancel()
 		dispatch(func() {
-			if !t.active || t.sequence != sequence {
-				return
-			}
-			t.busy, t.cancel, t.snapshot = false, nil, result
-			changed(sequence)
+			t.completeAttempt(sequence, result, changed)
 		})
 	}()
 }
 
+func (t *voiceTool) requestCancel() bool {
+	if !t.preparingAssets || !t.busy || t.cancel == nil || t.cancelRequested {
+		return false
+	}
+	t.cancelRequested = true
+	t.cancel()
+	return true
+}
+
+func (t *voiceTool) completeAttempt(sequence uint64, result voicetools.Snapshot, changed func(uint64)) bool {
+	if t.sequence != sequence {
+		return false
+	}
+	wasCancelled := t.cancelRequested
+	t.busy, t.cancel = false, nil
+	t.preparingAssets = false
+	t.cancelRequested = false
+	t.lastAttemptCancelled = wasCancelled && result.State != voicetools.Ready
+	t.snapshot = result
+	if t.active && changed != nil {
+		changed(sequence)
+	}
+	return true
+}
+
 func (t *voiceTool) stop() {
+	if t.prepareAssets != nil && t.busy && t.cancel != nil {
+		// A context cancellation requests cleanup; it does not prove the native
+		// install worker has terminated. Retain busy/cancel until its callback.
+		t.active = false
+		if !t.cancelRequested {
+			t.cancelRequested = true
+			t.cancel()
+		}
+		return
+	}
 	t.sequence++
 	if t.cancel != nil {
 		t.cancel()
 	}
 	t.active, t.busy, t.cancel = false, false, nil
+	t.preparingAssets = false
+	t.cancelRequested, t.lastAttemptCancelled = false, false
 	t.snapshot = voicetools.Snapshot{}
 }
 
@@ -280,16 +332,29 @@ func (s *shell) voiceToolManifests() []pluginrt.Manifest {
 func (s *shell) refreshVoiceTool(tool *voiceTool) { s.refreshVoiceToolUsing(tool, tool.discover) }
 
 func (s *shell) refreshVoiceToolUsing(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
-	s.refreshVoiceToolUsingWithDispatch(tool, discover, mygo.RunOnMain)
+	s.refreshVoiceToolAttemptUsingWithDispatch(tool, discover, mygo.RunOnMain, false)
 }
 
 func (s *shell) refreshVoiceToolUsingWithDispatch(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot, dispatch func(func())) {
+	s.refreshVoiceToolAttemptUsingWithDispatch(tool, discover, dispatch, false)
+}
+
+func (s *shell) refreshVoiceToolAssetsUsing(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot) {
+	s.refreshVoiceToolAttemptUsingWithDispatch(tool, discover, mygo.RunOnMain, true)
+}
+
+func (s *shell) refreshVoiceToolAttemptUsingWithDispatch(tool *voiceTool, discover func(context.Context, voicetools.Locator) voicetools.Snapshot, dispatch func(func()), preparingAssets bool) {
 	if s.closing {
 		return
 	}
-	tool.refreshUsing(s.toolLocator, dispatch, func(sequence uint64) {
+	changed := func(sequence uint64) {
 		s.finishVoiceToolDiscovery(tool, sequence)
-	}, discover)
+	}
+	if preparingAssets {
+		tool.refreshAssetsUsing(s.toolLocator, dispatch, changed, discover)
+	} else {
+		tool.refreshUsing(s.toolLocator, dispatch, changed, discover)
+	}
 }
 
 func (s *shell) finishVoiceToolDiscovery(tool *voiceTool, sequence uint64) {
@@ -487,7 +552,16 @@ func voiceToolStatus(tool *voiceTool) string {
 			return "未启用"
 		}
 		if tool.busy {
+			if tool.cancelRequested {
+				return "正在取消；等待系统模型操作结束"
+			}
 			return "正在准备"
+		}
+		if tool.snapshot.Source == appleSpeechCleanupPendingSource {
+			return "等待系统模型操作结束，请重新检查"
+		}
+		if tool.lastAttemptCancelled {
+			return "准备已取消"
 		}
 		switch tool.snapshot.State {
 		case voicetools.Ready:

@@ -13,6 +13,7 @@ import (
 )
 
 const appleSpeechToolID = "voice-apple-speech"
+const appleSpeechCleanupPendingSource = "apple-speech:cleanup-pending"
 
 func appleSpeechAudioRouteFactory(_ context.Context, config audioRouteConfig) (liveAudioRoute, error) {
 	return openAppleAudioRoute(
@@ -45,6 +46,9 @@ func inspectAppleSpeech(ctx context.Context, install bool) voicetools.Snapshot {
 	defer appleModelProbe.Unlock()
 	if appleModelProbe.pending != nil {
 		if err := appleModelProbe.pending.Close(); err != nil {
+			if errors.Is(err, applespeech.ErrCleanupPending) {
+				result.Source = appleSpeechCleanupPendingSource
+			}
 			return result
 		}
 		appleModelProbe.pending = nil
@@ -66,6 +70,9 @@ func inspectAppleSpeech(ctx context.Context, install bool) voicetools.Snapshot {
 			appleModelProbe.pending = sink
 		}
 		err = errors.Join(err, closeErr)
+	}
+	if errors.Is(err, applespeech.ErrCleanupPending) {
+		result.Source = appleSpeechCleanupPendingSource
 	}
 	switch {
 	case err == nil:
