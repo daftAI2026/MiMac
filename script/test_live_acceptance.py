@@ -5,7 +5,7 @@ from pathlib import Path
 import contextlib
 import io
 
-from live_acceptance import assess, check_fixture, route_ready, validate_audio_target, finish
+from live_acceptance import assess, check_fixture, route_ready, validate_audio_target, finish, assess_source_diagnostic
 from test_inspect_voice_report import report
 
 
@@ -64,6 +64,14 @@ class AcceptanceTests(unittest.TestCase):
     def test_foreground_identity_must_match_fixture(self):
         self.field["frontmost_pid"] = 123
         self.assertFalse(self.result()["checks"]["session_focus_evidence"])
+
+    def test_source_diagnostic_is_independent_of_primary_text(self):
+        value = {"session_count": 1, "session_token_id": 1, "device_generation": 2, "source_eof": True, "source_close_succeeded": True, "complete_capture": True, "replay_started": True, "replay_completed": True, "replay_sample_count": 480, "secondary_text": "", "stats": {"ObservedSamples": 480, "RetainedSamples": 480, "OverflowSamples": 0}}
+        self.assertTrue(assess_source_diagnostic(value, self.voice))
+        self.assertFalse(self.result("前文")["checks"]["new_text"])
+        for field, wrong in [("session_token_id", 2), ("replay_sample_count", 479), ("replay_completed", False), ("apple_sink_retained", True), ("errors", ["native failure"])]:
+            with self.subTest(field=field):
+                self.assertFalse(assess_source_diagnostic({**value, field: wrong}, self.voice))
 
     def test_current_connection_readiness_is_required(self):
         self.assertTrue(route_ready("audio route: ready=false error=<nil>\naudio route: ready=true error=<nil>"))

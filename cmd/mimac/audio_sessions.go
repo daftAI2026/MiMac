@@ -105,6 +105,9 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 		prepare = func(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
 			resources, err := prepareAudio(ctx, token)
 			if err == nil && ctx.Err() == nil {
+				if s.sourceCheck != nil {
+					resources = s.sourceCheck.Wrap(token, resources)
+				}
 				if resources.Observer == nil {
 					resources.Observer = s.voiceOverlay.meter.observer(ctx, token, resources.SampleRate)
 				}

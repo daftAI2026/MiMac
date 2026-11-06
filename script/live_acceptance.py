@@ -122,7 +122,7 @@ def prepare(args):
     CACHE.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=CACHE))
     stage = "preflight"
-    state = {"schema": 1, "run": str(directory), "status": "PREPARING"}
+    state = {"schema": 1, "run": str(directory), "status": "PREPARING", "source_check": args.source_check}
     write(directory / "state.json", state)
     try:
         if sys.platform != "darwin":
@@ -155,13 +155,15 @@ def prepare(args):
             for name, expected in previous["bundle"].items():
                 if digest(bundle / name) != expected:
                     raise RuntimeError(f"fixed bundle changed since previous run: {name}")
-        if bundle.exists():
+        if bundle.exists() and not args.reuse_build:
             stage = "backup"
             run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, directory / "previous-app.zip")
         stage = "build"
         environment = dict(os.environ, MIMAC_GO=go, MIMAC_RUN_STDOUT=str(directory / "stdout.log"), MIMAC_RUN_STDERR=str(directory / "stderr.log"))
         with (directory / "build.log").open("w") as log:
             app_arguments = ["--show-settings", "--audio-backend", backend, "--host-report", str(directory / "host.json"), "--voice-overlay-report", str(directory / "voice.json")]
+            if args.source_check:
+                app_arguments += ["--source-check-report", str(directory / "source-check.json")]
             if args.reuse_build:
                 if exact_pids(executable):
                     raise RuntimeError("finish the previous App run before reusing its fixed binary")
@@ -211,6 +213,8 @@ def prepare(args):
             # Persistent errors are recorded, never worked around by another toggle.
             return route_ready(log)
         wait_for(connected, 15)
+        if args.source_check and "source check: model_ready=true" not in (directory / "stderr.log").read_text():
+            raise RuntimeError("local source-check model was not verified ready")
         stage = "target_idle"
         if args.target_pid:
             target = json.loads(run(probe, args.target_pid, "audio"))
@@ -303,6 +307,31 @@ def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=
     return {"status": "PASS" if all(checks.values()) else "NOT_PASSED", "checks": checks, "scope": "one planned voice session: actual text append, local audio acceptance, bounded sampled focus and cleanup; not every target-consumed sample, transcript accuracy or Siri appearance"}
 
 
+def assess_source_diagnostic(diagnostic, voice):
+    sessions = voice.get("io", {}).get("sessions", [])
+    if len(sessions) != 1:
+        return False
+    session = sessions[0]
+    expected = session.get("source_read_samples", 0)
+    stats = diagnostic.get("stats", {})
+    return (
+        expected > 0
+        and diagnostic.get("session_count") == 1
+        and diagnostic.get("session_token_id") == session.get("session")
+        and diagnostic.get("device_generation") == session.get("generation")
+        and diagnostic.get("source_eof") is True
+        and diagnostic.get("source_close_succeeded") is True
+        and diagnostic.get("complete_capture") is True
+        and diagnostic.get("replay_started") is True
+        and diagnostic.get("replay_completed") is True
+        and diagnostic.get("replay_sample_count") == expected
+        and stats.get("ObservedSamples") == stats.get("RetainedSamples") == expected
+        and stats.get("OverflowSamples") == 0
+        and not diagnostic.get("errors")
+        and not diagnostic.get("apple_sink_retained")
+    )
+
+
 def status(directory):
     directory, state = managed_run(directory)
     if state.get("status") != "READY" or exact_pids(state["app_executable"]) != [state["app_pid"]] or exact_pids(state["fixture_executable"]) != [state["fixture_pid"]]:
@@ -382,7 +411,7 @@ def finish(directory):
                     errors.append("remote disable: " + str(error))
             # The App handles SIGTERM through its normal resource cleanup path.
             os.kill(state["app_pid"], signal.SIGTERM)
-            wait_for(lambda: state["app_pid"] not in exact_pids(state["app_executable"]), 12)
+            wait_for(lambda: state["app_pid"] not in exact_pids(state["app_executable"]), 45 if state.get("source_check") else 12)
     except Exception as error:
         errors.append("App cleanup: " + str(error))
     finally:
@@ -407,6 +436,10 @@ def finish(directory):
             target = json.loads(run(state["probe"], state["target_pid"], "audio"))
             write(directory / "target-after.json", target)
             validate_audio_target(target, state["target_pid"], state["input_source"].removesuffix(".pinyin"))
+        if state.get("source_check"):
+            diagnostic = read(directory / "source-check.json")
+            result["source_check"] = diagnostic
+            result["checks"]["source_diagnostic_complete"] = assess_source_diagnostic(diagnostic, voice)
         if not all(result["checks"].values()):
             result["status"] = "NOT_PASSED"
     except Exception as error:
@@ -429,6 +462,7 @@ def main():
     commands = parser.add_subparsers(dest="action", required=True)
     p = commands.add_parser("prepare", help="build, verify and prepare; no microphone/shortcut")
     p.add_argument("--go")
+    p.add_argument("--source-check", action="store_true", help="explicit in-memory same-source local ASR diagnostic on App exit; never writes PCM")
     p.add_argument("--reuse-build", action="store_true", help="verify/relaunch the existing stopped binary after permission refresh; never rebuild")
     p.add_argument("--previous-run", type=Path, help="previous run whose bundle SHA values must match for --reuse-build")
     p.add_argument("--audio-backend", default="", choices=["", "mimac-compat"])

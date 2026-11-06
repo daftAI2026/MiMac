@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"mimac.local/mimac/internal/bridge"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -49,6 +50,8 @@ type hostReport struct {
 }
 
 type shell struct {
+	sourceCheck *sourceCheck
+
 	settingsState
 	preferencesState
 	voiceToolsState
@@ -201,6 +204,7 @@ func main() {
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
 	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded I/O timing and frequency/display metadata on exit; excludes PCM and text")
+	sourceCheckPath := flag.String("source-check-report", "", "explicit diagnostic: mirror one source in memory and replay to local Apple ASR on exit; report text/statistics only, no PCM file")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
 	audioBackend := flag.String("audio-backend", "", "one-run override: mimac-compat or empty; never installs a component")
 	setAudioBackend := flag.String("set-audio-backend", "", "persist mimac-compat or empty, then exit before app startup")
@@ -255,6 +259,38 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend}}
+	sourceCheckLibrary := ""
+	if *sourceCheckPath != "" {
+		for _, other := range []string{*reportPath, *voiceReportPath, *capturePath} {
+			if other != "" {
+				left, _ := filepath.Abs(*sourceCheckPath)
+				right, _ := filepath.Abs(other)
+				if left == right {
+					fmt.Fprintln(os.Stderr, "source diagnostic: report paths must be distinct")
+					os.Exit(2)
+				}
+			}
+		}
+	}
+	s.sourceCheck, err = newSourceCheck(*sourceCheckPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source diagnostic:", err)
+		os.Exit(2)
+	}
+	if s.sourceCheck != nil {
+		executable, pathErr := os.Executable()
+		if pathErr != nil {
+			fmt.Fprintln(os.Stderr, "source diagnostic executable:", pathErr)
+			os.Exit(2)
+		}
+		sourceCheckLibrary = filepath.Join(filepath.Dir(filepath.Dir(executable)), "Resources", "libMiMacSpeech.dylib")
+		if modelErr := sourceCheckModelReady(sourceCheckLibrary); modelErr != nil {
+			fmt.Fprintln(os.Stderr, "source diagnostic model:", modelErr)
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stderr, "source check: model_ready=true locale=zh-CN install_assets=false")
+	}
+
 	s.report.AudioBackend = backend
 	s.remoteState.reportRecovery = *reportPath != ""
 	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
@@ -324,6 +360,11 @@ func main() {
 	mygo.App.WhenReady(func() { s.ready(ctx, *show, *smoke, *capturePath) })
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
+	}
+	if s.sourceCheck != nil {
+		if diagErr := s.sourceCheck.Finish(sourceCheckLibrary); diagErr != nil {
+			fmt.Fprintln(os.Stderr, "source diagnostic:", diagErr)
+		}
 	}
 	if traceFile != nil {
 		writeErr := trace.write(traceFile)

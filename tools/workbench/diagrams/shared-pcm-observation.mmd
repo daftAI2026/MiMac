@@ -21,3 +21,8 @@ flowchart TD
     view -.-> original["原版数值对照已通过；真人明显随声仍待验"]
     gap["PCM间隔超过100ms"] --> clear
     own["工具自行采音且不经过 MiMac PCM"] -.-> adapter["需由其适配器另提供观测信息"]
+    read -.-> diagnostic{"显式 source-check-report？"}
+    diagnostic -->|是| mirror["同一次Read的有界内存副本；不放入display Observer"]
+    mirror --> closed["单会话完整EOF且Source.Close成功"]
+    closed --> replay["App退出后本机Apple回放；仅输出文字/统计/同源SHA"]
+    replay --> erase["清零自有副本；不向目标再投递文字"]

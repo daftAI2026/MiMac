@@ -15,3 +15,7 @@ flowchart TD
     blocked --> finish
     finish --> evidence["分查文字、单会话、焦点覆盖、音频计数与清理"]
     evidence --> result["PASS 或 NOT_PASSED；不代替目标逐样本消费或视觉验收"]
+    native -.-> probeMode["显式 --source-check：本机模型就绪预检；不喂PCM"]
+    human -.-> mirror["同Source.Read的15秒上限内存镜像"]
+    mirror --> exitReplay["完整源结束后，在App退出时本机复核"]
+    exitReplay --> evidence
