@@ -83,6 +83,16 @@ class VoiceReportInspectionTests(unittest.TestCase):
         value["io"]["sessions"] = []
         self.assertEqual(inspect(value)["local_delivery"], "needs_review")
 
+    def test_operation_failure_cannot_be_hidden_by_aggregate(self):
+        for failure in ("error", "cancelled", "deadline", "eof"):
+            with self.subTest(failure=failure):
+                value = report()
+                session = value["io"]["sessions"][0]
+                session["sink_try_write"] = operation(ok=2, backpressure=1, **{failure: 1})
+                session.update(calls_started=11, calls_completed=11)
+                with self.assertRaises(ValueError):
+                    inspect(value)
+
     def test_mixed_overflow_does_not_pass_from_retained_sessions(self):
         value = report()
         value["io"].update(session_summary_coverage="overflow", session_overflow_calls=15)

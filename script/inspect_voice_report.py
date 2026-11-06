@@ -75,6 +75,11 @@ def inspect_session(session):
             reasons.append(name + "_not_completed_once")
     write = session.get("sink_try_write")
     operation(write)
+    operations = [read, write] + [session[name] for name in OPERATIONS]
+    recorded_errors = sum(value[key] for value in operations for key in ("error", "cancelled", "deadline"))
+    write_unknown = sum(write[key] for key in ("error", "cancelled", "deadline", "eof"))
+    if errors < recorded_errors or unknown < write_unknown:
+        raise ValueError("operation failures contradict aggregate accounting")
     # Backpressure is a known refusal before acceptance, not a lost sample.
     return {
         **identity,
