@@ -74,6 +74,9 @@ type compatAudioRouteDependencies struct {
 	newInspector     func() (compatAudioInspector, error)
 	readSelection    func(context.Context, voicetools.Locator) (compatAudioSelection, error)
 	requestSelection func(context.Context, voicetools.Locator, *string) error
+	// prepareControl belongs to the tool adapter, after native sink preparation
+	// and before resource readiness. It must not start recording or send keys.
+	prepareControl func(context.Context, voicetools.Locator, int32) error
 	// Tools that rebuild their capture graph when input changes prepare that
 	// preference before device startup. A press then verifies, without writing.
 	prepareSelection func(context.Context, voicetools.Locator, *string) error
@@ -123,6 +126,7 @@ func defaultCompatAudioRouteDependencies() compatAudioRouteDependencies {
 
 func defaultDoubaoAudioRouteDependencies() compatAudioRouteDependencies {
 	deps := defaultCompatAudioRouteDependencies()
+	deps.prepareControl = doubao.PrepareControl
 	deps.readSelection = func(ctx context.Context, locator voicetools.Locator) (compatAudioSelection, error) {
 		selection, err := doubao.ReadMicrophoneSelection(ctx, locator)
 		if err != nil {
@@ -152,10 +156,13 @@ func openLiveXiaomiRoute(
 	generation uint64,
 	libraryPath string,
 	targetBundleID string,
+	targetAppPath string,
 	targetExecutablePath string,
 	locator voicetools.Locator,
 ) (liveAudioRoute, error) {
-	return openLiveXiaomiRouteWithDependencies(ctx, generation, libraryPath, targetBundleID, targetExecutablePath, locator, defaultDoubaoAudioRouteDependencies())
+	deps := withCompatApplicationInspector(defaultDoubaoAudioRouteDependencies(), targetBundleID,
+		targetAppPath, targetExecutablePath)
+	return openLiveXiaomiRouteWithDependencies(ctx, generation, libraryPath, targetBundleID, targetExecutablePath, locator, deps)
 }
 
 func openLiveXiaomiRouteWithDependencies(
@@ -297,6 +304,20 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 			sink, openErr := deps.openSink(config)
 			if sink == nil {
 				return nil, openErr
+			}
+			if deps.prepareControl != nil {
+				sink = &compatControlPreparedSink{
+					xiaomiPreparedSink: sink,
+					prepareControl: func(ctx context.Context) error {
+						if err := identity.Check(); err != nil {
+							return err
+						}
+						if err := deps.prepareControl(ctx, locator, process.PID); err != nil {
+							return fmt.Errorf("mimac-compat route: prepare control service: %w", err)
+						}
+						return requireCompatTargetIdle(ctx, inspector, identity, process.PID)
+					},
+				}
 			}
 			return &compatAudioReceiverSink{
 				xiaomiPreparedSink: sink,

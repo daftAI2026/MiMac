@@ -82,38 +82,38 @@ func (i *applicationInspectorDirectWaitFailure) WaitForInput(ctx context.Context
 	return i.err
 }
 
-func TestApplicationAudioInspectorKeepsBundleEnumerationStrict(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		clients      []audioroute.ProcessInput
-		resolveError error
-	}{
-		{"other PID", []audioroute.ProcessInput{{Found: true, PID: 43}}, nil},
-		{"multiple clients", []audioroute.ProcessInput{{Found: true, PID: 42}, {Found: true, PID: 43}}, nil},
-		{"unknown identity", nil, errors.New("cannot read application identity")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := newCompatRouteTestInspector()
-			base.processes = tc.clients
-			i := &compatApplicationInspector{base, "test.inputmethod", func(context.Context) (int32, error) { return 42, tc.resolveError }}
-			if _, err := i.InputsForBundle("test.inputmethod"); err == nil {
-				t.Fatal("unknown/competing target was accepted by bundle enumeration")
-			}
-		})
+func TestApplicationAudioInspectorDiscoveryUsesVerifiedApplicationAndExactPID(t *testing.T) {
+	base := newCompatRouteTestInspector()
+	enumerationError := errors.New("unrelated Core Audio object has no bundle metadata")
+	wrapped := &applicationInspectorEnumerationFailure{compatAudioInspector: base, err: enumerationError}
+	inspector := &compatApplicationInspector{wrapped, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
+	inputs, err := inspector.InputsForBundle("test.inputmethod")
+	if err != nil || len(inputs) != 1 || inputs[0].PID != 42 || wrapped.calls != 0 {
+		t.Fatalf("target discovery used unrelated metadata: %+v %v global=%d", inputs, err, wrapped.calls)
 	}
-
-	t.Run("underlying enumeration error", func(t *testing.T) {
-		base := newCompatRouteTestInspector()
-		enumerationError := errors.New("unreadable Core Audio object")
-		wrapped := &applicationInspectorEnumerationFailure{compatAudioInspector: base, err: enumerationError}
-		i := &compatApplicationInspector{wrapped, "test.inputmethod", func(context.Context) (int32, error) { return 42, nil }}
-		if _, err := i.InputsForBundle("test.inputmethod"); !errors.Is(err, enumerationError) {
-			t.Fatalf("bundle enumeration error = %v", err)
+	queryError := errors.New("actual target query failed")
+	target := &applicationInspectorProcessFailure{compatAudioInspector: wrapped, err: queryError}
+	inspector.compatAudioInspector = target
+	if _, err := inspector.InputsForBundle("test.inputmethod"); !errors.Is(err, queryError) {
+		t.Fatalf("target query error became idle: %v", err)
+	}
+	inspector.compatAudioInspector = wrapped
+	base.input = audioroute.ProcessInput{Found: true, PID: 43}
+	if _, err := inspector.InputsForBundle("test.inputmethod"); !errors.Is(err, errCompatRouteTargetMissing) {
+		t.Fatalf("wrong direct PID accepted: %v", err)
+	}
+	base.input = audioroute.ProcessInput{PID: 42}
+	reads := 0
+	inspector.resolve = func(context.Context) (int32, error) {
+		reads++
+		if reads > 1 {
+			return 43, nil
 		}
-		if wrapped.calls != 1 {
-			t.Fatalf("underlying enumeration calls = %d, want 1", wrapped.calls)
-		}
-	})
+		return 42, nil
+	}
+	if _, err := inspector.InputsForBundle("test.inputmethod"); !errors.Is(err, errCompatRouteTargetMissing) {
+		t.Fatalf("application changed during discovery: %v", err)
+	}
 }
 
 func TestApplicationAudioInspectorActiveReceiverUsesExactPIDWithoutBundleEnumeration(t *testing.T) {
@@ -281,5 +281,35 @@ func TestCompatApplicationRouteCanPrepareAndRestoreBeforeFirstAudioClient(t *tes
 	values := requests.snapshot()
 	if len(values) != 2 || values[0] == nil || *values[0] != compatAudioDeviceUID || values[1] == nil || *values[1] != saved {
 		t.Fatalf("cold lifecycle selection/restore = %v", values)
+	}
+}
+
+func TestApplicationInspectorFactoryRetainsColdIdentityAndErrors(t *testing.T) {
+	for _, bundleID := range []string{compatDoubaoBundleID, "com.tencent.inputmethod.wetype"} {
+		t.Run(bundleID, func(t *testing.T) {
+			base := newCompatRouteTestInspector()
+			base.processes, base.input = nil, audioroute.ProcessInput{PID: 42}
+			deps := defaultCompatAudioRouteDependencies()
+			deps.newInspector = func() (compatAudioInspector, error) { return base, nil }
+			deps = withCompatApplicationInspector(deps, bundleID, "/Applications/Test.app", "/Applications/Test.app/Contents/MacOS/Test")
+			raw, err := deps.newInspector()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapper, ok := raw.(*compatApplicationInspector)
+			if !ok {
+				t.Fatal("missing application identity wrapper")
+			}
+			wrapper.resolve = func(context.Context) (int32, error) { return 42, nil }
+			processes, err := wrapper.InputsForBundle(bundleID)
+			if err != nil || len(processes) != 1 || processes[0].PID != 42 {
+				t.Fatalf("cold app discovery: %+v %v", processes, err)
+			}
+			want := errors.New("application identity failed")
+			wrapper.resolve = func(context.Context) (int32, error) { return 0, want }
+			if _, err := wrapper.InputsForBundle(bundleID); !errors.Is(err, want) {
+				t.Fatalf("identity error became idle: %v", err)
+			}
+		})
 	}
 }

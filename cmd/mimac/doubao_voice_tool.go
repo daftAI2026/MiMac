@@ -11,6 +11,7 @@ func doubaoAudioRouteFactory(ctx context.Context, config audioRouteConfig) (live
 		config.Generation,
 		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
 		compatDoubaoBundleID,
+		config.AppPath,
 		filepath.Join(config.AppPath, "Contents", "MacOS", compatDoubaoExecutableName),
 		config.Locator,
 	)

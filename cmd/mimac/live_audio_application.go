@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"mimac.local/mimac/internal/platform/audioroute"
+	"mimac.local/mimac/internal/platform/runningapp"
 )
 
 // compatApplicationInspector separates a running application's identity from
@@ -24,25 +26,28 @@ func (i *compatApplicationInspector) InputsForBundle(bundleID string) ([]audioro
 	if err != nil {
 		return nil, err
 	}
-	clients, err := i.compatAudioInspector.InputsForBundle(bundleID)
-	if err != nil {
-		return nil, err
-	}
-	if len(clients) > 1 {
-		return nil, errCompatRouteTargetMissing
-	}
-	for _, client := range clients {
-		if !client.Found || client.PID != pid || pid <= 0 {
-			return nil, errCompatRouteTargetMissing
-		}
-	}
 	if pid <= 0 {
 		return nil, nil
 	}
-	if len(clients) == 1 {
-		return clients, nil
+	input, err := i.compatAudioInspector.ProcessInput(pid)
+	if err != nil {
+		return nil, err
 	}
-	return []audioroute.ProcessInput{{Found: true, PID: pid}}, nil
+	current, err := i.resolve(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if current != pid {
+		return nil, errCompatRouteTargetMissing
+	}
+	if !input.Found {
+		return []audioroute.ProcessInput{{Found: true, PID: pid}}, nil
+	}
+	if input.PID != pid {
+		return nil, errCompatRouteTargetMissing
+	}
+	return []audioroute.ProcessInput{input}, nil
+
 }
 
 func (i *compatApplicationInspector) ProcessInput(pid int32) (audioroute.ProcessInput, error) {
@@ -83,11 +88,33 @@ func (i *compatApplicationInspector) WaitForInput(ctx context.Context, pid int32
 // Once the application PID is captured, live receiver checks only need its
 // current application identity and its exact Core Audio route. Enumerating
 // every audio client here makes an unrelated client's registration/removal a
-// failure of this session. Discovery, pre-start and restore still use the
-// strict InputsForBundle snapshot above to establish target uniqueness.
+// failure of this session. Discovery, pre-start and restore use the
+// same verified application identity and direct PID snapshot above.
 func (i *compatApplicationInspector) resolveCurrentPID() (int32, error) {
 	if i.resolve == nil || i.bundleID == "" {
 		return 0, errCompatRouteTarget
 	}
 	return i.resolve(context.Background())
+}
+
+// Both input methods may run before registering their first Core Audio client.
+// Reuse the same application-identity discovery while retaining real CA errors.
+func withCompatApplicationInspector(deps compatAudioRouteDependencies, bundleID, appPath, executablePath string) compatAudioRouteDependencies {
+	nativeInspector := deps.newInspector
+	deps.newInspector = func() (compatAudioInspector, error) {
+		inspector, err := nativeInspector()
+		if err != nil {
+			return nil, err
+		}
+		return &compatApplicationInspector{compatAudioInspector: inspector, bundleID: bundleID,
+			resolve: func(ctx context.Context) (int32, error) {
+				pid, err := runningapp.Find(ctx, bundleID, appPath, executablePath)
+				if errors.Is(err, runningapp.ErrNotRunning) {
+					return 0, nil
+				}
+				return pid, err
+			},
+		}, nil
+	}
+	return deps
 }

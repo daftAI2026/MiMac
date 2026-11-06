@@ -1,4 +1,17 @@
 flowchart TD
+    appIdentity["共用 application inspector 核唯一 Bundle/路径/PID；CA 成功 absent 只作准备前 idle，错误拒绝"] --> resourceWorker
+    resourceWorker["连接或资源回收后的现有准备 worker"] --> nativePrepare["预订阅 Source；定向 Sink.Prepare"]
+    nativePrepare --> hasController{"适配器提供 prepareControl？"}
+    hasController -->|否| resourceReady["preparedOwner 发布资源 Ready"]
+    hasController -->|是，仅豆包| controllerLaunch["核唯一 App 与捕获进程身份；等原生 finishedLaunching"]
+    controllerLaunch --> controllerReply["一次有界 UUID 设置查询；支持元组与当前配置一致"]
+    controllerReply --> controllerCheck["同代进程与目标 idle 复核；不是音频或选路 ACK"]
+    controllerCheck --> resourceReady
+    controllerLaunch -->|错误或取消| resourceFailure["preparedOwner 持有部分 Source/Sink，关闭后才释放设备 owner"]
+    controllerReply -->|错误或取消| resourceFailure
+    controllerCheck -->|错误或取消| resourceFailure
+    resourceReady --> userStart["用户按键；既有 BeforeStart 与选路请求"]
+    userStart --> owner
     owner["Runtime 登记本次会话 owner"] --> prepare["取得 Source/Sink 租约并校验 PCM 格式与源健康"]
     prepare --> readerStart["启动本会话唯一 Source.Read 任务"]
     readerStart --> sessionSink{"Sink 实现 StartSession？"}

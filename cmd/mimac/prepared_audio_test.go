@@ -233,6 +233,7 @@ func TestPreparedAudioOwnerChangesCoalesceAndNotifyReadyAndRearm(t *testing.T) {
 		t.Fatal("owner ready while initial preparation is blocked")
 	}
 	close(release)
+	waitPreparedAudio(t, owner.Ready) // Also exercise an already-published Ready notification.
 	waitReadyChange(t, owner)
 	if !owner.Ready() {
 		t.Fatal("ready notification arrived without a ready owner")
@@ -280,9 +281,12 @@ func waitReadyChange(t *testing.T, owner *preparedAudioOwner) {
 	t.Helper()
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	for !owner.Ready() {
+	for {
 		select {
 		case <-owner.Changes():
+			if owner.Ready() {
+				return
+			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for Ready notification")
 		}

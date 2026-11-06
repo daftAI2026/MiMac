@@ -7,7 +7,11 @@ flowchart LR
 
     tool["当前工具注册的 audioRouteFactory"] --> connection["liveAudioConnection\n准备并持有共享路由"]
     connection --> identity["准备音频端点；确认目标应用身份与空闲态"]
-    identity -->|路由就绪| prepare["Core 发出 PrepareSource"]
+    identity --> sinkPrepare["资源 worker 预订阅 Source，并准备定向输出 Sink"]
+    sinkPrepare --> controlService["可选 prepareControl：豆包等原生启动完成
+一次 UUID 配置应答，不开麦、不发键"]
+    controlService --> readyResources["现有 preparedOwner 发布 Ready；失败保留部分资源待清理"]
+    readyResources --> prepare["用户动作后 Core 发出 PrepareSource"]
     prepare --> runtime["audio-session Runtime\n拥有本会话的 Source 和 Sink"]
     remoteAudio["ATVV 控制/音频通知"] --> source["当前 ATVV Source\n有界 PCM 环形队列"]
     runtime --> resources["取得连接期已准备的 Source/Sink 租约；校验格式与源健康"]
