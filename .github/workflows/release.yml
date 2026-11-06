@@ -54,6 +54,7 @@ jobs:
           python3 script/test_verify_release.py
           python3 script/test_build_voice_overlay.py
           python3 script/test_verify_app_bundle_frame.py
+          python3 script/test_inspect_voice_report.py
 
       - name: Test and vet
         run: |
