@@ -237,5 +237,19 @@
       "script/verify_app_bundle.py",
       ".github/workflows/release.yml"
     ]
+  },
+  {
+    "id": "live-acceptance",
+    "title": "现场语音验收 SOP",
+    "summary": "开发验收工具串起正式构建或固定SHA复用、当次连接、原生输入框握手与被动取证。只有READY才通知用户测试，前置失败保存BLOCKED；结束独立核验单次会话文字、有限采样的焦点覆盖、音频桥计数与自有资源清理。不改变产品Core、插件或PCM路径。",
+    "sourcePaths": [
+      "script/live_acceptance.py",
+      "script/build_and_run.sh",
+      "script/fixtures/LiveSpeechHost.swift",
+      "script/fixtures/LiveAcceptanceAX.swift",
+      "script/inspect_voice_report.py",
+      "script/test_live_acceptance.py",
+      "script/test_live_acceptance_native.py"
+    ]
   }
 ]

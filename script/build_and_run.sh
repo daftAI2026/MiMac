@@ -60,11 +60,19 @@ if [[ -f "$ROOT_DIR/resources/darwin-$ARCH/libSiriGlassBridge.dylib" ]]; then
   VERIFY_ARGS+=(--require-siri)
 fi
 python3 "$ROOT_DIR/script/verify_app_bundle.py" "${VERIFY_ARGS[@]}"
+launch_app() {
+  local launch_args=(-n)
+  # Explicit diagnostic destinations let the acceptance runner retain this
+  # connection's readiness events without replacing the normal build path.
+  if [[ -n "${MIMAC_RUN_STDOUT:-}" ]]; then launch_args+=(--stdout "$MIMAC_RUN_STDOUT"); fi
+  if [[ -n "${MIMAC_RUN_STDERR:-}" ]]; then launch_args+=(--stderr "$MIMAC_RUN_STDERR"); fi
+  /usr/bin/open "${launch_args[@]}" "$APP_BUNDLE" --args "${APP_ARGS[@]}"
+}
 case "$MODE" in
-  run) /usr/bin/open -n "$APP_BUNDLE" --args "${APP_ARGS[@]}" ;;
+  run) launch_app ;;
   --debug) /usr/bin/lldb -- "$APP_BINARY" ;;
   --logs)
-    /usr/bin/open -n "$APP_BUNDLE"
+    launch_app
     /usr/bin/log stream --info --style compact --predicate 'process == "MiMac"'
     ;;
   --verify)

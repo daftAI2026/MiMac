@@ -1,0 +1,17 @@
+flowchart TD
+    entry["live_acceptance.py prepare"] --> fixed{"正式构建 / 按前轮 SHA 复用"}
+    fixed --> identity["身份、六库、PID 与映射 inode"]
+    identity --> native["冻结诊断源码，构建独立夹具"]
+    native --> route["启用遥控器并核对当次连接"]
+    route --> idle["实际目标 PID、Bundle 与空闲"]
+    idle --> client["原生文本窗口 prepare 握手"]
+    client --> focus["焦点、前台、输入法与只读观察"]
+    focus --> ready["READY 后才通知用户单次测试"]
+    fixed -->|前置失败| blocked["BLOCKED；保存阶段，停止测试"]
+    route -->|权限或连接未通过| blocked
+    client -->|握手未通过| blocked
+    ready --> human["用户按键；现有 Core 与插件处理"]
+    human --> finish["finish：停止观察，退役自有 App 与夹具"]
+    blocked --> finish
+    finish --> evidence["分查文字、单会话、焦点覆盖、音频计数与清理"]
+    evidence --> result["PASS 或 NOT_PASSED；不代替目标逐样本消费或视觉验收"]
