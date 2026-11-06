@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -20,6 +21,8 @@ import tempfile
 import time
 
 from inspect_voice_report import inspect as inspect_voice_report
+from acceptance_evidence import summarize_text_evidence
+from acceptance_observer import run_observer
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path.home() / "Library/Caches/MiMac/live-acceptance"
@@ -237,7 +240,7 @@ def prepare(args):
             raise RuntimeError("local source-check model was not verified ready")
         stage = "target_idle"
         if args.target_pid:
-            target = json.loads(run(probe, args.target_pid, "audio"))
+            target = json.loads(run(probe, args.target_pid, "audio", timeout=3))
             validate_audio_target(target, args.target_pid, expected_source.removesuffix(".pinyin"))
             write(directory / "target-before.json", target)
             target_executable = Path(run("ps", "-p", args.target_pid, "-o", "comm=").strip())
@@ -259,6 +262,7 @@ def prepare(args):
         state.update(fixture_pid=fixture_pid, field=str(field), baseline_text=ready["text"])
         write(directory / "prepared.json", ready)
         stage = "observe"
+        state["observer_schema"] = 2
         write(directory / "state.json", state)
         with (directory / "observer.log").open("w") as log:
             observer = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "observe", str(directory)], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -276,25 +280,41 @@ def prepare(args):
 def observe(directory):
     directory = Path(directory)
     state = read(directory / "state.json")
-    # prepare writes the observer PID/status immediately after spawning us.
-    deadline = time.monotonic() + 1800
-    with (directory / "timeline.jsonl").open("x") as log:
-        while time.monotonic() < deadline and not (directory / "stop-observer").exists():
-            entry = {"time": time.time(), "monotonic_ns": time.monotonic_ns()}
-            try:
-                field = command(state["field"], "snapshot")
-                entry["field"] = field
-                entry["time"] = field["time"]
-                if state.get("target_pid"):
-                    entry["target"] = json.loads(run(state["probe"], state["target_pid"], "audio", timeout=3))
-            except Exception as error:
-                entry["error"] = str(error)
-            log.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            log.flush()
-            time.sleep(.1)
+    result_path = directory / "observer-result.json"
+    write(result_path, {"status": "RUNNING", "worker_joined": False})
+    try:
+        run_observer(
+            directory, state,
+            read_fixture=lambda value: command(value["field"], "snapshot"),
+            read_target=(lambda value: json.loads(run(value["probe"], value["target_pid"], "audio", timeout=3))) if state.get("target_pid") else None,
+            stop=lambda: (directory / "stop-observer").exists(),
+            max_duration=1800,
+        )
+    except BaseException as error:
+        write(result_path, {"status": "FAILED", "worker_joined": False, "error": str(error)})
+        raise
+    write(result_path, {"status": "STOPPED", "worker_joined": True, "time": time.time()})
 
 
-def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None):
+def target_interval(row):
+    # New rows bound the actual query. Legacy rows have only their recorded time.
+    start, end = row.get("query_start_time", row.get("time", 0)), row.get("query_end_time", row.get("time", 0))
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in (start, end)):
+        raise RuntimeError("target query timestamps are unverified")
+    return start, end
+
+
+def fresh_target(rows, now):
+    if not rows:
+        raise RuntimeError("no target audio observation yet")
+    row = rows[-1]
+    start, end = target_interval(row)
+    if "error" in row or row.get("status", "ok") != "ok" or not (0 <= now - end <= .5 and start <= end <= now):
+        raise RuntimeError("target audio observation is stale or failed")
+    return row["target"]
+
+
+def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None, target_timeline=None):
     checks = {"normal_exit": host.get("normal_exit") is True, "keys_released": host.get("core", {}).get("pressed") == 0, "new_text": isinstance(final, str) and final.startswith(baseline) and len(final) > len(baseline)}
     sessions = voice.get("io", {}).get("sessions", [])
     checks["sessions_present"] = bool(sessions)
@@ -313,15 +333,17 @@ def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=
         coverage.append(covers_interval and all(x.get("field", {}).get("focused") is True and x["field"].get("app_active") is True and x["field"].get("window_title") == "MiMac 语音验收" and x["field"].get("frontmost_pid") == x["field"].get("pid") and (fixture_pid is None or x["field"].get("pid") == fixture_pid) and (not expected_source or x["field"].get("input_source_id") == expected_source) and "error" not in x for x in samples))
     checks["session_focus_evidence"] = bool(coverage) and all(coverage)
     if expected_source:
+        target_rows = timeline if target_timeline is None else target_timeline
         bundle = expected_source.removesuffix(".pinyin")
         checks["target_route_evidence"] = bool(sessions) and all(
             any(
-                dt.datetime.fromisoformat(s["first_started_at"]).timestamp() <= row.get("time", 0) <= dt.datetime.fromisoformat(s["last_finished_at"]).timestamp()
+                dt.datetime.fromisoformat(s["first_started_at"]).timestamp() <= target_interval(row)[0] <= target_interval(row)[1] <= dt.datetime.fromisoformat(s["last_finished_at"]).timestamp()
+                and "error" not in row and row.get("status", "ok") == "ok"
                 and row.get("target", {}).get("bundle_id") == bundle
                 and row.get("target", {}).get("running_input_status") == 0
                 and row.get("target", {}).get("running_input") == 1
                 and [d.get("uid") for d in row.get("target", {}).get("input_devices", [])] == ["dev.mimac.audio.compat.v1"]
-                for row in timeline
+                for row in target_rows
             ) for s in sessions
         )
     return {"status": "PASS" if all(checks.values()) else "NOT_PASSED", "checks": checks, "scope": "one planned voice session: actual text append, local audio acceptance, bounded sampled focus and cleanup; not every target-consumed sample, transcript accuracy or Siri appearance"}
@@ -352,10 +374,18 @@ def assess_source_diagnostic(diagnostic, voice):
     )
 
 
+def observer_alive(directory, pid):
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True, timeout=3)
+    return result.returncode == 0 and str(directory) in result.stdout and "live_acceptance.py observe" in result.stdout
+
+
 def status(directory):
     directory, state = managed_run(directory)
     if state.get("status") != "READY" or exact_pids(state["app_executable"]) != [state["app_pid"]] or exact_pids(state["fixture_executable"]) != [state["fixture_pid"]]:
         raise RuntimeError("prepared App/fixture run is not active")
+    if state.get("observer_schema") == 2:
+        if not state.get("observer_pid") or not observer_alive(directory, state["observer_pid"]) or read(directory / "observer-result.json").get("status") != "RUNNING":
+            raise RuntimeError("live observer is not running")
     rows = (directory / "timeline.jsonl").read_text().splitlines()
     if not rows:
         raise RuntimeError("no live observation yet")
@@ -368,7 +398,11 @@ def status(directory):
     if state.get("target_pid"):
         if digest(state["target_executable"]) != state["target_executable_sha256"]:
             raise RuntimeError("target executable changed after preparation")
-        validate_audio_target(latest["target"], state["target_pid"], state["input_source"].removesuffix(".pinyin"))
+        target_path = directory / "target-timeline.jsonl"
+        target_rows = [json.loads(line) for line in target_path.read_text().splitlines()] if target_path.exists() else [latest]
+        target = fresh_target(target_rows, time.time())
+        validate_audio_target(target, state["target_pid"], state["input_source"].removesuffix(".pinyin"))
+        latest = {**latest, "target": target, "target_observation": target_rows[-1]}
     print(json.dumps({"status": "READY", "run": str(directory), "observation": latest}, ensure_ascii=False))
     return 0
 
@@ -388,6 +422,42 @@ def managed_run(directory):
     return directory, state
 
 
+def stop_observer(directory, state, errors):
+    write(directory / "stop-observer", {"at": time.time()})
+    pid = state.get("observer_pid")
+    if not pid:
+        return True
+
+    def alive():
+        return observer_alive(directory, pid)
+
+    try:
+        if not alive():
+            return True
+        try:
+            # A fixture RPC (3s) plus target-worker join (4s) may be active.
+            wait_for(lambda: not alive(), 8)
+            return True
+        except Exception as error:
+            errors.append("observer graceful cleanup: " + str(error))
+        try:
+            if alive():
+                # Only this diagnostic session group; never the MyGo App/target.
+                if os.getpgid(pid) != pid:
+                    raise RuntimeError("observer session group identity mismatch")
+                if alive():
+                    os.killpg(pid, signal.SIGTERM)
+                wait_for(lambda: not alive(), 2)
+        except ProcessLookupError:
+            pass  # Exited between identity check and process-group lookup.
+        except Exception as error:
+            errors.append("observer forced cleanup: " + str(error))
+        return not alive()
+    except Exception as error:
+        errors.append("observer cleanup identity: " + str(error))
+        return False
+
+
 def finish(directory):
     directory, state = managed_run(directory)
     if state.get("status") == "FINISHED":
@@ -400,24 +470,29 @@ def finish(directory):
             if digest(Path(state["app_bundle"]) / name) != expected:
                 raise RuntimeError("frozen bundle changed; preserve run before cleanup")
     errors = []
-    write(directory / "stop-observer", {"at": time.time()})
-    observer_pid = state.get("observer_pid")
-    if observer_pid:
-        def observer_alive():
-            result = subprocess.run(["ps", "-p", str(observer_pid), "-o", "args="], capture_output=True, text=True)
-            return result.returncode == 0 and str(directory) in result.stdout and "live_acceptance.py observe" in result.stdout
-        if observer_alive():
-            os.kill(observer_pid, signal.SIGTERM)
-            try:
-                wait_for(lambda: not observer_alive(), 5)
-            except Exception as error:
-                errors.append("observer cleanup: " + str(error))
+    if not stop_observer(directory, state, errors):
+        # An active observer still owns fixture RPC. Never create a second writer.
+        result = {"status": "NOT_PASSED", "stage": "observer_cleanup", "cleanup_errors": errors,
+                  "remaining_app_pids": exact_pids(state["app_executable"]) if state.get("app_executable") else [],
+                  "remaining_fixture_pids": exact_pids(state["fixture_executable"]) if state.get("fixture_executable") else []}
+        write(directory / "acceptance.json", result)
+        state.update(status="BLOCKED", stage="observer_cleanup", acceptance="NOT_PASSED")
+        write(directory / "state.json", state)
+        print(json.dumps(result, ensure_ascii=False))
+        return 1
     final = None
+    post_cleanup = None
+    text_events = []
     fixture_owned = state.get("fixture_pid") and exact_pids(state["fixture_executable"]) == [state["fixture_pid"]]
     try:
         if fixture_owned:
-            final = command(state["field"], "snapshot")
-            write(directory / "final-field.json", final)
+            # A retry must not reclassify late text as pre-cleanup success.
+            final_path = directory / "final-field.json"
+            if final_path.exists():
+                final = read(final_path)
+            else:
+                final = command(state["field"], "snapshot")
+                write(final_path, final)
     except Exception as error:
         errors.append("final field: " + str(error))
     try:
@@ -432,10 +507,23 @@ def finish(directory):
     finally:
         if fixture_owned:
             try:
-                command(state["field"], "quit")
-                wait_for(lambda: state["fixture_pid"] not in exact_pids(state["fixture_executable"]), 5)
+                post_cleanup = command(state["field"], "snapshot")
+                write(directory / "post-cleanup-field.json", post_cleanup)
             except Exception as error:
-                errors.append("fixture cleanup: " + str(error))
+                errors.append("post-cleanup field: " + str(error))
+            # Keep a failed App's text client alive for late results/recovery.
+            # A later finish waits on the original single quit, never signals twice.
+            if state.get("app_pid") not in exact_pids(state["app_executable"]):
+                try:
+                    command(state["field"], "quit")
+                    wait_for(lambda: state["fixture_pid"] not in exact_pids(state["fixture_executable"]), 5)
+                except Exception as error:
+                    errors.append("fixture cleanup: " + str(error))
+            try:
+                events_path = Path(state["field"]) / "events.jsonl"
+                text_events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []
+            except Exception as error:
+                errors.append("text event evidence: " + str(error))
     try:
         def reports():
             try:
@@ -445,10 +533,12 @@ def finish(directory):
         host, voice = wait_for(reports, 5)
         timeline_path = directory / "timeline.jsonl"
         timeline = [json.loads(line) for line in timeline_path.read_text().splitlines()] if timeline_path.exists() else []
-        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None, timeline, state.get("input_source"), state.get("fixture_pid"))
+        target_path = directory / "target-timeline.jsonl"
+        target_timeline = [json.loads(line) for line in target_path.read_text().splitlines()] if target_path.exists() else None
+        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None, timeline, state.get("input_source"), state.get("fixture_pid"), target_timeline)
         result["checks"]["final_text_settled"] = final is not None and final.get("has_marked_text") is False
         if state.get("target_pid") and state.get("probe"):
-            target = json.loads(run(state["probe"], state["target_pid"], "audio"))
+            target = json.loads(run(state["probe"], state["target_pid"], "audio", timeout=3))
             write(directory / "target-after.json", target)
             validate_audio_target(target, state["target_pid"], state["input_source"].removesuffix(".pinyin"))
         if state.get("source_check"):
@@ -459,6 +549,17 @@ def finish(directory):
             result["status"] = "NOT_PASSED"
     except Exception as error:
         result = {"status": "NOT_PASSED", "error": str(error), "stage": "report_analysis"}
+    if state.get("observer_schema") == 2:
+        try:
+            observer = read(directory / "observer-result.json")
+            result["observer"] = observer
+            result.setdefault("checks", {})["observer_stopped_cleanly"] = observer.get("status") == "STOPPED" and observer.get("worker_joined") is True
+        except Exception as error:
+            result.setdefault("checks", {})["observer_stopped_cleanly"] = False
+            errors.append("observer result: " + str(error))
+        if not result["checks"]["observer_stopped_cleanly"]:
+            result["status"] = "NOT_PASSED"
+    result["text_evidence"] = summarize_text_evidence(state.get("baseline_text", ""), final, post_cleanup, text_events, state.get("fixture_pid"))
     if errors:
         result.update(status="NOT_PASSED", cleanup_errors=errors)
     result["remaining_app_pids"] = exact_pids(state["app_executable"]) if state.get("app_executable") else []
@@ -466,7 +567,10 @@ def finish(directory):
     if result["remaining_app_pids"] or result["remaining_fixture_pids"]:
         result["status"] = "NOT_PASSED"
     write(directory / "acceptance.json", result)
-    state.update(status="FINISHED", acceptance=result["status"])
+    if result["remaining_app_pids"] or result["remaining_fixture_pids"]:
+        state.update(status="BLOCKED", stage="cleanup", acceptance=result["status"], note="Owned cleanup is pending. Preserve the fixture and original boundary; do not send a second quit signal.")
+    else:
+        state.update(status="FINISHED", acceptance=result["status"])
     write(directory / "state.json", state)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "PASS" else 1

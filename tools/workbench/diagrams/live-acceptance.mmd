@@ -6,15 +6,21 @@ flowchart TD
     route --> permission["记录精确权限拒绝；固定身份恢复"]
     permission --> idle["实际目标 PID、Bundle 与空闲"]
     idle --> client["原生文本窗口 prepare 握手"]
-    client --> focus["焦点、前台、输入法与只读观察"]
+    client --> focus["单一写者采样焦点、前台、输入法"]
+    client --> targetWatch["独立目标观察：查询起止与真实结果；不复用旧值"]
+    targetWatch --> targetLog["target-timeline；目标门独立核对"]
     focus --> ready["READY 后才通知用户单次测试"]
     fixed -->|前置失败| blocked["BLOCKED；保存阶段，停止测试"]
     route -->|权限或连接未通过| blocked
     client -->|握手未通过| blocked
     ready --> human["用户按键；现有 Core 与插件处理"]
-    human --> finish["finish：保存文本；App单一退出流程清理；退役夹具"]
+    human --> boundary["停止并回收观察者；保存原始清理前快照"]
+    boundary --> finish["App单一退出流程清理；不补第二信号"]
+    finish --> post["清理后快照与文字事件：边界后提交另列"]
+    post --> closeClient["App已退出才退役夹具；失败保留原边界"]
     blocked --> finish
-    finish --> evidence["分查文字、单会话、焦点覆盖、音频计数与清理"]
+    closeClient --> evidence["分查文字、单会话、焦点覆盖、音频计数与清理"]
+    targetLog --> evidence
     evidence --> result["PASS 或 NOT_PASSED；不代替目标逐样本消费或视觉验收"]
     native -.-> probeMode["显式 --source-check：本机模型就绪预检；不喂PCM"]
     human -.-> mirror["同Source.Read的15秒上限内存镜像"]

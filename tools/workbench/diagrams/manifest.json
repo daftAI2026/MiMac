@@ -245,7 +245,7 @@
   {
     "id": "live-acceptance",
     "title": "现场语音验收 SOP",
-    "summary": "开发验收工具串起正式构建或固定SHA复用、当次连接、原生输入框握手与被动取证。只有READY才通知用户测试，前置失败保存BLOCKED；结束独立核验单次会话文字、有限采样的焦点覆盖、音频桥计数与自有资源清理。不改变产品Core、插件或PCM路径。 显式诊断仅从同一个Source.Read镜像到15秒有界内存，模型准备不喂PCM，退出后本机识别复核；不改变display Clear、主目标文字或Core。 权限拒绝保存AX快照；退出仅由App生命周期负责清理，登记单次信号防止中断后误发第二次信号。",
+    "summary": "开发验收工具串起正式构建或固定SHA复用、当次连接、原生输入框握手与被动取证。只有READY才通知用户测试，前置失败保存BLOCKED；结束独立核验单次会话文字、有限采样的焦点覆盖、音频桥计数与自有资源清理。不改变产品Core、插件或PCM路径。 显式诊断仅从同一个Source.Read镜像到15秒有界内存，模型准备不喂PCM，退出后本机识别复核；不改变display Clear、主目标文字或Core。 权限拒绝保存AX快照；退出仅由App生命周期负责清理，登记单次信号防止中断后误发第二次信号。 焦点单一RPC写者与目标查询分流，目标查询起止独立取证；保留清理前后文本/事件，同一fixture时钟分类，边界后文字不冒充正常提交，失败重试不改原边界。",
     "sourcePaths": [
       "script/live_acceptance.py",
       "script/build_and_run.sh",
@@ -257,7 +257,11 @@
       "cmd/mimac/source_check.go",
       "internal/audiodiagnostics/capture.go",
       "cmd/mimac/source_check_test.go",
-      "cmd/mimac/source_check_native_verification_test.go"
+      "cmd/mimac/source_check_native_verification_test.go",
+      "script/acceptance_evidence.py",
+      "script/acceptance_observer.py",
+      "script/test_acceptance_evidence.py",
+      "script/test_acceptance_observer.py"
     ]
   }
 ]

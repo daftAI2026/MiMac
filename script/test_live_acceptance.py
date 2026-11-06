@@ -68,6 +68,31 @@ class AcceptanceTests(unittest.TestCase):
         self.field["frontmost_pid"] = 123
         self.assertFalse(self.result()["checks"]["session_focus_evidence"])
 
+    def test_target_stream_is_independent_and_query_must_fit_session(self):
+        focus = [{"time": row["time"], "field": row["field"]} for row in self.timeline]
+        target = {"status": "ok", "query_start_time": 1793959200.5, "query_end_time": 1793959201.1, "target": self.target}
+        result = assess(self.host, self.voice, "前文", "前文新增", focus, self.source, 42, [target])
+        self.assertEqual(result["status"], "PASS")
+        for changes in [{"query_start_time": 1793959199.9}, {"query_end_time": 1793959202.1}, {"error": "query failed"}]:
+            with self.subTest(changes=changes):
+                result = assess(self.host, self.voice, "前文", "前文新增", focus, self.source, 42, [{**target, **changes}])
+                self.assertFalse(result["checks"]["target_route_evidence"])
+                self.assertTrue(result["checks"]["session_focus_evidence"])
+
+    def test_latest_target_error_or_stale_query_cannot_reuse_success(self):
+        good = {"status": "ok", "query_start_time": 100, "query_end_time": 100.1, "target": self.target}
+        self.assertEqual(live_acceptance.fresh_target([good], 100.2), self.target)
+        slow = {**good, "query_end_time": 100.7}
+        self.assertEqual(live_acceptance.fresh_target([slow], 100.8), self.target)
+        for rows, now in [([], 100.2), ([good], 100.7), ([good, {"status": "error", "error": "failed", "query_start_time": 100.1, "query_end_time": 100.2}], 100.3)]:
+            with self.subTest(rows=rows), self.assertRaises(RuntimeError):
+                live_acceptance.fresh_target(rows, now)
+
+    def test_status_rejects_a_stopped_observer_before_reading_fresh_samples(self):
+        state = {"status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture", "observer_pid": 15, "observer_schema": 2}
+        with patch("live_acceptance.managed_run", return_value=(Path("/owned/run"), state)), patch("live_acceptance.exact_pids", side_effect=lambda path: [11] if path == "/app/MiMac" else [42]), patch("live_acceptance.observer_alive", return_value=False), self.assertRaisesRegex(RuntimeError, "observer is not running"):
+            live_acceptance.status("/owned/run")
+
     def test_source_diagnostic_is_independent_of_primary_text(self):
         value = {"session_count": 1, "session_token_id": 1, "device_generation": 2, "source_eof": True, "source_close_succeeded": True, "complete_capture": True, "replay_started": True, "replay_completed": True, "replay_sample_count": 480, "secondary_text": "", "stats": {"ObservedSamples": 480, "RetainedSamples": 480, "OverflowSamples": 0}}
         self.assertTrue(assess_source_diagnostic(value, self.voice))
@@ -121,6 +146,91 @@ class AcceptanceTests(unittest.TestCase):
             finish("/owned/run")
             kill.assert_called_once()
             action.assert_not_called()  # App quit owns cleanup; no overlapping AX stop.
+
+    def test_finish_keeps_a_post_cleanup_snapshot_and_late_events(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            field = directory / "field"
+            field.mkdir()
+            state = {"run": folder, "status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture", "field": str(field), "baseline_text": "前文"}
+            alive = {"/app/MiMac": True, "/fixture": True}
+            before = {"pid": 42, "text": "前文", "has_marked_text": False, "monotonic_ns": 100}
+            late = {**before, "text": "前文迟到", "monotonic_ns": 200}
+            def request(directory, pid):
+                alive["/app/MiMac"] = False
+                (field / "events.jsonl").write_text(live_acceptance.json.dumps({**late, "event": "text_did_change"}) + "\n")
+            def command(folder, action):
+                if action == "quit":
+                    alive["/fixture"] = False
+                    return None
+                return before if alive["/app/MiMac"] else late
+            def read(path):
+                name = Path(path).name
+                if name == "host.json": return self.host
+                if name == "voice.json": return self.voice
+                return live_acceptance.json.loads(Path(path).read_text())
+            with patch("live_acceptance.managed_run", return_value=(directory, state)), patch("live_acceptance.exact_pids", side_effect=lambda path: ([11] if str(path) == "/app/MiMac" else [42]) if alive[str(path)] else []), patch("live_acceptance.request_quit_once", side_effect=request), patch("live_acceptance.command", side_effect=command) as rpc, patch("live_acceptance.read", side_effect=read), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(finish(directory), 1)
+            result = live_acceptance.json.loads((directory / "acceptance.json").read_text())
+            self.assertFalse(result["checks"]["new_text"])
+            self.assertTrue(result["text_evidence"]["new_text_after_cleanup"])
+            self.assertEqual(result["text_evidence"]["commits"]["after_boundary"][0]["text"], "前文迟到")
+            self.assertEqual([call.args[1] for call in rpc.call_args_list], ["snapshot", "snapshot", "quit"])
+
+    def test_pending_cleanup_retains_fixture_and_original_boundary_on_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            field = directory / "field"
+            field.mkdir()
+            state = {"run": folder, "status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture", "field": str(field), "baseline_text": "前文"}
+            alive = {"/app/MiMac": True, "/fixture": True}
+            before = {"pid": 42, "text": "前文", "has_marked_text": False, "monotonic_ns": 100}
+            late = {**before, "text": "前文迟到", "monotonic_ns": 200}
+            snapshots = 0
+            def command(folder, action):
+                nonlocal snapshots
+                if action == "quit":
+                    alive["/fixture"] = False
+                    return None
+                snapshots += 1
+                if snapshots == 1: return before
+                (field / "events.jsonl").write_text(live_acceptance.json.dumps({**late, "event": "text_did_change"}) + "\n")
+                return late
+            def read(path):
+                if Path(path).name == "host.json": return self.host
+                if Path(path).name == "voice.json": return self.voice
+                return live_acceptance.json.loads(Path(path).read_text())
+            def bounded(check, seconds=12):
+                value = check()
+                if not value: raise RuntimeError("test cleanup still pending")
+                return value
+            with patch("live_acceptance.managed_run", return_value=(directory, state)), patch("live_acceptance.exact_pids", side_effect=lambda path: ([11] if str(path) == "/app/MiMac" else [42]) if alive[str(path)] else []), patch("live_acceptance.os.kill") as kill, patch("live_acceptance.command", side_effect=command) as rpc, patch("live_acceptance.read", side_effect=read), patch("live_acceptance.wait_for", side_effect=bounded), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(finish(directory), 1)
+                self.assertEqual(state["status"], "BLOCKED")
+                self.assertTrue(alive["/fixture"])
+                self.assertNotIn("quit", [call.args[1] for call in rpc.call_args_list])
+                alive["/app/MiMac"] = False  # A native Quit completes outside the signal path.
+                self.assertEqual(finish(directory), 1)
+                kill.assert_called_once_with(11, signal.SIGTERM)
+            result = live_acceptance.json.loads((directory / "acceptance.json").read_text())
+            self.assertEqual(state["status"], "FINISHED")
+            self.assertEqual(result["text_evidence"]["before_cleanup"]["text"], "前文")
+            self.assertFalse(result["checks"]["new_text"])
+            self.assertTrue(result["text_evidence"]["new_text_after_cleanup"])
+
+    def test_stuck_observer_blocks_before_fixture_rpc_and_saves_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            state = {"run": folder, "status": "READY", "observer_pid": 15, "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture"}
+            process = live_acceptance.subprocess.CompletedProcess([], 0, stdout="python live_acceptance.py observe " + folder)
+            with patch("live_acceptance.managed_run", return_value=(directory, state)), patch("live_acceptance.subprocess.run", return_value=process), patch("live_acceptance.wait_for", side_effect=RuntimeError("still active")), patch("live_acceptance.os.getpgid", return_value=15), patch("live_acceptance.os.killpg", side_effect=PermissionError("group kill refused")), patch("live_acceptance.exact_pids", side_effect=lambda path: [11] if path == "/app/MiMac" else [42]), patch("live_acceptance.command") as rpc, patch("live_acceptance.request_quit_once") as quit_app, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(finish(directory), 1)
+                rpc.assert_not_called()
+                quit_app.assert_not_called()
+            result = live_acceptance.read(directory / "acceptance.json")
+            self.assertEqual(result["stage"], "observer_cleanup")
+            self.assertTrue(any("group kill refused" in message for message in result["cleanup_errors"]))
+            self.assertEqual(state["status"], "BLOCKED")
 
     def test_finish_preserves_an_already_recorded_result(self):
         for saved_status, expected_exit in [("PASS", 0), ("NOT_PASSED", 1)]:
