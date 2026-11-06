@@ -118,6 +118,22 @@ def validate_audio_target(value, pid, bundle_id):
         raise RuntimeError("target is not idle")
 
 
+def check_permission_snapshot(snapshot):
+    if snapshot.get("status") != "ok" or snapshot.get("truncated"):
+        raise RuntimeError("permission state is unverified: AX snapshot is incomplete")
+    for node in snapshot.get("nodes", []):
+        if node.get("role") == "AXStaticText" and node.get("value") in ("需要输入监控权限", "需要辅助功能权限"):
+            raise RuntimeError("permission blocked: " + node["value"])
+
+
+def request_quit_once(directory, pid):
+    # MyGo exits immediately on a second signal, bypassing all reports.
+    marker = Path(directory) / "quit-request.json"
+    if not marker.exists():
+        write(marker, {"time": time.time(), "pid": pid, "method": "single_SIGTERM"})
+        os.kill(pid, signal.SIGTERM)
+
+
 def prepare(args):
     CACHE.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=CACHE))
@@ -175,6 +191,7 @@ def prepare(args):
                 subprocess.run([str(ROOT / "script/build_and_run.sh"), "run", "--", *app_arguments], env=environment, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
         app_pid = wait_for(lambda: one_pid(executable))
         state.update(app_pid=app_pid, app_executable=str(executable), app_bundle=str(bundle), tool=tool, input_source=expected_source, target_pid=args.target_pid, audio_backend=backend)
+        write(directory / "state.json", state)  # Persist process ownership before further probes.
         stage = "freeze"
         source_files = run("git", "-C", ROOT, "ls-files", "-co", "--exclude-standard").splitlines()
         write(directory / "identity.json", {
@@ -206,8 +223,11 @@ def prepare(args):
         state.update(probe=str(probe), fixture_executable=str(host_exe), fixture_bundle=str(fixture))
         write(directory / "diagnostics.json", {"host_sha256": digest(host_exe), "probe_sha256": digest(probe), "compiled_sources": {p.name: digest(p) for p in frozen.glob("*.swift")}})
         stage = "permission_and_connection"
-        run(probe, app_pid, "press", "AXButton", "设备")
-        run(probe, app_pid, "press", "AXButton", "启用遥控器")
+        run(probe, app_pid, "press", "AXButton", "设备", timeout=8)
+        run(probe, app_pid, "press", "AXButton", "启用遥控器", timeout=8)
+        permission_snapshot = json.loads(run(probe, app_pid, "snapshot", timeout=8))
+        write(directory / "permission-check.json", permission_snapshot)
+        check_permission_snapshot(permission_snapshot)
         def connected():
             log = (directory / "stderr.log").read_text() if (directory / "stderr.log").exists() else ""
             # Persistent errors are recorded, never worked around by another toggle.
@@ -402,15 +422,10 @@ def finish(directory):
         errors.append("final field: " + str(error))
     try:
         if state.get("app_pid") in exact_pids(state["app_executable"]):
-            if state.get("probe"):
-                try:
-                    snapshot = json.loads(run(state["probe"], state["app_pid"], "snapshot"))
-                    if any(n.get("title") == "停用遥控器" for n in snapshot.get("nodes", [])):
-                        run(state["probe"], state["app_pid"], "press", "AXButton", "停用遥控器")
-                except Exception as error:
-                    errors.append("remote disable: " + str(error))
-            # The App handles SIGTERM through its normal resource cleanup path.
-            os.kill(state["app_pid"], signal.SIGTERM)
+            # App.OnBeforeQuit owns the audio shutdown. An AX remote stop here
+            # races that same owner. MyGo's SECOND signal exits immediately,
+            # so persist the attempt before sending and never send it twice.
+            request_quit_once(directory, state["app_pid"])
             wait_for(lambda: state["app_pid"] not in exact_pids(state["app_executable"]), 45 if state.get("source_check") else 12)
     except Exception as error:
         errors.append("App cleanup: " + str(error))

@@ -4,6 +4,9 @@ from unittest.mock import patch
 from pathlib import Path
 import contextlib
 import io
+import signal
+import tempfile
+import live_acceptance
 
 from live_acceptance import assess, check_fixture, route_ready, validate_audio_target, finish, assess_source_diagnostic
 from test_inspect_voice_report import report
@@ -89,6 +92,35 @@ class AcceptanceTests(unittest.TestCase):
         validate_audio_target(idle, 99, self.target["bundle_id"])
         with self.assertRaises(RuntimeError):
             validate_audio_target({**idle, "bundle_id": "another.app"}, 99, self.target["bundle_id"])
+
+    def test_permission_snapshot_explains_exact_refusal(self):
+        for text in ["需要输入监控权限", "需要辅助功能权限"]:
+            with self.subTest(text=text), self.assertRaisesRegex(RuntimeError, text):
+                live_acceptance.check_permission_snapshot({"status": "ok", "nodes": [{"role": "AXStaticText", "value": text}]})
+        live_acceptance.check_permission_snapshot({"status": "ok", "nodes": [{"role": "AXStaticText", "value": "已启用"}]})
+        with self.assertRaisesRegex(RuntimeError, "unverified"):
+            live_acceptance.check_permission_snapshot({"status": "partial"})
+
+    def test_quit_marker_prevents_a_second_signal_after_interruption(self):
+        with tempfile.TemporaryDirectory() as directory, patch("live_acceptance.os.kill") as kill:
+            live_acceptance.request_quit_once(directory, 11)
+            self.assertEqual(live_acceptance.read(Path(directory) / "quit-request.json")["pid"], 11)
+            live_acceptance.request_quit_once(directory, 11)
+            kill.assert_called_once_with(11, signal.SIGTERM)
+
+    def test_finish_uses_one_cleanup_owner(self):
+        state = {"run": "/owned/run", "status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "probe": "/probe"}
+        alive = True
+        def pids(path):
+            return [11] if alive else []
+        def quit_once(pid, sig):
+            nonlocal alive
+            self.assertEqual((pid, sig), (11, signal.SIGTERM))
+            alive = False
+        with patch("live_acceptance.managed_run", return_value=(Path("/owned/run"), state)), patch("live_acceptance.exact_pids", side_effect=pids), patch("live_acceptance.os.kill", side_effect=quit_once) as kill, patch("live_acceptance.run", return_value='{"nodes":[{"title":"停用遥控器"}]}') as action, patch("live_acceptance.read", side_effect=lambda path: self.host if Path(path).name == "host.json" else self.voice), patch("live_acceptance.write"), patch("live_acceptance.assess", return_value={"status": "PASS", "checks": {}}), contextlib.redirect_stdout(io.StringIO()):
+            finish("/owned/run")
+            kill.assert_called_once()
+            action.assert_not_called()  # App quit owns cleanup; no overlapping AX stop.
 
     def test_finish_preserves_an_already_recorded_result(self):
         for saved_status, expected_exit in [("PASS", 0), ("NOT_PASSED", 1)]:
