@@ -59,6 +59,7 @@ jobs:
           python3 script/test_acceptance_observer.py
           python3 script/test_live_acceptance.py
           python3 script/test_live_acceptance_native.py
+          python3 script/test_native_key_construction.py
 
       - name: Test and vet
         run: |
