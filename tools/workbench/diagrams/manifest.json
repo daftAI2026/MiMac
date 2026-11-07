@@ -287,5 +287,18 @@
       "script/test_acceptance_evidence.py",
       "script/test_acceptance_observer.py"
     ]
+  },
+  {
+    "id": "native-preview-capture",
+    "title": "原生预览采集",
+    "summary": "开发工具只采集精确正式App的页面与实际菜单。静态和交互状态使用独立完整合同，核对图片、身份和恢复后才发布本地缓存；缺少采集不影响其他工作台内容。截图不代替收音、权限或错误恢复的行为验收。",
+    "sourcePaths": [
+      "script/capture_workbench.swift",
+      "script/capture_workbench_states.swift",
+      "tools/workbench/native-previews.mjs",
+      "tools/workbench/state-previews.mjs",
+      "tools/workbench/build.mjs",
+      "tools/workbench/app.js"
+    ]
   }
 ]

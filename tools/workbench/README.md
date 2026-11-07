@@ -37,6 +37,21 @@ Pele 为 MIT 授权：[obsidianmd/pele](https://github.com/obsidianmd/pele)。�
 
 脚本需要当前 runner 已有辅助功能和屏幕录制权限，仅截取这一个 App 窗口，不录桌面或音频。它短暂激活并设为主窗口，依次切换侧栏、核对页面标题并等待像素稳定，然后恢复原页面与先前的前台应用；不点击功能开关。导航历史会留下这次页面切换，不恢复控件内部的光标或选区。用户中途切走前台时停止，不反复抢回窗口。六页全部成功后才更新 `~/Library/Caches/MiMac/workbench-captures/latest.json`；缺失本机截图时，工作台仍可独立构建并显示采集入口。截图缓存不进入产品仓和 App 包；私人归档不成为工作台依赖。
 
+## 交互状态预览
+
+“截图配置”中的“交互状态”查看真实菜单栏菜单和普通按键的预设菜单。沿用页面截图的原图、下载和源码入口；菜单按实际点尺寸显示，包含父窗口时保留系统原图范围，不放大小菜单。
+
+先用 `script/verify_app_bundle.py` 核验现有正式包，再在该固定 App 的设置窗口打开时运行：
+
+```sh
+./script/capture_workbench_states.swift --bundle /absolute/path/to/MiMac.app --expected-sha EXPECTED_EXECUTABLE_SHA256
+./script/workbench.sh --build
+```
+
+`EXPECTED_EXECUTABLE_SHA256` 使用已核验包中 `MacOS/MiMac` 的值。脚本只展开菜单并取消，不选择菜单项，不启用遥控器或收音；需要已有辅助功能和屏幕录制权限，不主动申请权限。它恢复原页面和此前前台，但菜单打开会改变当前选中行和导航历史。用户切走时停止，不抢回前台。
+
+完整两场景通过后才更新 `~/Library/Caches/MiMac/workbench-states/latest.json`。状态图与六页矩阵使用独立合同，验证 PNG、完整应用和采集脚本身份、配置未变及菜单关闭标记，再发布到工作台。缓存缺失时仍可构建；实际权限拒绝、错误、连接和语音会话需要各自场景证据，这两张菜单图不能代替它们。
+
 ## 架构画布
 
 图形仍由锁定版本的 Pele 从 Mermaid 生成 SVG。画布高度由浏览器窗口确定，在同一窗口尺寸下保持固定；缩放只改变内部图形。画布支持拖拽平移、鼠标滚轮缩放、触控板双指平移及捏合缩放；也可使用缩放按钮、“适应视图”和“100%”。聚焦画布后按 `+`、`-`、`0`；`0` 恢复原始比例。变换只影响查看，不修改图形源码，导出保留原始图形尺寸。修改实现或验收边界时同步 `diagrams/*.mmd` 与 `diagrams/manifest.json`，再重新构建工作台。

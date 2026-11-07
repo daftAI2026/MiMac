@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { render } from 'pele';
 import { nativePreviews } from './native-previews.mjs';
+import { statePreviews } from './state-previews.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -13,6 +14,7 @@ const go = process.env.MIMAC_GO || 'go';
 const data = JSON.parse(execFileSync(go, ['run', './tools/workbench/export', '-root', root], { cwd: root, encoding: 'utf8' }));
 const manifest = JSON.parse(await readFile(resolve(here, 'diagrams/manifest.json'), 'utf8'));
 const diagrams = [];
+const states = await statePreviews(out);
 const sourcePaths = new Set(['DESIGN.md', 'cmd/mimac/design.go', 'Assets/Brand/brand.go']);
 for (const item of manifest) {
   const path = resolve(here, 'diagrams', `${item.id}.mmd`);
@@ -28,6 +30,7 @@ for (const item of manifest) {
   diagrams.push({ ...item, source, svg, width: result.width, height: result.height });
   for (const path of item.sourcePaths) sourcePaths.add(path);
 }
+for (const page of states?.pages || []) for (const path of page.sourcePaths) sourcePaths.add(path);
 for (const path of [
   'cmd/mimac/settings.go', 'cmd/mimac/settings_mapping.go', 'cmd/mimac/settings_voice.go',
   'cmd/mimac/native_preferences.go', 'cmd/mimac/settings_about.go', 'cmd/mimac/remote.go',
@@ -47,6 +50,7 @@ for (const path of sourcePaths) {
 data.diagrams = diagrams;
 data.sourceIndex = sourceIndex;
 data.nativePreviews = await nativePreviews(out);
+data.statePreviews = states;
 data.revision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 data.builtAt = new Date().toISOString();
 data.renderer = 'Pele 1.12.0';

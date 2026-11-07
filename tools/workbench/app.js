@@ -4,7 +4,7 @@ const title = document.querySelector('#page-title');
 const theme = document.querySelector('#theme');
 const media = matchMedia('(prefers-color-scheme: dark)');
 const names = { brand: '品牌', tokens: '设计 Token', components: '组件状态', pages: '页面预览', architecture: '架构与流程' };
-let data, selectedDiagram, selectedPage, selectedPreviewConfig = 'light-1', activeCanvas;
+let data, selectedDiagram, selectedPage, selectedStatePage, selectedPreviewConfig = 'light-1', activeCanvas;
 const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 function sourceLinks(paths) {
   return `<div class="source-list">${paths.map(path => `<a href="${data.sourceIndex[path].url}" target="_blank" rel="noopener">${escape(path)}</a>`).join('')}</div>`;
@@ -55,35 +55,38 @@ function renderComponents() {
   document.querySelectorAll('input[name="tool"]').forEach(input=>input.addEventListener('change',()=>choose(input.value)));
 }
 function renderPages() {
+  const states = data.statePreviews;
   const previews = data.nativePreviews;
-  if (!previews) {
+  if (!previews && !states) {
     main.innerHTML = `<p>尚未采集原生页面。</p><pre>script/capture_workbench.swift --bundle /absolute/path/MiMac.app
 ./script/workbench.sh --build</pre>`;
     return;
   }
-  const configurations = previews.matrix?.configurations || [];
-  const hasLatest = Array.isArray(previews.pages) && previews.pages.length > 0 && !previews.isMatrixFallback;
+  const configurations = previews?.matrix?.configurations || [];
+  const hasLatest = Array.isArray(previews?.pages) && previews.pages.length > 0 && !previews.isMatrixFallback;
+  const hasStates = Array.isArray(states?.pages) && states.pages.length > 0;
   const selectedConfig = configurations.find(item => item.key === selectedPreviewConfig);
-  if (selectedPreviewConfig !== 'latest' && !selectedConfig) selectedPreviewConfig = hasLatest ? 'latest' : configurations[0]?.key;
-  if (selectedPreviewConfig === 'latest' && !hasLatest && configurations.length > 0) selectedPreviewConfig = configurations[0].key;
+  if (selectedPreviewConfig !== 'latest' && !(selectedPreviewConfig === 'states' && hasStates) && !selectedConfig) selectedPreviewConfig = hasLatest ? 'latest' : configurations[0]?.key || (hasStates ? 'states' : undefined);
+  if (selectedPreviewConfig === 'latest' && !hasLatest) selectedPreviewConfig = configurations[0]?.key || (hasStates ? 'states' : undefined);
   const matrixConfig = configurations.find(item => item.key === selectedPreviewConfig);
-  const capture = selectedPreviewConfig === 'latest' ? previews : matrixConfig?.capture;
+  const capture = selectedPreviewConfig === 'states' ? states : selectedPreviewConfig === 'latest' ? previews : matrixConfig?.capture;
   if (!capture?.pages?.length) {
     main.innerHTML = `<p>尚未采集原生页面。</p><pre>script/capture_workbench.swift --bundle /absolute/path/MiMac.app
 ./script/workbench.sh --build</pre>`;
     return;
   }
-  selectedPage ||= capture.pages[0].id;
-  const page = capture.pages.find(page => page.id === selectedPage) || capture.pages[0];
-  const configurationLabel = selectedPreviewConfig === 'latest' ? '单次采集' : matrixConfig?.label || selectedPreviewConfig;
+  const selectedID = selectedPreviewConfig === 'states' ? selectedStatePage : selectedPage;
+  const page = capture.pages.find(page => page.id === selectedID) || capture.pages[0];
+  const configurationLabel = selectedPreviewConfig === 'states' ? '交互状态' : selectedPreviewConfig === 'latest' ? '单次采集' : matrixConfig?.label || selectedPreviewConfig;
+  const window = page.captureExtent || (page.window ? { width: page.window.Width, height: page.window.Height } : capture.window);
   const date = new Date(page.capturedAt).toLocaleString('zh-CN', { hour12: false });
-  const configSelector = configurations.length ? `<label class="preview-config">截图配置<select id="native-preview-config" aria-label="选择截图配置">${configurations.map(item => `<option value="${escape(item.key)}" ${item.key === selectedPreviewConfig ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${hasLatest ? `<option value="latest" ${selectedPreviewConfig === 'latest' ? 'selected' : ''}>单次采集</option>` : ''}</select></label>` : '';
-  main.innerHTML = `<div class="preview-controls">${configSelector}<div class="preview-navigation" role="group" aria-label="选择原生页面">${capture.pages.map(item => `<button data-preview="${escape(item.id)}" aria-pressed="${item.id === page.id}">${escape(item.title)}</button>`).join('')}</div></div>
-    <figure class="native-preview"><a href="${escape(page.url)}" target="_blank" rel="noopener" aria-label="打开${escape(configurationLabel)} ${escape(page.title)}原始截图"><img src="${escape(page.url)}" width="${page.width}" height="${page.height}" alt="MiMac ${escape(configurationLabel)} ${escape(page.title)}原生窗口，${escape(page.state)}"></a><figcaption><span>${escape(configurationLabel)}，${escape(page.title)}，${escape(page.state)}</span><a href="${escape(page.url)}" download>下载原图</a></figcaption></figure>
-    <details><summary>采集信息</summary><p class="preview-note">静态截图只记录采集时的页面，不代表权限、连接、错误或语音动态状态已验收。</p><dl class="facts"><dt>截图配置</dt><dd>${escape(configurationLabel)}</dd><dt>采集时间</dt><dd>${escape(date)}</dd>${capture.app.pid ? `<dt>采集进程 PID</dt><dd>${capture.app.pid}</dd>` : ''}<dt>窗口</dt><dd>${capture.window.width} × ${capture.window.height} pt</dd><dt>图片</dt><dd>${page.width} × ${page.height} px</dd><dt>磁盘程序 SHA256</dt><dd><code>${escape(capture.app.executableSHA256)}</code></dd></dl>${sourceLinks(page.sourcePaths)}</details>`;
+  const configSelector = configurations.length || hasStates ? `<label class="preview-config">截图配置<select id="native-preview-config" aria-label="选择截图配置">${configurations.map(item => `<option value="${escape(item.key)}" ${item.key === selectedPreviewConfig ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${hasLatest ? `<option value="latest" ${selectedPreviewConfig === 'latest' ? 'selected' : ''}>单次采集</option>` : ''}${hasStates ? `<option value="states" ${selectedPreviewConfig === 'states' ? 'selected' : ''}>交互状态</option>` : ''}</select></label>` : '';
+  main.innerHTML = `<div class="preview-controls">${configSelector}<div class="preview-navigation" role="group" aria-label="选择预览">${capture.pages.map(item => `<button data-preview="${escape(item.id)}" aria-pressed="${item.id === page.id}">${escape(item.title)}</button>`).join('')}</div></div>
+    <figure class="native-preview"><a ${selectedPreviewConfig === 'states' ? `style="width:${window.width}px;max-width:100%;margin-inline:auto"` : ''} href="${escape(page.url)}" target="_blank" rel="noopener" aria-label="打开${escape(configurationLabel)} ${escape(page.title)}原始截图"><img src="${escape(page.url)}" width="${page.width}" height="${page.height}" alt="MiMac ${escape(configurationLabel)} ${escape(page.title)}原生窗口，${escape(page.state)}"></a><figcaption><span>${escape(configurationLabel)}，${escape(page.title)}，${escape(page.state)}</span><a href="${escape(page.url)}" download>下载原图</a></figcaption></figure>
+    <details><summary>采集信息</summary><p class="preview-note">静态截图只记录采集时的页面，不代表权限、连接、错误或语音动态状态已验收。</p><dl class="facts"><dt>截图配置</dt><dd>${escape(configurationLabel)}</dd><dt>采集时间</dt><dd>${escape(date)}</dd>${capture.app.pid ? `<dt>采集进程 PID</dt><dd>${capture.app.pid}</dd>` : ''}<dt>${selectedPreviewConfig === 'states' ? '采集范围' : '窗口'}</dt><dd>${window.width} × ${window.height} pt</dd><dt>图片</dt><dd>${page.width} × ${page.height} px</dd><dt>磁盘程序 SHA256</dt><dd><code>${escape(capture.app.executableSHA256)}</code></dd></dl>${sourceLinks(page.sourcePaths)}</details>`;
   const configSelect = document.querySelector('#native-preview-config');
   configSelect?.addEventListener('change', () => { selectedPreviewConfig = configSelect.value; renderPages(); });
-  document.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', () => { selectedPage = button.dataset.preview; renderPages(); }));
+  document.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', () => { if (selectedPreviewConfig === 'states') selectedStatePage = button.dataset.preview; else selectedPage = button.dataset.preview; renderPages(); }));
 }
 function renderArchitecture() {
   selectedDiagram ||= data.diagrams[0].id;
