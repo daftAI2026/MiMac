@@ -19,7 +19,9 @@ func (s *shell) updateTrayMenu() {
 	if s.closing || s.tray == nil {
 		return
 	}
-	state := trayState{s.remoteLabel(), s.remoteButtonLabel(), s.remoteBusy()}
+	state := trayState{
+		status: s.remoteLabel(), remoteAction: s.remoteButtonLabel(), remoteDisabled: s.remoteButtonDisabled(),
+	}
 	if state == s.trayState {
 		return
 	}

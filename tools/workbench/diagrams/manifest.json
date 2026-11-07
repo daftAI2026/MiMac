@@ -169,7 +169,7 @@
   {
     "id": "voice-action-translation",
     "title": "遥控按住与对端动作转换",
-    "summary": "本地物理按住到松开复用唯一 Core。目标 hold 在尾段排空后释放快捷键，目标 toggle 在开始和正常结束各发送一次点按请求，目标结果单独观察；取消或失败不盲目补 toggle，状态不明时禁止复用该快捷键。Core 有确认空闲后解除的事件，宿主尚未接入该入口。当前选择器优先唯一 hold，再选唯一 toggle；Apple 本地识别使用独立的音频 binding，不伪造快捷键。Core/宿主动作测试及豆包两轮实际合成 toggle 已验证；本地独立点按、持续录音偏好尚未实现，小米松键后是否可持续供音仍需同钟被动实测。",
+    "summary": "遥控器按住动作映射到已验证的目标 hold/toggle 合同，松键后排空再结束。异常 toggle 不补触发；宿主复用停用流程，用户确认目标语音与结果处理已结束后才解除本地锁，并复核同一 Core/步骤/快捷键及清理完成。确认不发送快捷键、不撤回文字，也不由 RunningInput=false 自动推断目标空闲。独立点按/持续录音偏好与设备松键后供音仍待验。",
     "sourcePaths": [
       "cmd/mimac/coordinator.go",
       "cmd/mimac/effects.go",
@@ -181,7 +181,11 @@
       "internal/adapters/doubao/actions.go",
       "internal/adapters/wetype/actions.go",
       "internal/adapters/xiaomi/atvv/source.go",
-      "internal/adapters/xiaomi/atvv/native/Transport.swift"
+      "internal/adapters/xiaomi/atvv/native/Transport.swift",
+      "cmd/mimac/toggle_recovery.go",
+      "cmd/mimac/toggle_recovery_test.go",
+      "cmd/mimac/remote.go",
+      "cmd/mimac/tray.go"
     ]
   },
   {

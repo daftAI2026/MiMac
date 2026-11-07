@@ -261,6 +261,9 @@ func (s *shell) remoteButtonLabel() string {
 	if s.remoteEnabled() {
 		return "停用遥控器"
 	}
+	if s.toggleRecoveryNeeded() {
+		return toggleRecoveryLabel
+	}
 	return "启用遥控器"
 }
 
@@ -296,6 +299,12 @@ func (s *shell) remoteStatus() (string, statusTone) {
 	}
 	if s.remoteBusy() {
 		return "正在连接", toneNeutral
+	}
+	if s.toggleRecoveryNeeded() {
+		if !s.toggleRecoveryReady() {
+			return "请先停用遥控器并结束语音", toneWarning
+		}
+		return "请确认语音工具已结束", toneWarning
 	}
 	if !s.remoteEnabled() {
 		return "未启用", toneNeutral
@@ -373,6 +382,10 @@ func (s *shell) toggleRemote() {
 	}
 	if s.remoteEnabled() {
 		s.beginRemoteStop()
+		return
+	}
+	if s.toggleRecoveryNeeded() {
+		s.requestToggleRecovery()
 		return
 	}
 	s.enableRemote(true)

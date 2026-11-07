@@ -53,7 +53,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				permission: s.deviceNeedsPermission || s.outputNeedsPermission,
 				message:    footerMessage,
 				action:     s.remoteButtonLabel(),
-				busy:       s.remoteBusy(),
+				busy:       s.remoteButtonDisabled(),
 			}
 			footer := ui.Column(c).Key("mapping-status-footer").FillWidth().Gap(spaceSM).Padding(0, 0, settingsRowPadding, 0).AlignItems(ui.Center)
 			footer.Children(func() {
@@ -70,7 +70,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 					ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
 				s.mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window, footer, footerState)
-				disabled := s.remoteBusy()
+				disabled := s.remoteButtonDisabled()
 				if appButton(c, a, s.remoteButtonLabel(), disabled).MinHeight(buttonHeight).Clicked() && !disabled {
 					s.toggleRemote()
 				}
@@ -349,7 +349,7 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 
 	device := s.activeDevicePlugin()
 	if device.ModuleID != "" {
-		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), s.remoteButtonLabel(), s.remoteBusy(), nil, func() { s.toggleRemote() }))
+		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), s.remoteButtonLabel(), s.remoteButtonDisabled(), nil, func() { s.toggleRemote() }))
 	}
 	if s.toolError != "" {
 		ui.Text(c, s.toolError).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)

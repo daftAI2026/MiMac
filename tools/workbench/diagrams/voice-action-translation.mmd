@@ -11,6 +11,10 @@ flowchart TD
     contract -->|toggle| finish["发送第二次点按，请求结束输入"]
     active -.->|取消或失败| cancel["清理本地资源；目标状态不明时不补 toggle"]
     cancel -.->|toggle 状态不明| uncertain["标记快捷键状态不明；阻止复用该快捷键开始"]
-    uncertain -.-> idle["Core 仅在确认目标空闲后解除；
-当前宿主尚未接入确认入口"]
+    uncertain -.-> stop["先停用遥控器，沿既有生命周期释放本地音频与按键"]
+    stop -.-> confirm["用户结束相关语音工具并等待结果，再明确确认恢复"]
+    confirm -.-> guard{"同一 Core / steps / 快捷键；本地资源已清理？"}
+    guard -.->|是| idle["ConfirmToggleIdle 仅解除本地锁，不发送按键"]
+    guard -.->|否或取消| uncertain
+    idle -.-> next["用户重新启用；下一次真实按键才开始新会话"]
     up -.-> boundary["toggle 是对端动作合同；本地仍松开结束。\n独立点按和持续录音尚未接入。"]

@@ -123,7 +123,7 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 	settingsGroup(c, a, func() {
 		ui.Row(c).AlignItems(ui.Center).FillWidth().MinHeight(settingsRowHeight).Padding(settingsRowPadding, 0).Children(func() {
 			ui.Text(c, s.activeProfile().Name).FontSize(a.fonts.body).FontWeight(600).Grow(1)
-			disabled := s.remoteBusy()
+			disabled := s.remoteButtonDisabled()
 			if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
 				s.toggleRemote()
 			}

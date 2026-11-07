@@ -45,6 +45,7 @@ type coreReport struct {
 	UnexpectedEffects uint64                   `json:"unexpected_effects"`
 	SubmittedEffects  uint64                   `json:"submitted_effects"`
 	OutputFailureID   uint64                   `json:"output_failure_id"`
+	RecoveryKeys      []bridge.Key             `json:"recovery_keys,omitempty"`
 	AudioSessionID    uint64                   `json:"audio_session_id,omitempty"`
 	AudioPhase        string                   `json:"audio_phase,omitempty"`
 	AudioInput        *audiosession.InputLevel `json:"audio_input,omitempty"`
@@ -150,6 +151,7 @@ func (d *deviceCoordinator) report() coreReport {
 		Generation: s.Generation, Configured: s.Configured,
 		UnexpectedEffects: d.unexpected,
 		SubmittedEffects:  d.submitted, OutputFailureID: s.OutputFailureID,
+		RecoveryKeys:   s.RecoveryKeys,
 		AudioSessionID: voice.id, AudioPhase: voice.phase,
 		AudioInput: presentVoiceInput(s, d.audio),
 	}
