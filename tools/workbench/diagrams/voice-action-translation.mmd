@@ -1,0 +1,16 @@
+flowchart TD
+    down["遥控器语音键按下"] --> plan["冻结当前工具的已验证动作合同"]
+    plan -->|目标 hold| hold["按下目标快捷键并持有"]
+    plan -->|目标 toggle| toggle["发送一次点按，请求开始输入"]
+    hold --> active["同一 Core 会话管理音频"]
+    toggle --> active
+    active --> up["遥控器物理松开"]
+    up --> drain["停止本地音频源并排空尾段"]
+    drain --> contract{"沿用冻结的目标合同"}
+    contract -->|hold| release["释放目标快捷键"]
+    contract -->|toggle| finish["发送第二次点按，请求结束输入"]
+    active -.->|取消或失败| cancel["清理本地资源；目标状态不明时不补 toggle"]
+    cancel -.->|toggle 状态不明| uncertain["标记快捷键状态不明；阻止复用该快捷键开始"]
+    uncertain -.-> idle["Core 仅在确认目标空闲后解除；
+当前宿主尚未接入确认入口"]
+    up -.-> boundary["toggle 是对端动作合同；本地仍松开结束。\n独立点按和持续录音尚未接入。"]

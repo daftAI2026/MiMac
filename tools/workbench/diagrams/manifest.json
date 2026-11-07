@@ -167,6 +167,24 @@
     ]
   },
   {
+    "id": "voice-action-translation",
+    "title": "遥控按住与对端动作转换",
+    "summary": "本地物理按住到松开复用唯一 Core。目标 hold 在尾段排空后释放快捷键，目标 toggle 在开始和正常结束各发送一次点按请求，目标结果单独观察；取消或失败不盲目补 toggle，状态不明时禁止复用该快捷键。Core 有确认空闲后解除的事件，宿主尚未接入该入口。当前选择器优先唯一 hold，再选唯一 toggle；Apple 本地识别使用独立的音频 binding，不伪造快捷键。Core/宿主动作测试及豆包两轮实际合成 toggle 已验证；本地独立点按、持续录音偏好尚未实现，小米松键后是否可持续供音仍需同钟被动实测。",
+    "sourcePaths": [
+      "cmd/mimac/coordinator.go",
+      "cmd/mimac/effects.go",
+      "cmd/mimac/voice_binding.go",
+      "cmd/mimac/voice_audio_binding_test.go",
+      "internal/bridge/core.go",
+      "internal/bridge/core_test.go",
+      "internal/voicetools/action.go",
+      "internal/adapters/doubao/actions.go",
+      "internal/adapters/wetype/actions.go",
+      "internal/adapters/xiaomi/atvv/source.go",
+      "internal/adapters/xiaomi/atvv/native/Transport.swift"
+    ]
+  },
+  {
     "id": "voice-entry-boundary",
     "title": "语音入口与提交边界",
     "summary": "每轮只控制一个选定工具。Apple Speech 冻结文本目标，外部工具冻结唯一动作计划。WeType 旧固定包同一输入框两轮真实遥控落字通过；冷态首轮/外部麦克风变化/异常恢复仍待验。已知 WeType 的 Escape 会提交文字，不能当作撤销。",
