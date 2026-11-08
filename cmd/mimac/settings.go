@@ -38,7 +38,7 @@ type settingsState struct {
 	deviceLastPress       string
 	deviceTone            statusTone
 	brandMark             *ui.SVG
-	modelBitmaps          map[string]*ui.Bitmap
+	modelAssets           map[string]modelArtwork
 	navigationSymbols     map[symbolKey]*ui.Bitmap
 	appIcon               *ui.Bitmap
 	socialIcons           map[string]*ui.SVG

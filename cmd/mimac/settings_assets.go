@@ -4,7 +4,7 @@ package main
 // window has detached. The shell keeps device, mapping, and status state.
 func (s *shell) releaseSettingsAssets() {
 	s.brandMark = nil
-	s.modelBitmaps = nil
+	s.modelAssets = nil
 	s.navigationSymbols = nil
 	s.appIcon = nil
 	s.socialIcons = nil

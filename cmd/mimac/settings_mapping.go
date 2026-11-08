@@ -38,7 +38,7 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 							}
 						}
 					}
-				})
+				}).FillWidth().MinWidth(0)
 			} else {
 				ui.Text(c, profile.Name).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.body).FontWeight(600)
 			}
@@ -46,8 +46,8 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 				s.remoteModel(c, a, profile)
 			})
 			footerMessage := ""
-			if s.mappingError != "" && s.editButton == "" {
-				footerMessage = s.mappingError
+			if s.editButton == "" {
+				footerMessage = s.mappingFooterError()
 			}
 			footerState := readyIndicatorFooterState{
 				permission: s.deviceNeedsPermission || s.outputNeedsPermission,
@@ -66,8 +66,8 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 						}
 					}
 				}
-				if s.mappingError != "" && s.editButton == "" {
-					ui.Text(c, s.mappingError).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+				if footerMessage != "" {
+					ui.Text(c, footerMessage).FillWidth().TextAlign(ui.Center).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
 				s.mappingStatusRow(c, a, s.remoteLabel(), s.remoteTone(), s.remoteEnabled(), s.window, footer, footerState)
 				disabled := s.remoteButtonDisabled()
