@@ -39,23 +39,7 @@ func (s *shell) remoteModel(c *ui.Context, a appearance, profile devices.Profile
 		return
 	}
 	scale := min(modelMaxWidth/model.Width, modelMaxHeight/model.Height)
-	var artwork *ui.Bitmap
-	if provider := s.activeDevicePlugin().Artwork; provider != nil {
-		if s.modelBitmaps == nil {
-			s.modelBitmaps = make(map[string]*ui.Bitmap)
-		}
-		var cached bool
-		artwork, cached = s.modelBitmaps[profile.ID]
-		if !cached {
-			pixels, err := provider()
-			if err == nil {
-				artwork = ui.NewBitmap(pixels)
-			} else {
-				s.mappingError = "遥控器外观无法加载"
-			}
-			s.modelBitmaps[profile.ID] = artwork
-		}
-	}
+	artwork := s.loadModelArtwork(s.activeDevicePlugin()).bitmap
 	pressed := make(map[string]bool)
 	if s.coordinator != nil {
 		for _, press := range s.coordinator.core.Snapshot().PressedButtons {
