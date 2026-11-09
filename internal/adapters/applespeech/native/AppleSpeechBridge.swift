@@ -395,7 +395,12 @@ private final class AppleSpeechSession: @unchecked Sendable {
             let resultTask = Task { try await collectFinalResults(from: transcriber) }
             localResultsTask = resultTask
             let analysisTask = Task { () throws -> Void in
-                if let end = try await createdAnalyzer.analyzeSequence(stream) {
+                let end = try await createdAnalyzer.analyzeSequence(stream)
+                // Cancellation may return the last consumed sample normally.
+                try Task.checkCancellation()
+                // requestCancel publishes this flag before cancelling child tasks.
+                if self.withConditionLock({ self.cancelled }) { throw CancellationError() }
+                if let end {
                     try await createdAnalyzer.finalizeAndFinish(through: end)
                 } else {
                     await createdAnalyzer.cancelAndFinishNow()
@@ -444,12 +449,16 @@ private final class AppleSpeechSession: @unchecked Sendable {
             try await analysisTask.value
             try await resultTask.value
 
-            withConditionLock {
+            let needsCancellationJoin = withConditionLock {
                 if !cancelled && state != stateFailed {
                     state = stateDrained
                 }
                 condition.broadcast()
+                return cancelled
             }
+            // Cancellation can arrive after analysis returned successfully.
+            // Do not report worker termination before its cancellation task joins.
+            if needsCancellationJoin { throw CancellationError() }
         } catch {
             await cancelAndJoin(analyzer: localAnalyzer, analysisTask: localAnalysisTask, resultsTask: localResultsTask)
             _ = await releaseUncommittedReservation(
