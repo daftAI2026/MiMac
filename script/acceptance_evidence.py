@@ -1,9 +1,29 @@
-"""Classify text evidence around a fixture snapshot, without changing verdicts.
+"""Check a planned utterance and classify text around a fixture snapshot.
 
 Both event and boundary timestamps originate in the same fixed Swift fixture's
 mach_continuous_time clock. Python monotonic time is deliberately not compared.
-A later commit is observed after the boundary, not necessarily caused by cleanup.
+A later commit is observed after the boundary, not necessarily caused by cleanup;
+it cannot satisfy the planned utterance's pre-cleanup verdict.
 """
+
+import unicodedata
+
+
+def normalize_utterance(text):
+    """Ignore ASR punctuation/spacing only; keep words, order and symbols."""
+    return "".join(c for c in text if not c.isspace()
+                   and not unicodedata.category(c).startswith("P"))
+
+
+def assess_utterance(baseline, final, expected):
+    if expected is None:
+        return {"status": "NOT_REQUESTED", "scope": "no planned utterance; no accuracy verdict"}
+    if not isinstance(expected, str) or not normalize_utterance(expected):
+        raise ValueError("expected text must contain spoken content")
+    appended = final[len(baseline):] if isinstance(final, str) and final.startswith(baseline) else None
+    complete = appended is not None and normalize_utterance(appended) == normalize_utterance(expected)
+    return {"status": "PASS" if complete else "NOT_PASSED", "expected": expected,
+            "appended": appended, "scope": "exact planned append, ignoring punctuation and whitespace only; not general ASR accuracy"}
 
 
 def _integer(value):
