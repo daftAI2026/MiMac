@@ -63,3 +63,24 @@ flowchart TD
     retained --> cleanup
     sourceQueue -.-> overflow["超界保留 typed overflow 快照；明确失败"]
     wait -.-> trace["有界 receiver.wait 明细与全程计数分开"]
+
+    subgraph appleSpeechLifecycle["Apple Speech 原生取消与资源释放"]
+        appleAnalysis["analysisTask：analyzeSequence(stream)"] --> appleCheckCancellation{"返回后检查 Task cancellation 与锁内 cancelled"}
+        appleCheckCancellation -->|未取消| appleFinalize["正常 finalizeAndFinish；等待 analysis 与 results"]
+        appleCheckCancellation -->|已取消，即使 analyzeSequence 正常返回| appleCancelCatch["抛 CancellationError；跳过正常 finalize"]
+        appleFinalize --> appleArbitrate{"run 完成点：同一 NSCondition 锁检查取消并认领 drain"}
+        appleArbitrate -->|未取消；drain 先认领| appleDrained["设置 stateDrained；保留成功终态"]
+        appleArbitrate -->|cancel 已先认领| appleCancelCatch
+
+        appleRequestCancel["Go 请求取消"] --> appleCancelLock{"同一 NSCondition 锁：session 是否已终结？"}
+        appleCancelLock -->|仍活动；cancel 先认领| appleCancelState["设 cancelled/stateCancelled；清队列；创建或复用 cancellationTask"]
+        appleCancelLock -->|drain 已先提交；忽略晚取消| appleDrained
+        appleCancelState --> appleSignalTasks["结束输入流；取消 worker、analysis 与 results"]
+        appleSignalTasks --> appleCancelCatch
+        appleCancelCatch --> appleJoinTasks["cancelAndJoin 等待 analysis、results 与同一 cancellationTask 全部完成"]
+        appleJoinTasks --> appleTerminated["run defer 设置 workerTerminated"]
+        appleDrained --> appleTerminated
+        appleTerminated --> appleGoWait["Go Sink.Close 等待 WaitTerminated；超时保留 owner 并可重试"]
+        appleGoWait -->|terminated| appleGoRelease["Go 调用 Release；释放 native owner"]
+
+    end
