@@ -1,5 +1,6 @@
 flowchart LR
     hid["Xiaomi HID monitor\n物理按键边沿"] --> coordinator["MyGo 主线程协调器"]
+    coordinator -.-> observation["已接受的设备事件边沿计数\n包含启动前检查失败；不等于动作成功"]
     coordinator --> resolve["解析当前映射或工具动作"]
     resolve --> core["bridge.Core\n冻结唯一动作计划与会话策略"]
     core -->|按键效果| keyout["系统按键输出适配器"]

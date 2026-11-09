@@ -70,6 +70,23 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 		accepted, err = s.coordinator.accept(event)
 	}
 	s.report.Core = s.coordinator.report()
+	// Core may accept an observed physical press while rejecting its start
+	// preflight. Keep accepted-edge diagnostics even when that event has an
+	// error; stale identities still return accepted=false and stay uncounted.
+	if accepted {
+		for _, edge := range event.Edges {
+			s.report.LastButtonAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if s.report.ButtonDowns == nil {
+				s.report.ButtonDowns = make(map[string]int)
+				s.report.ButtonUps = make(map[string]int)
+			}
+			if edge.Kind == xiaomi.EdgeDown {
+				s.report.ButtonDowns[edge.Press.PhysicalButtonID()]++
+			} else {
+				s.report.ButtonUps[edge.Press.PhysicalButtonID()]++
+			}
+		}
+	}
 	if err != nil {
 		if accepted && (event.State == xiaomi.MonitorStateConnected || event.State == xiaomi.MonitorStateDisconnected) {
 			s.remoteDeviceEvent(event)
@@ -113,21 +130,13 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 		s.deviceTone = toneWarning
 	}
 	for _, edge := range event.Edges {
-		s.report.LastButtonAt = time.Now().UTC().Format(time.RFC3339Nano)
-		if s.report.ButtonDowns == nil {
-			s.report.ButtonDowns = make(map[string]int)
-			s.report.ButtonUps = make(map[string]int)
-		}
 		if edge.Kind == xiaomi.EdgeDown {
-			s.report.ButtonDowns[edge.Press.PhysicalButtonID()]++
 			if _, known := s.activeProfile().Button(edge.Press.PhysicalButtonID()); known && s.editButton == "" {
 				s.selectedButton = edge.Press.PhysicalButtonID()
 				if s.page == pageMappings {
 					s.revealButton = s.selectedButton
 				}
 			}
-		} else {
-			s.report.ButtonUps[edge.Press.PhysicalButtonID()]++
 		}
 		label := s.buttonLabel(edge.Press.PhysicalButtonID())
 		action := "已按下"
