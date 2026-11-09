@@ -28,6 +28,31 @@ class AcceptanceTests(unittest.TestCase):
     def test_complete_evidence_passes(self):
         self.assertEqual(self.result()["status"], "PASS")
 
+    def test_planned_utterance_checks_the_whole_append_not_only_new_text(self):
+        expected = "声音来自遥控器，最后是测试完成。"
+        for text, passed in [
+            ("声音来自遥控器 最后是测试完成", True),
+            ("声音来自遥控器", False),
+            ("最后是测试完成", False),
+            ("声音来自最后是测试完成", False),
+            ("声音来自遥控器最后是测试完成旧结果", False),
+        ]:
+            with self.subTest(text=text):
+                result = assess(self.host, self.voice, "前文", "前文" + text,
+                                self.timeline, self.source, expected_text=expected)
+                self.assertEqual(result["checks"]["planned_text_complete"], passed)
+                self.assertEqual(result["status"], "PASS" if passed else "NOT_PASSED")
+
+    def test_expected_text_never_matches_the_existing_prefix(self):
+        result = assess(self.host, self.voice, "原有内容", "原有内容新增",
+                        self.timeline, self.source, expected_text="原有内容新增")
+        self.assertFalse(result["checks"]["planned_text_complete"])
+
+    def test_no_scripted_utterance_is_not_an_accuracy_pass(self):
+        result = self.result()
+        self.assertNotIn("planned_text_complete", result["checks"])
+        self.assertEqual(result["utterance"]["status"], "NOT_REQUESTED")
+
     def test_no_text_does_not_pass_audio_delivery(self):
         self.assertTrue(self.result("前文")["checks"]["audio_delivery"])
         self.assertEqual(self.result("前文")["status"], "NOT_PASSED")
