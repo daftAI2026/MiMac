@@ -137,13 +137,14 @@
   {
     "id": "apple-text-target",
     "title": "Apple 文本目标冻结与投递",
-    "summary": "Apple Speech 按下时单次捕获并复核前台进程、可编辑 AX 焦点/选区。首次 AX 目标未就绪会拒绝本次输入，保留音频连接；没有自动等待、目标缓存或延后重试。500ms 仅检查捕获结果是否过期。匹配会话完成后只尝试一次文本插入。",
+    "summary": "Apple Speech 按下时单次捕获并复核前台进程、可编辑 AX 焦点/选区。首次 AX 目标未就绪会拒绝本次输入，保留音频连接；没有自动等待、目标缓存或延后重试。500ms 仅检查捕获结果是否过期。匹配会话完成后只尝试一次文本插入。 识别保留快速结果选项，只请求最终结果；成功 drain 后才取回文本，不向编辑器插入中途修订。",
     "sourcePaths": [
       "cmd/mimac/apple_audio.go",
       "cmd/mimac/audio_sessions.go",
       "internal/adapters/textoutput/textoutput.go",
       "internal/adapters/textoutput/native_darwin.go",
-      "internal/adapters/applespeech/applespeech.go"
+      "internal/adapters/applespeech/applespeech.go",
+      "internal/adapters/applespeech/native/AppleSpeechBridge.swift"
     ]
   },
   {

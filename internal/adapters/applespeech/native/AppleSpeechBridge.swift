@@ -314,7 +314,15 @@ private final class AppleSpeechSession: @unchecked Sendable {
             }
             try Task.checkCancellation()
 
-            let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+            let preset = SpeechTranscriber.Preset.progressiveTranscription
+            var reportingOptions = preset.reportingOptions
+            reportingOptions.remove(.volatileResults)
+            let transcriber = SpeechTranscriber(
+                locale: locale,
+                transcriptionOptions: preset.transcriptionOptions,
+                reportingOptions: reportingOptions,
+                attributeOptions: preset.attributeOptions
+            )
             var moduleStatus = await AssetInventory.status(forModules: [transcriber])
             if moduleStatus == .unsupported {
                 throw BridgeFailure.unsupported(localeIdentifier, status: String(describing: moduleStatus))
