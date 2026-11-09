@@ -3,10 +3,10 @@ import WebKit
 
 final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var window: NSWindow!
-    let text = NSTextView(frame: NSRect(x: 20, y: 280, width: 620, height: 70))
-    let field = NSTextField(frame: NSRect(x: 20, y: 230, width: 300, height: 30))
-    let other = NSTextField(frame: NSRect(x: 340, y: 230, width: 300, height: 30))
-    let secure = NSSecureTextField(frame: NSRect(x: 20, y: 185, width: 300, height: 30))
+    let text = NSTextView(frame: .zero)
+    let field = NSTextField(frame: .zero)
+    let other = NSTextField(frame: .zero)
+    let secure = NSSecureTextField(frame: .zero)
     var web: WKWebView!
     var timer: Timer?
     var sequence = 0
@@ -16,22 +16,88 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         guard CommandLine.arguments.count == 2 else { NSApp.terminate(nil); return }
         directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
-        window = NSWindow(contentRect: NSRect(x: 160, y: 180, width: 660, height: 380), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 160, y: 160, width: 760, height: 480), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "MiMac 输入兼容性测试"
         text.isRichText = false; text.font = .systemFont(ofSize: 16)
+        text.wantsLayer = true
+        text.layer?.borderColor = NSColor.separatorColor.cgColor
+        text.layer?.borderWidth = 0.5
         text.setAccessibilityIdentifier("matrix.textview")
         field.setAccessibilityIdentifier("matrix.field")
         other.setAccessibilityIdentifier("matrix.other")
         secure.setAccessibilityIdentifier("matrix.secure")
-        for v in [text as NSView, field, other, secure] { window.contentView!.addSubview(v) }
+        for control in [field as NSTextField, other] { control.font = .systemFont(ofSize: 16) }
+        secure.font = .systemFont(ofSize: 16)
+
+        let content = verticalStack(spacing: 14)
+        content.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView!.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
+            content.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor),
+        ])
+
+        let native = verticalStack(spacing: 9)
+        addFullWidth(sectionTitle("原生控件"), to: native)
+        addFullWidth(labeledControl("多行", control: text, height: 76), to: native)
+        let nativeRow = NSStackView(views: [
+            labeledControl("文本框", control: field, height: 30),
+            labeledControl("另一文本框", control: other, height: 30),
+            labeledControl("安全输入", control: secure, height: 30),
+        ])
+        nativeRow.orientation = .horizontal
+        nativeRow.alignment = .top
+        nativeRow.distribution = .fillEqually
+        nativeRow.spacing = 12
+        addFullWidth(nativeRow, to: native)
+        addFullWidth(native, to: content)
+
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        web = WKWebView(frame: NSRect(x: 20, y: 15, width: 620, height: 155), configuration: config)
+        web = WKWebView(frame: .zero, configuration: config)
+        web.translatesAutoresizingMaskIntoConstraints = false
         web.navigationDelegate = self
-        window.contentView!.addSubview(web)
+        web.heightAnchor.constraint(equalToConstant: 230).isActive = true
+        let webSection = verticalStack(spacing: 8)
+        addFullWidth(sectionTitle("网页控件"), to: webSection)
+        addFullWidth(web, to: webSection)
+        addFullWidth(webSection, to: content)
         web.loadHTMLString("""
-        <!doctype html><meta charset="utf-8"><style>input,textarea,[contenteditable]{font:16px system-ui;margin:4px;width:240px} [contenteditable]{border:1px solid #777;display:inline-block;min-height:24px} #rich{width:420px} #rich p{margin:2px 0}</style>
-        <input id="input" aria-label="matrix input"><textarea id="textarea" aria-label="matrix textarea"></textarea><div id="editable" contenteditable="true" role="textbox" aria-label="matrix editable"></div><div id="rich" contenteditable="true" role="textbox" aria-multiline="true" aria-label="matrix rich editor"><p data-node="paragraph">L|<strong>ol</strong><em>d</em>|R</p><ul data-node="list"><li><p><span contenteditable="false" data-decoration="bullet">•</span> keep item</p></li></ul><p data-node="paragraph"><span contenteditable="false" data-decoration="comment">[comment]</span>tail</p></div><input id="password" type="password" aria-label="matrix password">
+        <!doctype html>
+        <html lang="zh-CN">
+        <meta charset="utf-8">
+        <style>
+        :root { color-scheme: light dark; }
+        * { box-sizing: border-box; }
+        body { margin: 0; color: CanvasText; background: Canvas; font: 16px system-ui, -apple-system, sans-serif; }
+        .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+        .control { min-width: 0; }
+        .rich-control { margin-top: 12px; }
+        .label { display: block; margin-bottom: 4px; color: CanvasText; font-size: 12px; line-height: 1.2; }
+        input, textarea, [contenteditable="true"] {
+            display: block; width: 100%; min-height: 32px; padding: 4px 6px;
+            border: 0.5px solid GrayText; border-radius: 4px;
+            color: FieldText; background: Field; font: 16px system-ui, -apple-system, sans-serif;
+        }
+        textarea { height: 58px; }
+        [contenteditable="true"] { min-height: 32px; }
+        #rich { min-height: 92px; padding: 7px; }
+        #rich p { margin: 2px 0; }
+        #rich ul { margin: 4px 0; padding-left: 22px; }
+        </style>
+        <div class="grid">
+            <div class="control"><label class="label" for="input">单行</label><input id="input" aria-label="matrix input"></div>
+            <div class="control"><label class="label" for="textarea">多行</label><textarea id="textarea" aria-label="matrix textarea"></textarea></div>
+            <div class="control"><span class="label">可编辑</span><div id="editable" contenteditable="true" role="textbox" aria-label="matrix editable"></div></div>
+            <div class="control"><label class="label" for="password">密码</label><input id="password" type="password" aria-label="matrix password"></div>
+        </div>
+        <div class="rich-control">
+            <span class="label">富文本</span>
+            <div id="rich" contenteditable="true" role="textbox" aria-multiline="true" aria-label="matrix rich editor"><p data-node="paragraph">L|<strong>ol</strong><em>d</em>|R</p><ul data-node="list"><li><p><span contenteditable="false" data-decoration="bullet">•</span> keep item</p></li></ul><p data-node="paragraph"><span contenteditable="false" data-decoration="comment">[comment]</span>tail</p></div>
+        </div>
         """, baseURL: nil)
         window.makeKeyAndOrderFront(nil); window.makeFirstResponder(text)
         NSApp.activate(ignoringOtherApps: true)
@@ -120,6 +186,42 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             if let data = try? JSONSerialization.data(withJSONObject:state,options:[.sortedKeys]), (try? data.write(to:self.directory.appendingPathComponent("result.json"),options:.atomic)) != nil { }
             self.busy = false
         }
+    }
+
+    // NSStackView alignment chooses an edge; it does not stretch arranged views.
+    func addFullWidth(_ view: NSView, to stack: NSStackView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor,
+            constant: -(stack.edgeInsets.left + stack.edgeInsets.right)).isActive = true
+    }
+
+    func verticalStack(spacing: CGFloat) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.distribution = .fill
+        stack.spacing = spacing
+        return stack
+    }
+
+    func sectionTitle(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.textColor = .labelColor
+        return label
+    }
+
+    func labeledControl(_ title: String, control: NSView, height: CGFloat) -> NSStackView {
+        let group = verticalStack(spacing: 4)
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.heightAnchor.constraint(equalToConstant: height).isActive = true
+        addFullWidth(label, to: group)
+        addFullWidth(control, to: group)
+        return group
     }
 }
 let app=NSApplication.shared
