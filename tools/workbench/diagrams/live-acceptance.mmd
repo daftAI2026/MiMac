@@ -1,5 +1,6 @@
 flowchart TD
-    entry["live_acceptance.py prepare"] --> fixed{"正式构建 / 按前轮 SHA 复用"}
+    entry["live_acceptance.py prepare"] --> plan["记录本轮预设句子与工具；不启动收音"]
+    plan --> fixed{"正式构建 / 按前轮 SHA 复用"}
     fixed --> identity["身份、六库、PID 与映射 inode"]
     identity --> native["冻结诊断源码，构建独立夹具"]
     native --> route["启用遥控器并核对当次连接"]
@@ -20,6 +21,9 @@ flowchart TD
     post --> closeClient["App已退出才退役夹具；失败保留原边界"]
     blocked --> finish
     closeClient --> evidence["分查文字、单会话、焦点覆盖、音频计数与清理"]
+    plan -. "可选 expected-text" .-> whole["清理前新增全文匹配；忽略标点空白，迟到字另列"]
+    closeClient --> whole
+    whole --> evidence
     targetLog --> evidence
     evidence --> result["PASS 或 NOT_PASSED；不代替目标逐样本消费或视觉验收"]
     native -.-> probeMode["显式 --source-check：本机模型就绪预检；不喂PCM"]

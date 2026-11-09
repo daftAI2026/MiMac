@@ -21,7 +21,7 @@ import tempfile
 import time
 
 from inspect_voice_report import inspect as inspect_voice_report
-from acceptance_evidence import summarize_text_evidence
+from acceptance_evidence import summarize_text_evidence, assess_utterance
 from acceptance_observer import run_observer
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -141,9 +141,12 @@ def prepare(args):
     CACHE.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=CACHE))
     stage = "preflight"
-    state = {"schema": 1, "run": str(directory), "status": "PREPARING", "source_check": args.source_check}
+    state = {"schema": 1, "run": str(directory), "status": "PREPARING", "source_check": args.source_check,
+             "expected_text": getattr(args, "expected_text", None)}
     write(directory / "state.json", state)
     try:
+        # Validate the written plan before building or touching any application.
+        assess_utterance("", None, state["expected_text"])
         if sys.platform != "darwin":
             raise RuntimeError("macOS required")
         tools = read(Path.home() / "Library/Application Support/MiMac/tools.json")
@@ -314,7 +317,7 @@ def fresh_target(rows, now):
     return row["target"]
 
 
-def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None, target_timeline=None):
+def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None, target_timeline=None, expected_text=None):
     checks = {"normal_exit": host.get("normal_exit") is True, "keys_released": host.get("core", {}).get("pressed") == 0, "new_text": isinstance(final, str) and final.startswith(baseline) and len(final) > len(baseline)}
     sessions = voice.get("io", {}).get("sessions", [])
     checks["sessions_present"] = bool(sessions)
@@ -346,7 +349,10 @@ def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=
                 for row in target_rows
             ) for s in sessions
         )
-    return {"status": "PASS" if all(checks.values()) else "NOT_PASSED", "checks": checks, "scope": "one planned voice session: actual text append, local audio acceptance, bounded sampled focus and cleanup; not every target-consumed sample, transcript accuracy or Siri appearance"}
+    utterance = assess_utterance(baseline, final, expected_text)
+    if expected_text is not None:
+        checks["planned_text_complete"] = utterance["status"] == "PASS"
+    return {"status": "PASS" if all(checks.values()) else "NOT_PASSED", "checks": checks, "utterance": utterance, "scope": "one planned voice session: actual text append, local audio acceptance, bounded sampled focus and cleanup; optional exact planned utterance, not every target-consumed sample, general ASR accuracy or Siri appearance"}
 
 
 def assess_source_diagnostic(diagnostic, voice):
@@ -535,7 +541,7 @@ def finish(directory):
         timeline = [json.loads(line) for line in timeline_path.read_text().splitlines()] if timeline_path.exists() else []
         target_path = directory / "target-timeline.jsonl"
         target_timeline = [json.loads(line) for line in target_path.read_text().splitlines()] if target_path.exists() else None
-        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None, timeline, state.get("input_source"), state.get("fixture_pid"), target_timeline)
+        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None, timeline, state.get("input_source"), state.get("fixture_pid"), target_timeline, state.get("expected_text"))
         result["checks"]["final_text_settled"] = final is not None and final.get("has_marked_text") is False
         if state.get("target_pid") and state.get("probe"):
             target = json.loads(run(state["probe"], state["target_pid"], "audio", timeout=3))
@@ -581,6 +587,7 @@ def main():
     commands = parser.add_subparsers(dest="action", required=True)
     p = commands.add_parser("prepare", help="build, verify and prepare; no microphone/shortcut")
     p.add_argument("--go")
+    p.add_argument("--expected-text", help="planned spoken sentence; finish checks the whole new text, ignoring punctuation/spacing only")
     p.add_argument("--source-check", action="store_true", help="explicit in-memory same-source local ASR diagnostic on App exit; never writes PCM")
     p.add_argument("--reuse-build", action="store_true", help="verify/relaunch the existing stopped binary after permission refresh; never rebuild")
     p.add_argument("--previous-run", type=Path, help="previous run whose bundle SHA values must match for --reuse-build")

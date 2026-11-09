@@ -177,7 +177,7 @@ class AcceptanceTests(unittest.TestCase):
             directory = Path(folder)
             field = directory / "field"
             field.mkdir()
-            state = {"run": folder, "status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture", "field": str(field), "baseline_text": "前文"}
+            state = {"run": folder, "status": "READY", "app_pid": 11, "app_executable": "/app/MiMac", "fixture_pid": 42, "fixture_executable": "/fixture", "field": str(field), "baseline_text": "前文", "expected_text": "迟到"}
             alive = {"/app/MiMac": True, "/fixture": True}
             before = {"pid": 42, "text": "前文", "has_marked_text": False, "monotonic_ns": 100}
             late = {**before, "text": "前文迟到", "monotonic_ns": 200}
@@ -198,6 +198,8 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(finish(directory), 1)
             result = live_acceptance.json.loads((directory / "acceptance.json").read_text())
             self.assertFalse(result["checks"]["new_text"])
+            self.assertFalse(result["checks"]["planned_text_complete"])
+            self.assertEqual(result["utterance"]["expected"], "迟到")
             self.assertTrue(result["text_evidence"]["new_text_after_cleanup"])
             self.assertEqual(result["text_evidence"]["commits"]["after_boundary"][0]["text"], "前文迟到")
             self.assertEqual([call.args[1] for call in rpc.call_args_list], ["snapshot", "snapshot", "quit"])
