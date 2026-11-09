@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"mimac.local/mimac/internal/audiosession"
@@ -232,42 +233,45 @@ func TestLiveAudioConnectionCloseFailureCanBeRetried(t *testing.T) {
 }
 
 func TestLiveAudioConnectionConcurrentCloseWaitHonorsContext(t *testing.T) {
-	route := newLiveAudioConnectionTestRoute()
-	closeEntered := make(chan struct{})
-	closeRelease := make(chan struct{})
-	route.closeEnter = closeEntered
-	route.closeBlock = closeRelease
-	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
-		return route, nil
-	})
-	waitLiveAudioDone(t, connection)
+	// Virtual time separates the close deadline from host scheduler stalls.
+	synctest.Test(t, func(t *testing.T) {
+		route := newLiveAudioConnectionTestRoute()
+		closeEntered := make(chan struct{})
+		closeRelease := make(chan struct{})
+		route.closeEnter = closeEntered
+		route.closeBlock = closeRelease
+		connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+			return route, nil
+		})
+		waitLiveAudioDone(t, connection)
 
-	firstClose := make(chan error, 1)
-	go func() { firstClose <- connection.Close(context.Background()) }()
-	<-closeEntered
+		firstClose := make(chan error, 1)
+		go func() { firstClose <- connection.Close(context.Background()) }()
+		<-closeEntered
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	secondClose := make(chan error, 1)
-	go func() { secondClose <- connection.Close(ctx) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		secondClose := make(chan error, 1)
+		go func() { secondClose <- connection.Close(ctx) }()
 
-	var secondErr error
-	select {
-	case secondErr = <-secondClose:
-	case <-time.After(200 * time.Millisecond):
+		var secondErr error
+		select {
+		case secondErr = <-secondClose:
+		case <-time.After(200 * time.Millisecond):
+			close(closeRelease)
+			<-firstClose
+			<-secondClose
+			t.Fatal("second Close(ctx) stayed blocked on serialization past its deadline")
+		}
 		close(closeRelease)
-		<-firstClose
-		<-secondClose
-		t.Fatal("second Close(ctx) stayed blocked on serialization past its deadline")
-	}
-	close(closeRelease)
-	if err := <-firstClose; err != nil {
-		t.Fatalf("first Close() error = %v", err)
-	}
-	if !errors.Is(secondErr, context.DeadlineExceeded) || !errors.Is(secondErr, audiosession.ErrCleanupPending) {
-		t.Fatalf("second Close(ctx) error = %v, want deadline and cleanup-pending errors", secondErr)
-	}
-	waitLiveAudioClosed(t, connection)
+		if err := <-firstClose; err != nil {
+			t.Fatalf("first Close() error = %v", err)
+		}
+		if !errors.Is(secondErr, context.DeadlineExceeded) || !errors.Is(secondErr, audiosession.ErrCleanupPending) {
+			t.Fatalf("second Close(ctx) error = %v, want deadline and cleanup-pending errors", secondErr)
+		}
+		waitLiveAudioClosed(t, connection)
+	})
 }
 
 func TestLiveAudioConnectionRetainsRouteWhenStartFails(t *testing.T) {
