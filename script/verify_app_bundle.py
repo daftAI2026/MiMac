@@ -7,6 +7,8 @@ from pathlib import Path
 import plistlib
 import subprocess
 
+from package_audio_component import verify_product_package
+
 
 REQUIRED = {
     "libMiMacSettings.dylib": "MiMacPreferencesCreate",
@@ -18,7 +20,25 @@ REQUIRED = {
 SIRI = "libSiriGlassBridge.dylib"
 
 
-def verify(bundle, arch, require_siri=False, development=False):
+def verify_audio_installer(resources, arch, required=False):
+    resources = Path(resources)
+    installer = resources / "MiMacAudio.pkg"
+    if not installer.is_file():
+        if required:
+            raise ValueError("missing required MiMac audio installer")
+        return None
+    digest = hashlib.sha256(installer.read_bytes()).hexdigest()
+    expected = (resources / "MiMacAudio.pkg.sha256").read_text(encoding="ascii").split()
+    if expected != [digest, installer.name]:
+        raise ValueError("optional audio installer checksum mismatch")
+    if not required:
+        return {"sha256": digest}
+    receipt = resources / "MiMacAudio.pkg.json"
+    verified = verify_product_package(installer, receipt, arch)
+    return {**verified, "sha256": digest}
+
+
+def verify(bundle, arch, require_siri=False, development=False, require_audio_installer=False):
     contents = bundle / "Contents"
     with (contents / "Info.plist").open("rb") as file:
         info = plistlib.load(file)
@@ -49,8 +69,16 @@ def verify(bundle, arch, require_siri=False, development=False):
             raise ValueError("missing typed frame export in " + name)
         if not any(line.split()[-1:] == ["_" + symbol] for line in exports.splitlines()):
             raise ValueError(f"missing export {symbol} in {name}")
+    audio_installer = verify_audio_installer(resources, arch, require_audio_installer)
+    if audio_installer is not None:
+        installer = resources / "MiMacAudio.pkg"
+        hashes[str(installer.relative_to(contents))] = audio_installer["sha256"]
+        hashes[str((resources / "MiMacAudio.pkg.sha256").relative_to(contents))] = hashlib.sha256((resources / "MiMacAudio.pkg.sha256").read_bytes()).hexdigest()
+        if require_audio_installer:
+            receipt = resources / "MiMacAudio.pkg.json"
+            hashes[str(receipt.relative_to(contents))] = hashlib.sha256(receipt.read_bytes()).hexdigest()
     subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(bundle)], check=True)
-    return {"bundle": str(bundle.resolve()), "arch": arch, "native_libraries": len(libraries), "sha256": hashes}
+    return {"bundle": str(bundle.resolve()), "arch": arch, "native_libraries": len(libraries), "sha256": hashes, "audio_installer": audio_installer}
 
 
 def main():
@@ -59,9 +87,10 @@ def main():
     parser.add_argument("--arch", choices=["arm64", "amd64"], required=True)
     parser.add_argument("--require-siri", action="store_true")
     parser.add_argument("--development", action="store_true")
+    parser.add_argument("--require-audio-installer", action="store_true")
     args = parser.parse_args()
     try:
-        result = verify(args.bundle, args.arch, args.require_siri, args.development)
+        result = verify(args.bundle, args.arch, args.require_siri, args.development, args.require_audio_installer)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"MiMac bundle verification failed: {error}\n")
     print(json.dumps(result, indent=2))

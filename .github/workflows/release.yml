@@ -52,6 +52,8 @@ jobs:
         run: |
           python3 script/release_version_test.py
           python3 script/test_verify_release.py
+          python3 script/test_build_audio_compat.py
+          python3 script/test_package_audio_component.py
           python3 script/test_build_voice_overlay.py
           python3 script/test_verify_app_bundle_frame.py
           python3 script/test_inspect_voice_report.py
@@ -89,6 +91,12 @@ jobs:
 
       - name: Select core-only Siri component profile
         run: script/build_voice_overlay.sh core-only
+
+      - name: Build system audio installers for both architectures
+        run: |
+          set -euo pipefail
+          python3 script/package_audio_component.py --arch arm64
+          python3 script/package_audio_component.py --arch amd64
 
       - name: Build macOS arm64 app
         run: go tool mygo build -platform darwin/arm64 -skip-dmg -skip-notarize

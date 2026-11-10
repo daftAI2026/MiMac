@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sys
 import subprocess
 import tempfile
 import time
@@ -97,6 +98,7 @@ def main():
     stop_development(executable)
     for entry in ['build_native_settings.sh', 'build_voice_overlay.sh']:
         subprocess.run([str(root / 'script' / entry)], cwd=root, env=env, check=True)
+    subprocess.run([sys.executable, str(root / 'script/package_audio_component.py')], cwd=root, env=env, check=True)
     config = development_config(json.loads((root / 'mygo.json').read_text()), root)
     (root / '.mygo').mkdir(exist_ok=True)
     # A tiny build configuration under the same module resolves Go's source
@@ -109,7 +111,7 @@ def main():
         if identity := os.environ.get('MIMAC_SIGN_IDENTITY'):
             command += ['-sign', identity]
         subprocess.run(command + [str(staging)], cwd=root, env=env, check=True)
-    receipt = verify(bundle, arch, development=True)
+    receipt = verify(bundle, arch, development=True, require_audio_installer=True)
     (bundle.parent / 'bundle-verification.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt), flush=True)
     if args.mode == 'build':
@@ -118,7 +120,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix='mimac-dev-host-') as directory:
             report = Path(directory) / 'host.json'
             subprocess.run(['/usr/bin/open', '-g', '-n', '-W', str(bundle), '--args',
-                            '--smoke-duration', '1s', '--host-report', str(report)], check=True, timeout=15)
+                            '--show-settings=false', '--smoke-duration', '1s', '--host-report', str(report)], check=True, timeout=15)
             result = json.loads(report.read_text())
             assert result['host_ready'] and result['tray_created'] and result['normal_exit'], result
             assert result['app_name'] == 'MiMac Dev' and result['isolated_development'], result

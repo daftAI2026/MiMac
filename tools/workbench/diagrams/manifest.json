@@ -333,5 +333,22 @@
       "tools/workbench/build.mjs",
       "tools/workbench/app.js"
     ]
+  },
+  {
+    "id": "first-use-setup",
+    "title": "首次使用与设备连接",
+    "summary": "首次空配置显示设备页。连接指引由设备插件提供，系统蓝牙界面管理首次配对与重连；HID 缺失不推断为未配对。插件启停与当前语音工具选择分开，两处选择复用同一状态。权限恢复与连接检查不提前收音，不新增麦克风选择。",
+    "sourcePaths": [
+      "cmd/mimac/startup.go",
+      "cmd/mimac/setup.go",
+      "cmd/mimac/settings.go",
+      "cmd/mimac/settings_mapping.go",
+      "cmd/mimac/settings_voice.go",
+      "cmd/mimac/audio_setup.go",
+      "cmd/mimac/live_audio.go",
+      "internal/devices/profile.go",
+      "internal/adapters/xiaomi/profile.go",
+      "cmd/mimac/device.go"
+    ]
   }
 ]

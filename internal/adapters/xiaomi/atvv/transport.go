@@ -440,7 +440,7 @@ func (t *Transport) handleNativeEvent(event NativeEvent) {
 		}
 		t.signalReadyLocked()
 	case NativeEventFailure:
-		err := fmt.Errorf("atvv transport: native failure status=%d", event.Status)
+		err := nativeFailure("transport", event.Status)
 		if t.fault == nil {
 			t.fault = err
 		}

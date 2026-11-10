@@ -62,12 +62,13 @@ PY
 "$ROOT_DIR/script/build_native_settings.sh"
 "$ROOT_DIR/script/build_voice_overlay.sh"
 
+python3 "$ROOT_DIR/script/package_audio_component.py"
 BUILD_ARGS=(-platform "darwin/$ARCH" -skip-dmg -skip-notarize)
 if [[ -n "${MIMAC_SIGN_IDENTITY:-}" ]]; then
   BUILD_ARGS+=(-sign "$MIMAC_SIGN_IDENTITY")
 fi
 "$GO_BIN" tool mygo build "${BUILD_ARGS[@]}"
-VERIFY_ARGS=("$APP_BUNDLE" --arch "$ARCH")
+VERIFY_ARGS=("$APP_BUNDLE" --arch "$ARCH" --require-audio-installer)
 if [[ -f "$ROOT_DIR/resources/darwin-$ARCH/libSiriGlassBridge.dylib" ]]; then
   VERIFY_ARGS+=(--require-siri)
 fi

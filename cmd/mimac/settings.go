@@ -30,6 +30,7 @@ type settingsState struct {
 	outputNeedsRestart    bool
 
 	deviceReadBusy        bool
+	deviceNeedsConnection bool
 	deviceReadSequence    uint64
 	deviceStatus          string
 	deviceDetail          string
@@ -130,6 +131,21 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 		})
 		sectionLine(c, a)
 		settingsValueRow(c, &a.theme, a.fonts.body, "状态", s.remoteLabel())
+		sectionLine(c, a)
+		connection := s.deviceStatus
+		if connection == "" {
+			connection = "尚未检测"
+		}
+		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+			ui.Text(c, connection).FontSize(a.fonts.body).TextColor(a.theme.TextMuted).Grow(1).MinWidth(0).Role(ui.RoleStatus)
+			if appButton(c, a, "蓝牙设置", false).Clicked() {
+				s.performSetupAction(setupBluetoothConnection)
+			}
+			disabled := s.deviceReadBusy || s.monitor != nil
+			if appButton(c, a, "重新检测", disabled).Clicked() && !disabled {
+				s.detectDevice()
+			}
+		})
 		if s.deviceLastPress != "" {
 			sectionLine(c, a)
 			settingsValueRow(c, &a.theme, a.fonts.body, "最近按键", s.deviceLastPress)
@@ -137,14 +153,44 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 		if s.deviceDetail != "" {
 			ui.Text(c, s.deviceDetail).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Padding(spaceSM, 0)
 		}
-		if s.deviceNeedsPermission {
+		if action := s.nextSetupAction(); action != setupNone {
 			ui.Row(c).Padding(spaceSM, 0).Children(func() {
-				if appButton(c, a, "打开系统设置", false).Clicked() {
-					s.openInputPermissionSettings()
+				if appButton(c, a, action.label(), false).Clicked() {
+					s.performSetupAction(action)
+				}
+				if action == setupBluetoothPermission || action == setupBluetoothConnection {
+					_, _, blocked := s.audioRetryBlocked()
+					if appButton(c, a, "重新连接音频", blocked).Clicked() && !blocked {
+						s.performSetupAction(setupRetryAudio)
+					}
 				}
 			})
 		}
+		if s.deviceNeedsPermission {
+			ui.Text(c, "授权后回到这里，再次启用遥控器。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+		}
 	})
+	if s.deviceNeedsConnection {
+		guide := s.activeProfile().ConnectionGuide
+		if guide.FirstPairing == "" {
+			guide.FirstPairing = "按照设备说明进入配对模式，然后在蓝牙设置中选择设备连接。"
+		}
+		if guide.Reconnect == "" {
+			guide.Reconnect = "唤醒设备，然后在蓝牙设置中连接。"
+		}
+		settingsGroup(c, a, func() {
+			ui.Column(c).FillWidth().MinWidth(0).Gap(spaceSM).Children(func() {
+				ui.Text(c, "首次连接").FontSize(a.fonts.body).FontWeight(600)
+				ui.Text(c, guide.FirstPairing).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
+				sectionLine(c, a)
+				ui.Text(c, "已经配对").FontSize(a.fonts.body).FontWeight(600)
+				ui.Text(c, guide.Reconnect).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
+			})
+		})
+	}
+	if s.remoteTone() == toneActive && s.nextSetupAction() == setupNone {
+		ui.Text(c, "回到要输入的位置，按住语音键说话，松开完成。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+	}
 }
 
 func (s *shell) detectDevice() {
@@ -166,6 +212,7 @@ func (s *shell) detectDevice() {
 			s.deviceReadBusy = false
 			s.deviceDetail = ""
 			s.deviceTone = toneNeutral
+			s.deviceNeedsConnection = err == nil && result.Count == 0
 			switch {
 			case err != nil:
 				s.deviceStatus = "检测失败"
@@ -176,7 +223,7 @@ func (s *shell) detectDevice() {
 				s.deviceStatus = fmt.Sprintf("发现 %d 个匹配项", result.Count)
 				s.deviceTone = toneWarning
 			default:
-				s.deviceStatus = "已连接，未监听"
+				s.deviceStatus = "已连接"
 				if !result.Supported {
 					s.deviceStatus = "按键格式暂不支持"
 					s.deviceTone = toneWarning

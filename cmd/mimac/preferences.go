@@ -14,11 +14,12 @@ import (
 const preferencesVersion = 1
 
 type hostPreferences struct {
-	Version          int              `json:"version"`
-	ShowInDock       bool             `json:"show_in_dock"`
-	ShowVoiceOverlay bool             `json:"show_voice_overlay"`
-	Appearance       mygo.ThemeSource `json:"appearance"`
-	TextSize         int              `json:"text_size,omitempty"`
+	Version               int              `json:"version"`
+	ShowInDock            bool             `json:"show_in_dock"`
+	ShowVoiceOverlay      bool             `json:"show_voice_overlay"`
+	Appearance            mygo.ThemeSource `json:"appearance"`
+	TextSize              int              `json:"text_size,omitempty"`
+	FirstRunSettingsShown bool             `json:"first_run_settings_shown"`
 }
 
 type preferencesState struct {
@@ -32,11 +33,12 @@ type preferencesState struct {
 }
 
 type preferencesDocument struct {
-	Version          int               `json:"version"`
-	ShowInDock       *bool             `json:"show_in_dock"`
-	ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
-	Appearance       *mygo.ThemeSource `json:"appearance"`
-	TextSize         int               `json:"text_size,omitempty"`
+	Version               int               `json:"version"`
+	ShowInDock            *bool             `json:"show_in_dock"`
+	ShowVoiceOverlay      *bool             `json:"show_voice_overlay"`
+	Appearance            *mygo.ThemeSource `json:"appearance"`
+	TextSize              int               `json:"text_size,omitempty"`
+	FirstRunSettingsShown *bool             `json:"first_run_settings_shown,omitempty"`
 }
 
 func defaultHostPreferences() hostPreferences {
@@ -93,10 +95,16 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	if doc.ShowVoiceOverlay != nil {
 		showVoiceOverlay = *doc.ShowVoiceOverlay
 	}
+	// Existing preference files predate the first-run marker, so treat them as
+	// already in use. A missing preference file still uses the false default.
+	firstRunSettingsShown := true
+	if doc.FirstRunSettingsShown != nil {
+		firstRunSettingsShown = *doc.FirstRunSettingsShown
+	}
 	if !validAppearance(appearance) || !validTextSize(doc.TextSize) {
 		return hostPreferences{}, errors.New("unsupported appearance preference")
 	}
-	return hostPreferences{Version: preferencesVersion, ShowInDock: *doc.ShowInDock, ShowVoiceOverlay: showVoiceOverlay, Appearance: appearance, TextSize: doc.TextSize}, nil
+	return hostPreferences{Version: preferencesVersion, ShowInDock: *doc.ShowInDock, ShowVoiceOverlay: showVoiceOverlay, Appearance: appearance, TextSize: doc.TextSize, FirstRunSettingsShown: firstRunSettingsShown}, nil
 }
 
 func saveHostPreferences(path string, value hostPreferences) error {

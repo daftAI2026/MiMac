@@ -93,6 +93,7 @@ func (s *shell) selectDeviceProfile(id string) error {
 	s.selectedButton, s.revealButton = "", ""
 	s.deviceStatus, s.deviceLastPress, s.deviceDetail = "未启用", "", ""
 	s.deviceNeedsPermission = false
+	s.deviceNeedsConnection = false
 	s.deviceReadSequence++ // Ignore an in-flight discovery belonging to the old profile.
 	s.deviceReadBusy = false
 	s.outputNeedsPermission, s.outputStatus = false, ""

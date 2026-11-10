@@ -148,7 +148,7 @@ func TestVoicePresentationFollowsCoreSessionAndRetiresOldResults(t *testing.T) {
 	s.remoteState.stopPending = false
 	s.liveAudio.backend = compatibilityAudioBackend
 	s.report.AudioError = "injected route failure"
-	if label, tone := s.remoteStatus(); label != "音频连接失败，请重新启用遥控器" || tone != toneError {
+	if label, tone := s.remoteStatus(); label != "音频连接失败，请重新连接音频" || tone != toneError {
 		t.Fatal("session presentation hid an audio failure")
 	}
 	s.report.AudioError = ""

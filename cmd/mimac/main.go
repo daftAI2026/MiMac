@@ -139,7 +139,7 @@ func (s *shell) showSettings() {
 	})
 }
 
-func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, capturePath string) {
+func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.Duration, capturePath string) {
 	systemTextSize = typography.SystemSize()
 	if err := s.setupPlugins(); err != nil {
 		s.report.Error = fmt.Sprintf("plugins: %v", err)
@@ -156,6 +156,7 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 	s.watchPower()
 	s.loadMappings()
 	s.loadVoiceTools()
+	s.refreshAudioComponent()
 	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: mygo.App.Name()})
 	if err != nil {
 		s.report.Error = err.Error()
@@ -165,21 +166,34 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 	s.tray = tray
 	s.report.Ready, s.report.TrayCreated = true, true
 	s.updateTrayMenu()
-	if show {
-		s.showSettings()
+	firstRunCandidate := false
+	if !showSpecified {
+		firstRunCandidate = s.shouldPresentFirstRunSettings()
 	}
+	settingsPlan := planInitialSettings(showSpecified, show, firstRunCandidate)
+	if settingsPlan.open {
+		if page := firstRunSettingsPage(settingsPlan); page != "" {
+			s.page = page
+		}
+		s.showSettings()
+		if settingsPlan.firstRun && s.window != nil {
+			// A write failure must not prevent the first-run window from being used.
+			_ = s.markFirstRunSettingsShown()
+		}
+	}
+	settingsShown := s.window != nil
 	if capturePath != "" {
 		s.captureSettings(ctx, capturePath)
 	}
 	if smoke > 0 {
 		go func() {
 			first := smoke
-			if show {
+			if settingsShown {
 				first = smoke / 2
 			}
 			timer := time.NewTimer(first)
 			defer timer.Stop()
-			if show {
+			if settingsShown {
 				select {
 				case <-ctx.Done():
 					return
@@ -210,6 +224,7 @@ func main() {
 	initializeHostIdentity()
 	deviceAccess := flag.Bool("device-access", false, "development only: explicit serial device testing; quit daily MiMac first")
 	show := flag.Bool("show-settings", false, "open the settings window on launch")
+	showSettingsSpecified := false
 	smoke := flag.Duration("smoke-duration", 0, "quit after a bounded host smoke run (1s to 30s)")
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
 	reportPath := flag.String("host-report", "", "write host lifecycle metadata to this explicit path")
@@ -222,6 +237,8 @@ func main() {
 	audioBackendProvided, setAudioBackendProvided := false, false
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "show-settings":
+			showSettingsSpecified = true
 		case "audio-backend":
 			audioBackendProvided = true
 		case "set-audio-backend":
@@ -347,6 +364,7 @@ func main() {
 			if s.window != nil {
 				s.window.Focus()
 			}
+			s.refreshSetupAfterActivation()
 		}
 	})
 	// A settings window is disposable; closing it must leave the menu bar host running.
@@ -385,7 +403,7 @@ func main() {
 			s.tray.Destroy()
 		}
 	})
-	mygo.App.WhenReady(func() { s.ready(ctx, *show, *smoke, *capturePath) })
+	mygo.App.WhenReady(func() { s.ready(ctx, *show, showSettingsSpecified, *smoke, *capturePath) })
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
 	}
