@@ -426,13 +426,8 @@ func (s *shell) loadVoiceTools() {
 		s.toolLoadFailed, s.toolError = true, "插件设置读取失败，原文件已保留"
 		return
 	}
-	s.currentVoiceTool = s.toolPreferences.Current
-	for _, tool := range s.tools {
-		if slices.Contains(s.toolPreferences.Enabled, tool.id) {
-			if err := s.plugins.Enable(tool.id); err != nil {
-				s.toolError = "插件启动失败"
-			}
-		}
+	if startupFailed := s.restoreVoiceTools(s.toolPreferences, s.plugins.Enable); startupFailed {
+		s.toolError = "插件启动失败"
 	}
 }
 

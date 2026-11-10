@@ -43,7 +43,7 @@
   {
     "id": "plugin-lifecycle",
     "title": "插件依赖与生命周期",
-    "summary": "MyGo 串行调用固定 pluginrt 清单。Enable 按依赖序启动，Close 按逆依赖序停止；启动失败回滚，清理失败时保留故障模块及依赖。pluginrt 不创建事件循环或轮询 goroutine。 插件页复用MyGo Switch调用原启停入口，恢复操作保留按钮。正式版只显示适配可用插件，开发版显示全部；纯呈现筛选不改变注册、启用项或当前工具。",
+    "summary": "MyGo 串行调用固定 pluginrt 清单。Enable 按依赖序启动，Close 按逆依赖序停止；启动失败回滚，清理失败时保留故障模块及依赖。pluginrt 不创建事件循环或轮询 goroutine。 插件页复用MyGo Switch调用原启停入口，恢复操作保留按钮。正式版只显示适配可用插件，开发版显示全部；不改写注册或已保存配置；正式启动跳过未开放插件及其当前选择，开发版仍可恢复原配置。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
