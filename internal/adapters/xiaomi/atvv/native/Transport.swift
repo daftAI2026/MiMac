@@ -43,6 +43,8 @@ private enum TransportStatus {
     static let stopWriteFailed: Int32 = -18
     static let stopStreamMismatch: Int32 = -19
     static let closeWriteUnconfirmed: Int32 = -20
+    static let bluetoothPermission: Int32 = -21
+    static let bluetoothPoweredOff: Int32 = -22
 }
 
 private final class TransportRegistry: @unchecked Sendable {
@@ -172,8 +174,15 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
             return
         }
         guard central.state == .poweredOn else {
-            if central.state == .poweredOff || central.state == .unauthorized || central.state == .unsupported {
+            switch central.state {
+            case .unauthorized:
+                emit(.failure, status: TransportStatus.bluetoothPermission)
+            case .poweredOff:
+                emit(.failure, status: TransportStatus.bluetoothPoweredOff)
+            case .unsupported:
                 emit(.failure, status: TransportStatus.bluetoothUnavailable)
+            default:
+                break // Unknown/resetting may become ready without intervention.
             }
             return
         }

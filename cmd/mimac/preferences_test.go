@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -60,6 +62,68 @@ func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemWithoutMigrat
 	}
 	if string(after) != string(original) {
 		t.Fatalf("reading legacy preferences performed a migration write: got %q, want %q", after, original)
+	}
+}
+
+func TestMarkFirstRunSettingsShownPersistsWithoutChangingOtherPreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	want := defaultHostPreferences()
+	want.ShowInDock = true
+	want.Appearance = mygo.ThemeDark
+	s := shell{preferencesState: preferencesState{value: want, path: path}}
+	if err := s.markFirstRunSettingsShown(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readHostPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want || s.preferencesState.value != want {
+		t.Fatalf("saved preferences = %+v in-memory=%+v, want %+v", got, s.preferencesState.value, want)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previousStrictSchema struct {
+		Version          int               `json:"version"`
+		ShowInDock       *bool             `json:"show_in_dock"`
+		ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
+		Appearance       *mygo.ThemeSource `json:"appearance"`
+		TextSize         int               `json:"text_size,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&previousStrictSchema); err != nil {
+		t.Fatalf("saved preferences are unreadable by the previous strict v1 schema: %v", err)
+	}
+}
+
+func TestMarkFirstRunSettingsShownWriteFailurePreservesOriginal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("keep me\n")
+	sentinel := filepath.Join(path, "sentinel")
+	if err := os.WriteFile(sentinel, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	want := defaultHostPreferences()
+	s := shell{preferencesState: preferencesState{value: want, path: path}}
+	if err := s.markFirstRunSettingsShown(); err == nil {
+		t.Fatal("markFirstRunSettingsShown succeeded while destination is a directory")
+	}
+	if s.preferencesState.value != want {
+		t.Fatalf("failed marker write changed in-memory preferences: got %+v, want %+v", s.preferencesState.value, want)
+	}
+	after, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("failed marker write changed existing data: got %q, want %q", after, original)
 	}
 }
 

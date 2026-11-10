@@ -100,7 +100,7 @@ def set_build_setting(info: dict, key: str, value: str) -> None:
     info["Settings"].append({"Key": key, "Value": value})
 
 
-def make_bundle(root: Path, include_siri: bool) -> Path:
+def make_bundle(root: Path, include_siri: bool, arch: str = "arm64") -> Path:
     bundle = root / "MiMac.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
@@ -117,6 +117,13 @@ def make_bundle(root: Path, include_siri: bool) -> Path:
         (resources / name).write_bytes(("fixture " + name).encode())
     if include_siri:
         (resources / SIRI).write_bytes(b"fixture Siri bridge")
+    installer = resources / "MiMacAudio.pkg"
+    installer.write_bytes(b"fixture audio installer " + arch.encode())
+    (resources / "MiMacAudio.pkg.sha256").write_text(
+        hashlib.sha256(installer.read_bytes()).hexdigest() + "  MiMacAudio.pkg\n",
+        encoding="ascii",
+    )
+    write_json(resources / "MiMacAudio.pkg.json", {"architecture": arch})
     return bundle
 
 
@@ -134,10 +141,36 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
     def fake_run(command, **kwargs):
         if command[0] not in {"/usr/bin/lipo", "/usr/bin/codesign"}:
             raise AssertionError("unexpected command: " + " ".join(command))
+        if command[0] == "/usr/bin/lipo":
+            expected_native_arch = "x86_64" if arch == "amd64" else "arm64"
+            if "-verify_arch" in command:
+                assert command[-1] == expected_native_arch
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def fake_verify_product_package(package, receipt, expected_arch):
+        if not package.is_file():
+            raise FileNotFoundError(package)
+        metadata = json.loads(receipt.read_text(encoding="utf-8"))
+        if metadata["architecture"] != expected_arch:
+            raise ValueError("audio component architecture does not match the app")
+        return {
+            "sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
+            "architecture": expected_arch,
+            "component_identifier": "dev.mimac.audio.compat",
+            "component_version": "0.1.0",
+            "component_binary_sha256": "a" * 64,
+            "install_path": "/Library/Audio/Plug-Ins/HAL/MiMacAudio.driver",
+            "install_domain": "localSystem",
+            "requires_restart": True,
+            "payload_signature_hash_abi_verified": True,
+            "bundle_abi_test": {"status": "passed", "mode": "native"},
+            "signed_for_distribution": False,
+            "notarized": False,
+        }
 
     with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
          patch("verify_release.current_siri_abi_host", return_value=host), \
+         patch("verify_app_bundle.verify_product_package", side_effect=fake_verify_product_package), \
          patch("verify_release.subprocess.check_output", side_effect=fake_check_output), \
          patch("verify_release.subprocess.run", side_effect=fake_run):
         return verify_release(bundle, arch, Path(bundle.parent), REVISION, RELEASE_DATE, BUILD_NUMBER, profile)
@@ -152,12 +185,12 @@ class VerifyReleaseTests(unittest.TestCase):
         )
         for profile, arch, included, host in cases:
             with self.subTest(profile=profile, arch=arch), tempfile.TemporaryDirectory() as directory:
-                bundle = make_bundle(Path(directory), included)
+                bundle = make_bundle(Path(directory), included, arch)
                 result = verify_fixture(bundle, arch, profile, host)
                 siri_contract = result["component_contract"]["siri_glass"]
                 siri_hash = hashlib.sha256((bundle / "Contents" / "Resources" / SIRI).read_bytes()).hexdigest() if included else None
 
-                self.assertEqual(result["schema_version"], 2)
+                self.assertEqual(result["schema_version"], 3)
                 self.assertEqual(result["component_contract"]["profile"], profile)
                 self.assertEqual(siri_contract["selection"], "required" if included else "excluded")
                 self.assertIs(siri_contract["included"], included)
@@ -166,6 +199,9 @@ class VerifyReleaseTests(unittest.TestCase):
                 self.assertIs(result["optional_components"]["siri_glass"]["included"], included)
                 self.assertEqual(result["identifier"], "dev.mimac.app")
                 self.assertEqual(result["executable"], "MiMac")
+                self.assertEqual(result["audio_installer"]["architecture"], arch)
+                self.assertEqual(result["audio_installer"]["install_domain"], "localSystem")
+                self.assertIs(result["audio_installer"]["requires_restart"], True)
                 self.assertEqual(result["sha256"]["Info.plist"], hashlib.sha256((bundle / "Contents" / "Info.plist").read_bytes()).hexdigest())
                 gate = siri_contract["private_abi_host_gate"]
                 self.assertEqual(gate["required"], SIRI_ABI_HOST_GATE)
@@ -189,6 +225,16 @@ class VerifyReleaseTests(unittest.TestCase):
             unsupported_host = {**SIRI_ABI_HOST_GATE, "build_version": "unsupported-build"}
             with self.assertRaisesRegex(ValueError, "requires host"):
                 verify_fixture(siri_bundle, "arm64", "siri-glass", unsupported_host)
+
+    def test_release_requires_installer_for_target_architecture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = make_bundle(Path(directory), False, "arm64")
+            with self.assertRaisesRegex(ValueError, "does not match the app"):
+                verify_fixture(bundle, "amd64", "core-only")
+
+            (bundle / "Contents" / "Resources" / "MiMacAudio.pkg").unlink()
+            with self.assertRaisesRegex(ValueError, "missing required MiMac audio installer"):
+                verify_fixture(bundle, "arm64", "core-only")
 
     def test_planned_version_edit_is_the_only_allowed_source_change(self):
         with tempfile.TemporaryDirectory() as directory:

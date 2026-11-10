@@ -46,6 +46,9 @@ func (s *shell) navigationChanged() {
 	if s.page == pageGeneral {
 		s.preferencesState.loginLoaded = false
 	}
+	if s.page == pageDevice && s.monitor == nil && !s.deviceReadBusy {
+		s.detectDevice()
+	}
 	s.mappingError = ""
 	s.endShortcutRecording()
 	s.syncNavigation()

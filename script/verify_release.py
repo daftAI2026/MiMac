@@ -13,6 +13,7 @@ import re
 import subprocess
 
 from release_version import apply_versions, validate_build_number, validate_date
+from package_audio_component import PackageError
 from verify_app_bundle import SIRI, verify
 
 
@@ -162,7 +163,10 @@ def verify_release(
     executable = contents / "MacOS" / executable_name
     build_info = json.loads(subprocess.check_output(["go", "version", "-m", "-json", str(executable)], text=True))
     binary = verify_build_info(build_info, arch, revision)
-    native = verify(bundle, arch, require_siri)
+    native = verify(bundle, arch, require_siri, require_audio_installer=True)
+    audio_installer = native.get("audio_installer")
+    if audio_installer is None or audio_installer.get("architecture") != arch:
+        raise ValueError("release app is missing a matching architecture audio installer")
     hashes = dict(native["sha256"])
     hashes["Info.plist"] = hashlib.sha256((contents / "Info.plist").read_bytes()).hexdigest()
     siri_library_sha256 = native["sha256"].get("Resources/" + SIRI)
@@ -174,7 +178,7 @@ def verify_release(
     component_contract["siri_glass"]["included"] = siri_included
     component_contract["siri_glass"]["sha256"] = siri_library_sha256
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "bundle": bundle.name,
         "identifier": info["CFBundleIdentifier"],
         "executable": executable_name,
@@ -189,6 +193,7 @@ def verify_release(
         "optional_components": {
             "siri_glass": {"included": siri_included},
         },
+        "audio_installer": audio_installer,
         "distribution": "preview; not a Developer ID or notarization attestation",
     }
 
@@ -219,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         with args.output.open("x", encoding="utf-8") as stream:
             json.dump(manifest, stream, indent=2)
             stream.write("\n")
-    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, PackageError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"MiMac release verification failed: {error}\n")
     return 0
 

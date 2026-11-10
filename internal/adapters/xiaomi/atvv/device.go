@@ -587,7 +587,7 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 		}
 		return nil
 	case NativeEventFailure:
-		return d.recordFaultLocked(fmt.Errorf("atvv device: native failure status=%d", event.Status))
+		return d.recordFaultLocked(nativeFailure("device", event.Status))
 	case NativeEventStopWriteAck, NativeEventCloseDone:
 		return nil
 	default:

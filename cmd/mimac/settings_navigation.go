@@ -57,9 +57,9 @@ var sidebarEntries = []struct {
 	page   settingsPage
 	symbol string
 }{
-	{pageDevice, "externaldrive"},
 	{pageMappings, "point.topleft.down.curvedto.point.bottomright.up"},
 	{pageVoice, "mic"},
+	{pageDevice, "externaldrive"},
 	{pagePlugins, "puzzlepiece.extension"},
 	{pageGeneral, "gearshape"},
 	{pageAbout, "info.circle"},

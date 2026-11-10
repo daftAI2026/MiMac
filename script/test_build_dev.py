@@ -27,7 +27,7 @@ class DevelopmentBuildIsolation(unittest.TestCase):
             with self.subTest(count=count), patch.object(build_dev.subprocess, "check_output", return_value=count):
                 with self.assertRaisesRegex(RuntimeError, "Quit daily MiMac"):
                     build_dev.require_device_handoff()
-        with patch.object(build_dev.subprocess, "check_output", return_value="0"):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build_dev.Path, "home", return_value=Path(directory)), patch.object(build_dev.subprocess, "check_output", return_value="0"):
             build_dev.require_device_handoff()
 
     def test_unreleased_daily_mapping_refuses_device_handoff(self):

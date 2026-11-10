@@ -1,0 +1,33 @@
+flowchart TD
+    launch["普通启动"] --> known{"已有配置？"}
+    known -->|是| tray["保留菜单栏启动行为"]
+    known -->|否| device["显示设备页，成功后保存原格式默认偏好"]
+    explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
+    device --> detected{"当前 HID 已发现可用设备？"}
+    detected -->|是| connected["显示已连接，无需再次配对"]
+    connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
+    mappings --> enable
+    detected -->|否或断连| help["显示设备插件提供的连接指引"]
+    help --> pair["打开系统蓝牙设置"]
+    pair --> saved{"系统设置中已有配对记录？"}
+    saved -->|无| pairing["遥控器进入配对模式，选择对应设备连接"]
+    saved -->|有| reconnect["唤醒遥控器，必要时点连接"]
+    pairing --> recheck["回到 MiMac 重新检测"]
+    reconnect --> recheck
+    recheck --> detected
+    evidence["HID / ATVV 未发现不等于未配对；配对记录由系统蓝牙界面确认"] -.-> saved
+    enable["在按键映射或插件页启用遥控器"]
+    enable --> grants["按能力申请输入监控 / 辅助功能 / 蓝牙"]
+    grants --> returnApp["返回后只复核已请求权限，不开始收音"]
+    plugins["插件页：启用 / 停用适配器"] --> discovery["自动定位应用与配置"]
+    discovery --> available["已启用工具出现在语音工具页和映射选择中"]
+    available --> choose["用户在语音工具页或按键映射中选择工具"]
+    choose --> current["共用唯一 Current 和既有选择入口"]
+    current --> resolve["适配器提供动作；桥接模块准备现有音频路径"]
+    resolve --> ready{"按键、动作与所需音频均就绪？"}
+    enable --> ready
+    ready -->|是| action["回到输入位置，按住说话，松开完成"]
+    ready -->|否| status["显示实际缺项，不提前触发快捷键或开麦"]
+    separate["启用插件不等于选为当前工具；语音页不新增麦克风选择"] -.-> current
+    failures["权限 / 蓝牙关闭 / 未连接按实际原因区分"] --> next["状态只读，设备页提供对应恢复动作"]
+    navigation["侧栏：按键映射 → 语音工具 → 设备 → 插件 → 通用 → 关于"] -.-> device

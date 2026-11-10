@@ -27,11 +27,14 @@ type audioRouteConfig struct {
 type audioRouteFactory func(context.Context, audioRouteConfig) (liveAudioRoute, error)
 
 type liveAudioState struct {
-	backend         string
-	connection      *liveAudioConnection
-	toolID, appPath string
-	generation      uint64
-	retiring        bool
+	backend            string
+	connection         *liveAudioConnection
+	toolID, appPath    string
+	generation         uint64
+	retiring           bool
+	audioFailure       error
+	componentStatus    audioComponentAvailability
+	componentInspector func() (audioComponentInspector, error)
 	// Tests substitute native construction without opening hardware.
 	factory func(context.Context, uint64, string) (liveAudioRoute, error)
 }
@@ -67,7 +70,8 @@ func (s *shell) refreshLiveAudio() {
 	}
 	tool := s.desiredLiveAudioTool()
 	if connection := s.liveAudio.connection; connection != nil {
-		if tool == nil || tool.id != s.liveAudio.toolID || tool.snapshot.AppPath != s.liveAudio.appPath || s.coordinator.core.Snapshot().Generation != s.liveAudio.generation {
+		if tool == nil || tool.id != s.liveAudio.toolID || tool.snapshot.AppPath != s.liveAudio.appPath ||
+			s.coordinator.core.Snapshot().Generation != s.liveAudio.generation {
 			s.retireLiveAudio()
 		}
 		return
@@ -82,11 +86,14 @@ func (s *shell) refreshLiveAudio() {
 		resourcesPath, err := mygo.App.Path(mygo.PathResources)
 		if err != nil {
 			s.report.AudioError = err.Error()
+			s.liveAudio.audioFailure = err
 			return
 		}
 		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator)
 		if factory == nil {
-			s.report.AudioError = "selected voice tool has no audio route factory"
+			err := errors.New("selected voice tool has no audio route factory")
+			s.report.AudioError = err.Error()
+			s.liveAudio.audioFailure = err
 			return
 		}
 	}
@@ -105,6 +112,7 @@ func (s *shell) refreshLiveAudio() {
 		return factory(ctx, generation, appPath)
 	})
 	s.liveAudio.connection, s.liveAudio.toolID, s.liveAudio.appPath, s.liveAudio.generation = connection, tool.id, appPath, generation
+	s.liveAudio.audioFailure = nil
 	s.report.AudioError = ""
 	s.audioResources = connection.Prepare
 	s.audioResourcesReady = func() bool {
@@ -121,6 +129,7 @@ func (s *shell) refreshLiveAudio() {
 		s.audioResourcesBeforeStart = nil
 		s.audioResourcesDeliver = nil
 		s.report.AudioError = err.Error()
+		s.liveAudio.audioFailure = err
 		s.blockUnpreparedLiveAudio()
 		go func() { _ = connection.Close(context.Background()) }()
 		return
@@ -139,6 +148,13 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 			ready, err := connection.Ready(), connection.Err()
 			if err != nil {
 				s.report.AudioError = err.Error()
+				s.liveAudio.audioFailure = err
+				if errors.Is(err, errCompatRouteDeviceUID) {
+					s.liveAudio.componentStatus = audioComponentMissing
+				}
+			} else {
+				s.liveAudio.audioFailure = nil
+				s.report.AudioError = ""
 			}
 			log.Printf("audio route: ready=%t error=%v", ready, err)
 			s.invalidateDeviceView()
@@ -176,6 +192,7 @@ func (s *shell) retireLiveAudio() {
 		if err = errors.Join(stepErr, err); err != nil {
 			s.report.AudioError = err.Error()
 			s.report.AudioCleanupFailed = true
+			s.liveAudio.audioFailure = err
 			s.invalidateDeviceView()
 			return
 		}
@@ -186,6 +203,7 @@ func (s *shell) retireLiveAudio() {
 		}
 		if err != nil {
 			s.report.AudioError = err.Error()
+			s.liveAudio.audioFailure = err
 			s.invalidateDeviceView()
 			return
 		}
@@ -202,8 +220,17 @@ func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, b
 	if s.liveAudio.retiring {
 		return "正在切换语音工具", toneNeutral, true
 	}
+	if s.currentVoiceTool != appleSpeechToolID && s.liveAudio.backend == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
+		return "没有找到遥控器音频组件", toneError, true
+	}
+	if label, ok := liveAudioFailureStatus(s.liveAudio.audioFailure); ok {
+		return label, toneError, true
+	}
+	if s.liveAudio.audioFailure != nil {
+		return "音频连接失败，请重新连接音频", toneError, true
+	}
 	if s.report.AudioError != "" {
-		return "音频连接失败，请重新启用遥控器", toneError, true
+		return "音频连接失败，请重新连接音频", toneError, true
 	}
 	if s.liveAudio.connection == nil {
 		if s.selectedAudioRouteTool() == nil {
@@ -212,12 +239,30 @@ func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, b
 		return "正在准备音频", toneNeutral, true
 	}
 	if err := s.liveAudio.connection.Err(); err != nil {
-		return "音频连接失败，请重新启用遥控器", toneError, true
+		if label, ok := liveAudioFailureStatus(err); ok {
+			return label, toneError, true
+		}
+		return "音频连接失败，请重新连接音频", toneError, true
 	}
 	if !s.liveAudio.connection.Ready() && !snapshot.HasSession {
 		return "正在准备音频", toneNeutral, true
 	}
 	return "", toneNeutral, false
+}
+
+func liveAudioFailureStatus(err error) (string, bool) {
+	switch {
+	case errors.Is(err, atvv.ErrBluetoothPermission):
+		return "请允许蓝牙连接", true
+	case errors.Is(err, atvv.ErrBluetoothPoweredOff):
+		return "请打开蓝牙", true
+	case errors.Is(err, atvv.ErrRemoteNotConnected):
+		return "请连接遥控器", true
+	case errors.Is(err, errCompatRouteDeviceUID):
+		return "没有找到遥控器音频组件", true
+	default:
+		return "", false
+	}
 }
 
 func (s *shell) blockUnpreparedLiveAudio() {

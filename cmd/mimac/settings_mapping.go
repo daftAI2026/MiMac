@@ -298,7 +298,7 @@ func (s *shell) mappingMenu(id string) *mygo.Menu {
 }
 
 func (s *shell) pluginSettings(c *ui.Context, a appearance) {
-	pluginRow := func(name, status, action string, disabled bool, tool *voiceTool, run func()) {
+	pluginRow := func(name, status string, tool *voiceTool, control func()) {
 		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Gap(spaceLG).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(spaceXS).Children(func() {
 				ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
@@ -309,21 +309,15 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 				})
 				ui.Text(c, status).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 			})
-			if action != "" {
-				button := appButton(c, a, action, disabled).Label(action + "：" + name)
-				if button.Clicked() && run != nil {
-					run()
-					c.Invalidate()
-				}
-			}
+			control()
 		})
 	}
 
-	pluginCard := func(name, status, action string, disabled bool, tool *voiceTool, run func()) func() {
+	pluginCard := func(name, status string, tool *voiceTool, control func()) func() {
 		return func() {
 			settingsGroup(c, a, func() {
 				ui.Column(c).FillWidth().MinWidth(0).Padding(settingsRowInset, 0).Children(func() {
-					pluginRow(name, status, action, disabled, tool, run)
+					pluginRow(name, status, tool, control)
 				})
 			}).Role(ui.RoleGroup).Label(name + "插件")
 		}
@@ -344,12 +338,29 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 		coreStatus = "运行中"
 	}
 	pluginSection("系统插件",
-		pluginCard("按键核心", coreStatus, "按键映射", false, nil, func() { s.navigate(pageMappings) }),
+		pluginCard("按键核心", coreStatus, nil, func() {
+			if appButton(c, a, "按键映射", false).Clicked() {
+				s.navigate(pageMappings)
+			}
+		}),
 	)
 
 	device := s.activeDevicePlugin()
 	if device.ModuleID != "" {
-		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), s.remoteButtonLabel(), s.remoteButtonDisabled(), nil, func() { s.toggleRemote() }))
+		pluginSection("设备", pluginCard(device.Profile.Name, s.remoteLabel(), nil, func() {
+			action, disabled := s.remoteButtonLabel(), s.remoteButtonDisabled()
+			// Recovery is an explicit action, not an on/off preference.
+			if action == toggleRecoveryLabel || action == "重试清理" {
+				if appButton(c, a, action, disabled).Clicked() && !disabled {
+					s.toggleRemote()
+				}
+				return
+			}
+			enabled := s.remoteEnabled() || s.powerState.resumeRemote
+			if ui.Switch(c.Key(device.ModuleID), &enabled).Label(device.Profile.Name).Disabled(disabled).Shrink(0).Changed() && !disabled {
+				s.toggleRemote()
+			}
+		}))
 	}
 	if s.toolError != "" {
 		ui.Text(c, s.toolError).FontSize(a.fonts.caption).TextColor(a.theme.Danger).Role(ui.RoleStatus)
@@ -357,14 +368,15 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 	for _, kind := range []voiceToolKind{voiceInputMethod, voiceRecognition, voiceApplication} {
 		cards := make([]func(), 0, len(s.tools))
 		for _, tool := range s.tools {
-			if tool.kind != kind {
+			if tool.kind != kind || !s.voicePluginVisible(tool) {
 				continue
 			}
-			action := "启用"
-			if tool.active {
-				action = "停用"
-			}
-			cards = append(cards, pluginCard(tool.name, voiceToolStatus(tool), action, s.toolLoadFailed, tool, func() { _ = s.setVoiceToolEnabled(tool, !tool.active) }))
+			cards = append(cards, pluginCard(tool.name, voiceToolStatus(tool), tool, func() {
+				enabled := tool.active
+				if ui.Switch(c.Key(tool.id), &enabled).Label(tool.name).Disabled(s.toolLoadFailed).Shrink(0).Changed() && !s.toolLoadFailed {
+					_ = s.setVoiceToolEnabled(tool, enabled)
+				}
+			}))
 		}
 		pluginSection(string(kind), cards...)
 	}

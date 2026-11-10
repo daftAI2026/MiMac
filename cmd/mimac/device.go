@@ -109,18 +109,22 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 	}
 	switch event.State {
 	case "connected":
+		s.deviceNeedsConnection = false
 		s.deviceStatus = "正在监听"
 		s.deviceDetail = ""
 		s.deviceTone = toneActive
 	case "waiting", "disconnected":
+		s.deviceNeedsConnection = true
 		s.deviceStatus = "等待支持的遥控器"
 		s.deviceDetail = ""
 		s.deviceTone = toneNeutral
 	case "ambiguous":
+		s.deviceNeedsConnection = false
 		s.deviceStatus = "发现多个匹配项"
 		s.deviceDetail = "暂时无法确定遥控器"
 		s.deviceTone = toneWarning
 	case "unsupported":
+		s.deviceNeedsConnection = false
 		s.deviceStatus = "按键格式暂不支持"
 		s.deviceDetail = ""
 		s.deviceTone = toneWarning

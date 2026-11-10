@@ -30,6 +30,7 @@ type voiceTool struct {
 	prepareAssets        func(context.Context, voicetools.Locator) voicetools.Snapshot
 	requiredInputSource  func(string) (string, bool)
 	active, busy         bool
+	releaseReady         bool
 	preparingAssets      bool
 	cancelRequested      bool
 	lastAttemptCancelled bool
@@ -216,10 +217,10 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo"},
-		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID},
+		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo", releaseReady: true},
+		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
-		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID},
+		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}
@@ -425,13 +426,8 @@ func (s *shell) loadVoiceTools() {
 		s.toolLoadFailed, s.toolError = true, "插件设置读取失败，原文件已保留"
 		return
 	}
-	s.currentVoiceTool = s.toolPreferences.Current
-	for _, tool := range s.tools {
-		if slices.Contains(s.toolPreferences.Enabled, tool.id) {
-			if err := s.plugins.Enable(tool.id); err != nil {
-				s.toolError = "插件启动失败"
-			}
-		}
+	if startupFailed := s.restoreVoiceTools(s.toolPreferences, s.plugins.Enable); startupFailed {
+		s.toolError = "插件启动失败"
 	}
 }
 
@@ -446,19 +442,35 @@ func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
 	if tool.active == enabled {
 		return nil
 	}
-	next := toolPreferences{Version: 1, Enabled: slices.Clone(s.toolPreferences.Enabled), Current: s.currentVoiceTool}
+	// A build-hidden saved Current can be blank at runtime; unrelated toggles must preserve it.
+	runtimeCurrent := s.currentVoiceTool
+	savedCurrent := runtimeCurrent
+	if savedCurrent == "" && s.toolPreferences.Current != "" {
+		for _, candidate := range s.tools {
+			if candidate.id == s.toolPreferences.Current && !s.voicePluginVisible(candidate) {
+				savedCurrent = s.toolPreferences.Current
+				break
+			}
+		}
+	}
+	next := toolPreferences{Version: 1, Enabled: slices.Clone(s.toolPreferences.Enabled), Current: savedCurrent}
 	next.Enabled = slices.DeleteFunc(next.Enabled, func(id string) bool { return id == tool.id })
 	if enabled {
 		next.Enabled = append(next.Enabled, tool.id)
-	} else if next.Current == tool.id {
-		next.Current = ""
+	} else {
+		if next.Current == tool.id {
+			next.Current = ""
+		}
+		if runtimeCurrent == tool.id {
+			runtimeCurrent = ""
+		}
 	}
 	if err := saveToolPreferences(s.toolPreferencesPath, next); err != nil {
 		s.toolError = "保存失败，插件未更改"
 		return err
 	}
 	s.toolPreferences = next
-	s.currentVoiceTool = next.Current
+	s.currentVoiceTool = runtimeCurrent
 	var err error
 	if enabled {
 		err = s.plugins.Enable(tool.id)

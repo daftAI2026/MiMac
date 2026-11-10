@@ -30,6 +30,7 @@ type settingsState struct {
 	outputNeedsRestart    bool
 
 	deviceReadBusy        bool
+	deviceNeedsConnection bool
 	deviceReadSequence    uint64
 	deviceStatus          string
 	deviceDetail          string
@@ -123,28 +124,79 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 	settingsGroup(c, a, func() {
 		ui.Row(c).AlignItems(ui.Center).FillWidth().MinHeight(settingsRowHeight).Padding(settingsRowPadding, 0).Children(func() {
 			ui.Text(c, s.activeProfile().Name).FontSize(a.fonts.body).FontWeight(600).Grow(1)
-			disabled := s.remoteButtonDisabled()
-			if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
-				s.toggleRemote()
+			if appButton(c, a, "按键映射", false).Clicked() {
+				s.navigate(pageMappings)
 			}
 		})
 		sectionLine(c, a)
-		settingsValueRow(c, &a.theme, a.fonts.body, "状态", s.remoteLabel())
-		if s.deviceLastPress != "" {
-			sectionLine(c, a)
-			settingsValueRow(c, &a.theme, a.fonts.body, "最近按键", s.deviceLastPress)
-		}
+		settingsValueRow(c, &a.theme, a.fonts.body, "连接", s.deviceConnectionLabel())
+		sectionLine(c, a)
+		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Justify(ui.End).Gap(spaceSM).Children(func() {
+			if appButton(c, a, "蓝牙设置", false).Clicked() {
+				s.performSetupAction(setupBluetoothConnection)
+			}
+			disabled := s.deviceReadBusy || s.monitor != nil
+			if appButton(c, a, "重新检测", disabled).Clicked() && !disabled {
+				s.detectDevice()
+			}
+		})
 		if s.deviceDetail != "" {
 			ui.Text(c, s.deviceDetail).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Padding(spaceSM, 0)
 		}
-		if s.deviceNeedsPermission {
-			ui.Row(c).Padding(spaceSM, 0).Children(func() {
-				if appButton(c, a, "打开系统设置", false).Clicked() {
-					s.openInputPermissionSettings()
+		if action := s.nextSetupAction(); action != setupNone {
+			ui.Row(c).FillWidth().Justify(ui.End).Gap(spaceSM).Padding(spaceSM, 0).Children(func() {
+				if action != setupBluetoothConnection && appButton(c, a, action.label(), false).Clicked() {
+					s.performSetupAction(action)
+				}
+				if action == setupBluetoothPermission || action == setupBluetoothConnection {
+					_, _, blocked := s.audioRetryBlocked()
+					if appButton(c, a, "重新连接音频", blocked).Clicked() && !blocked {
+						s.performSetupAction(setupRetryAudio)
+					}
 				}
 			})
 		}
+		if s.deviceNeedsPermission {
+			ui.Text(c, "授权后，在按键映射中启用遥控器。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+		}
 	})
+	if s.deviceNeedsConnection {
+		guide := s.activeProfile().ConnectionGuide
+		if guide.FirstPairing == "" {
+			guide.FirstPairing = "按照设备说明进入配对模式，然后在蓝牙设置中选择设备连接。"
+		}
+		if guide.Reconnect == "" {
+			guide.Reconnect = "唤醒设备，然后在蓝牙设置中连接。"
+		}
+		settingsGroup(c, a, func() {
+			ui.Column(c).FillWidth().MinWidth(0).Gap(spaceSM).Children(func() {
+				ui.Text(c, "首次连接").FontSize(a.fonts.body).FontWeight(600)
+				ui.Text(c, guide.FirstPairing).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
+				sectionLine(c, a)
+				ui.Text(c, "已经配对").FontSize(a.fonts.body).FontWeight(600)
+				ui.Text(c, guide.Reconnect).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
+			})
+		})
+	}
+}
+
+// Connection is a projection of discovery or the existing live device owner,
+// independently of whether the user has enabled mapped output.
+func (s *shell) deviceConnectionLabel() string {
+	if s.monitor != nil && s.coordinator != nil && s.coordinator.core.Snapshot().Connected {
+		return "已连接"
+	}
+	if s.deviceReadBusy {
+		return "正在检测"
+	}
+	switch s.deviceStatus {
+	case "", "未启用", "已停止监听", "正在监听":
+		return "尚未检测"
+	case "等待支持的遥控器":
+		return "未连接"
+	default:
+		return s.deviceStatus
+	}
 }
 
 func (s *shell) detectDevice() {
@@ -166,6 +218,7 @@ func (s *shell) detectDevice() {
 			s.deviceReadBusy = false
 			s.deviceDetail = ""
 			s.deviceTone = toneNeutral
+			s.deviceNeedsConnection = err == nil && result.Count == 0
 			switch {
 			case err != nil:
 				s.deviceStatus = "检测失败"
@@ -176,7 +229,7 @@ func (s *shell) detectDevice() {
 				s.deviceStatus = fmt.Sprintf("发现 %d 个匹配项", result.Count)
 				s.deviceTone = toneWarning
 			default:
-				s.deviceStatus = "已连接，未监听"
+				s.deviceStatus = "已连接"
 				if !result.Supported {
 					s.deviceStatus = "按键格式暂不支持"
 					s.deviceTone = toneWarning

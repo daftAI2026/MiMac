@@ -52,13 +52,21 @@ type Model struct {
 	Surfaces                []Surface
 }
 
+// ConnectionGuide belongs to a device plugin. The host presents instructions
+// only when the device is not visible; it does not infer the system's pairing history.
+type ConnectionGuide struct {
+	FirstPairing string
+	Reconnect    string
+}
+
 // Profile binds stable physical button IDs to display metadata and geometry.
 // Call NewProfile at ownership boundaries to validate and copy Button storage.
 type Profile struct {
-	ID      string
-	Name    string
-	Buttons []Button
-	Model   Model
+	ConnectionGuide ConnectionGuide
+	ID              string
+	Name            string
+	Buttons         []Button
+	Model           Model
 }
 
 // NewProfile validates profile and returns a copy that does not share its

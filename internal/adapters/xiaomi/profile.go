@@ -10,6 +10,10 @@ const VoiceButtonID = "hid:0007:003e"
 func DeviceProfile() (devices.Profile, error) {
 	return devices.NewProfile(devices.Profile{
 		ID: "xiaomi-rc003", Name: "小米蓝牙遥控器 2 Pro",
+		ConnectionGuide: devices.ConnectionGuide{
+			FirstPairing: "同时按住主页键和菜单键，在蓝牙设置中找到“小米蓝牙语音遥控器”后连接。",
+			Reconnect:    "按任意键唤醒遥控器；仍未连接时，在蓝牙设置中点“连接”。",
+		},
 		Model: devices.Model{Width: 146, Height: 572, CornerRadius: 8, DefaultSelectedButtonID: VoiceButtonID},
 		Buttons: []devices.Button{
 			rc003Button(VoiceButtonID, "语音", "voice", "F5", 110, 39, 36, 36, 18),

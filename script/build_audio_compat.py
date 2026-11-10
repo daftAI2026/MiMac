@@ -33,6 +33,8 @@ BUNDLE_VERSION = "0.1.0"
 FACTORY_UUID = "8D60DAA7-6F0E-4F00-9D9A-3A93252466E9"
 PLUGIN_TYPE_UUID = "443ABAB8-E7B3-491A-B985-BEB9187030DB"
 LICENSE_FILES = ("LICENSE", "LICENSE.apple2012", "LICENSE.apple2020", "AUTHORS.md")
+GO_TO_NATIVE_ARCH = {"arm64": "arm64", "amd64": "x86_64"}
+NATIVE_TO_GO_ARCH = {native: go for go, native in GO_TO_NATIVE_ARCH.items()}
 
 
 class BuildError(RuntimeError):
@@ -173,6 +175,37 @@ def require_tool(name):
     return path
 
 
+def resolve_architecture(requested, host_machine):
+    host_native = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "x86_64", "amd64": "x86_64"}.get(host_machine)
+    if host_native is None:
+        raise BuildError("unsupported native macOS architecture: {}".format(host_machine))
+    host_go = NATIVE_TO_GO_ARCH[host_native]
+    target_go = requested or host_go
+    if target_go not in GO_TO_NATIVE_ARCH:
+        raise BuildError("unsupported target architecture: {}".format(target_go))
+    return target_go, GO_TO_NATIVE_ARCH[target_go], host_go, host_native
+
+
+def bundle_test_execution(target_native, host_native, rosetta_available=False):
+    if target_native == host_native:
+        return "native", target_native
+    if target_native == "x86_64" and host_native == "arm64" and rosetta_available:
+        return "rosetta", "x86_64"
+    return "not-run", None
+
+
+def can_run_x86_64_with_rosetta():
+    if not pathlib.Path("/usr/bin/arch").is_file():
+        return False
+    result = subprocess.run(
+        ["/usr/bin/arch", "-x86_64", "/bin/true"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with pathlib.Path(path).open("rb") as stream:
@@ -187,7 +220,7 @@ def copy_upstream_notices(source, resources):
         shutil.copyfile(source / name, resources / ("libASPL-" + name))
 
 
-def build_package(bundle, manifest):
+def build_package(bundle, manifest, bundle_abi_ran):
     package = BUILD / "MiMacAudio-local-test.pkg"
     component_plist = BUILD / "component.plist"
     with tempfile.TemporaryDirectory(prefix="audio-compat-package-", dir=str(BUILD)) as temporary:
@@ -246,7 +279,8 @@ def build_package(bundle, manifest):
         if sha256(installed_binary) != manifest["bundle"]["binary_sha256"]:
             raise BuildError("package binary differs from the tested bundle")
         run(["codesign", "--verify", "--deep", "--strict", installed_bundle], quiet=True)
-        run([BUILD / "BundleTest", installed_binary])
+        if bundle_abi_ran:
+            run([BUILD / "BundleTest", installed_binary])
         for name in LICENSE_FILES:
             relative = pathlib.Path("Contents/Resources") / ("libASPL-" + name)
             if (installed_bundle / relative).read_bytes() != (bundle / relative).read_bytes():
@@ -263,13 +297,18 @@ def build_package(bundle, manifest):
         "postinstall_scripts": False,
         "restarts_audio": False,
         "installed": False,
-        "payload_signature_hash_abi_verified": True,
+        "payload_signature_hash_abi_verified": bool(bundle_abi_ran),
     }
     return package
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--arch",
+        choices=tuple(GO_TO_NATIVE_ARCH),
+        help="build for this Go architecture (defaults to the native host architecture)",
+    )
     parser.add_argument(
         "--source",
         type=pathlib.Path,
@@ -280,7 +319,11 @@ def main():
         action="store_true",
         help="also generate a local-test .pkg under .build/audio-compat (never install it)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     if sys.platform != "darwin":
         raise BuildError("audio-compat is a macOS-only AudioServerPlugIn")
@@ -301,15 +344,14 @@ def main():
     libtool = require_tool("libtool")
     codesign = require_tool("codesign")
     nm = require_tool("nm")
+    lipo = require_tool("lipo")
     otool = require_tool("otool")
     xcrun = require_tool("xcrun")
     if args.package:
         require_tool("pkgbuild")
         require_tool("pkgutil")
 
-    architecture = platform.machine()
-    if architecture not in ("arm64", "x86_64"):
-        raise BuildError("unsupported native macOS architecture: {}".format(architecture))
+    target_go_arch, target_native_arch, host_go_arch, host_native_arch = resolve_architecture(args.arch, platform.machine())
     sdk_path = run([xcrun, "--sdk", "macosx", "--show-sdk-path"], capture=True)
     sdk_version = run([xcrun, "--sdk", "macosx", "--show-sdk-version"], capture=True)
     compiler_version = run([clang, "--version"], capture=True).splitlines()[0]
@@ -330,7 +372,7 @@ def main():
         "-Wno-invalid-offsetof",
         "-Wno-unused-parameter",
         "-Wno-reorder-init-list",
-        "-arch", architecture,
+        "-arch", target_native_arch,
         "-isysroot", sdk_path,
         "-mmacosx-version-min=" + MIN_MACOS,
         "-ffile-prefix-map={}=libASPL".format(source),
@@ -368,7 +410,7 @@ def main():
         [
             clang,
             "-bundle",
-            "-arch", architecture,
+            "-arch", target_native_arch,
             "-isysroot", sdk_path,
             "-mmacosx-version-min=" + MIN_MACOS,
             driver_object,
@@ -401,6 +443,15 @@ def main():
     run([codesign, "--force", "--sign", "-", "--timestamp=none", "--identifier", BUNDLE_ID, bundle], quiet=True)
     run([codesign, "--verify", "--deep", "--strict", bundle], quiet=True)
 
+    binary_architectures = run([lipo, "-archs", executable], capture=True).split()
+    if binary_architectures != [target_native_arch]:
+        raise BuildError(
+            "built bundle architecture is {}; expected only {}".format(
+                ",".join(binary_architectures), target_native_arch
+            )
+        )
+    run([lipo, executable, "-verify_arch", target_native_arch], quiet=True)
+
     exported_symbols = run([nm, "-gU", executable], capture=True)
     if "_MiMacAudioFactory" not in exported_symbols:
         raise BuildError("bundle does not export MiMacAudioFactory")
@@ -418,7 +469,7 @@ def main():
             clang,
             "-std=c++17",
             "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-            "-arch", architecture,
+            "-arch", host_native_arch,
             "-isysroot", sdk_path,
             "-mmacosx-version-min=" + MIN_MACOS,
             "-pthread",
@@ -430,24 +481,33 @@ def main():
     )
     run([ring_test])
 
-    bundle_test = BUILD / "BundleTest"
-    run(
-        [
-            clang,
-            "-std=c++17",
-            "-Wall", "-Wextra",
-            "-arch", architecture,
-            "-isysroot", sdk_path,
-            "-mmacosx-version-min=" + MIN_MACOS,
-            "-I", COMPONENT,
-            COMPONENT / "BundleTest.cpp",
-            "-framework", "CoreFoundation",
-            "-framework", "CoreAudio",
-            "-o", bundle_test,
-        ],
-        quiet=True,
+    rosetta_available = can_run_x86_64_with_rosetta() if host_native_arch == "arm64" and target_native_arch == "x86_64" else False
+    bundle_test_mode, bundle_test_arch = bundle_test_execution(
+        target_native_arch, host_native_arch, rosetta_available
     )
-    run([bundle_test, executable])
+    bundle_test_ran = bundle_test_mode != "not-run"
+    if bundle_test_ran:
+        bundle_test = BUILD / "BundleTest"
+        run(
+            [
+                clang,
+                "-std=c++17",
+                "-Wall", "-Wextra",
+                "-arch", bundle_test_arch,
+                "-isysroot", sdk_path,
+                "-mmacosx-version-min=" + MIN_MACOS,
+                "-I", COMPONENT,
+                COMPONENT / "BundleTest.cpp",
+                "-framework", "CoreFoundation",
+                "-framework", "CoreAudio",
+                "-o", bundle_test,
+            ],
+            quiet=True,
+        )
+        if bundle_test_mode == "rosetta":
+            run(["/usr/bin/arch", "-x86_64", bundle_test, executable])
+        else:
+            run([bundle_test, executable])
 
     source, _ = verify_source(source)
     binary_hash = sha256(executable)
@@ -458,7 +518,9 @@ def main():
             "commit": PINNED_COMMIT,
         },
         "build": {
-            "architecture": architecture,
+            "architecture": target_go_arch,
+            "native_architecture": target_native_arch,
+            "runner_architecture": host_go_arch,
             "minimum_macos": MIN_MACOS,
             "sdk_version": sdk_version,
             "compiler": compiler_version,
@@ -478,19 +540,29 @@ def main():
             "notices": ["libASPL-" + name for name in LICENSE_FILES],
         },
         "tests": {
-            "frame_ring": "passed",
-            "bundle_abi": "passed",
+            "frame_ring": {"status": "passed", "runner_architecture": host_go_arch},
+            "bundle_abi": {
+                "status": "passed" if bundle_test_ran else "not_run_cross_arch",
+                "mode": bundle_test_mode,
+                "runner_architecture": bundle_test_arch if bundle_test_ran else host_native_arch,
+            },
+            "bundle_architecture": "passed",
+            "factory_symbol": "passed",
+            "codesign": "passed",
         },
         "installed": False,
         "audio_service_restarted": False,
     }
     if args.package:
-        build_package(bundle, manifest)
+        build_package(bundle, manifest, bundle_test_ran)
 
     manifest_path = BUILD / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(json.dumps(manifest, indent=2, sort_keys=True))
-    print("Build and tests passed. Nothing was installed; audio services were not restarted.")
+    if bundle_test_ran:
+        print("Build and architecture checks passed; Bundle ABI test ran in {} mode. Nothing was installed; audio services were not restarted.".format(bundle_test_mode))
+    else:
+        print("Build and architecture checks passed; Bundle ABI was not runtime-tested for this cross-architecture target. Nothing was installed; audio services were not restarted.")
     return 0
 
 
