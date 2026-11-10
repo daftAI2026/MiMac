@@ -300,13 +300,16 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.hidePermissionGuideIllustration()
 	}
 	s.followActive = true
-	position, moving := s.nextPermissionGuideFollowFrame(target, time.Now(), s.reduceMotion || permissionguide.PrimaryMouseButtonDown())
+	pointerDown := permissionguide.PrimaryMouseButtonDown()
+	position, moving := s.nextPermissionGuideFollowFrame(target, time.Now(), s.reduceMotion || pointerDown)
 	s.followMoving = moving
 	s.followStartBounds = position
 	if current.X != position.X || current.Y != position.Y {
 		window.SetPosition(position.X, position.Y)
 	}
-	if !s.followMoving {
+	if pointerDown || s.followMoving {
+		s.hidePermissionGuideIllustration()
+	} else {
 		s.syncPermissionGuideIllustration(settingsBounds, display.WorkArea)
 	}
 	s.schedulePermissionGuideFollowTick(window, generation, permissionGuideFollowInterval)
