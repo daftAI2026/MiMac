@@ -10,10 +10,13 @@ flowchart LR
     profile -->|siri-glass| gate{"arm64 + 精确系统 ABI 门满足？"}
     gate -->|否| reject["停止构建；不复用旧库"]
     gate -->|是| siri["五个原生库 + SiriGlassBridge"]
-    core --> verify["核对源码、版本、架构、符号、签名与 SHA"]
-    siri --> verify
+    core --> buildApp["MyGo 构建 App"]
+    siri --> buildApp
+    buildApp --> verify["核对源码、版本、架构、符号、签名与 SHA"]
     verify --> manifest["manifest 记录方案、实际组件与 ABI 门结果"]
-    manifest --> dmg["MyGo 构建 App；独立打包脚本写入单图标布局与 Retina 安装背景"]
+    manifest --> packagingGate{"工具与元数据依赖齐备？"}
+    packagingGate -->|否| packagingReject["输出具体缺项；不创建或挂载镜像"]
+    packagingGate -->|是| dmg["建立临时镜像；复制已校验 App，写入单图标布局与 Retina 安装背景"]
     dmg --> archive["只读 DMG + ZIP + SHA256；不更改 App 签名内容"]
     archive --> preview["可复核预览包；不自动替换当前 App"]
     preview --> imageLaunch["用户双击镜像内 MiMac"]

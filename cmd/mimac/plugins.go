@@ -22,7 +22,7 @@ type hidMonitor interface {
 
 type startHIDMonitor func(func(xiaomi.MonitorEvent)) (hidMonitor, error)
 
-// This is the composition root, analogous to Magpie's built-in plugin list.
+// The composition root registers the built-in plugins.
 // It alone joins the runtime, core and concrete device adapter. MyGo owns the
 // thread and loop; the plugin runtime adds no event loop or background polling.
 func (s *shell) setupPlugins() error {

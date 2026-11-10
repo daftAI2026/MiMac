@@ -172,14 +172,20 @@ def render_background(output, *, runner=run):
     validate_background_png(output)
 
 
-def write_ds_store(path, *, volume_name, app_name, background_path):
+def metadata_dependencies():
     try:
         from ds_store import DSStore
         from mac_alias import Alias
     except ImportError as error:
         raise PackageError(
-            "DMG metadata dependencies are missing; install script/requirements-packaging.txt"
+            "DMG metadata dependencies are missing for {}; install "
+            "script/requirements-packaging.txt with this Python interpreter".format(sys.executable)
         ) from error
+    return DSStore, Alias
+
+
+def write_ds_store(path, *, volume_name, app_name, background_path):
+    DSStore, Alias = metadata_dependencies()
 
     try:
         alias = Alias.for_file(str(background_path)).to_bytes()
@@ -345,6 +351,7 @@ def package_dmg(bundle_path, output_path, *, sign_identity=None):
     metadata = read_bundle_metadata(bundle, info_path)
     output = resolve_output(output_path, bundle)
     required_tools(sign_identity)
+    metadata_dependencies()
     return _mount_image(
         bundle,
         output,

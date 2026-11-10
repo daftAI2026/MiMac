@@ -168,6 +168,44 @@ class PackageDMGTests(unittest.TestCase):
         self.assertLess(convert_index, sign_index)
         self.assertFalse(list(self.root.glob(".mimac-dmg-*")))
 
+    def test_missing_metadata_dependency_rejects_before_external_tools_or_mount(self):
+        import builtins
+        original_import = builtins.__import__
+        for missing in ["ds_store", "mac_alias"]:
+            with self.subTest(missing=missing):
+                def importing(name, *args, **kwargs):
+                    if name == missing:
+                        raise ImportError("missing test dependency")
+                    if name in {"ds_store", "mac_alias"}:
+                        return mock.Mock(DSStore=object, Alias=object)
+                    return original_import(name, *args, **kwargs)
+
+                with mock.patch.object(package_dmg.platform, "system", return_value="Darwin"), \
+                     mock.patch.object(package_dmg, "required_tools"), \
+                     mock.patch.object(package_dmg, "diskutil_image_create_supported") as probe, \
+                     mock.patch.object(package_dmg, "_mount_image") as mount, \
+                     mock.patch("builtins.__import__", side_effect=importing):
+                    with self.assertRaisesRegex(package_dmg.PackageError, "metadata dependencies"):
+                        package_dmg.package_dmg(self.bundle, self.root / "missing.dmg")
+                    probe.assert_not_called()
+                    mount.assert_not_called()
+                self.assertFalse((self.root / "missing.dmg").exists())
+
+    def test_available_metadata_dependencies_allow_packaging(self):
+        import types
+        output = self.root / "ready.dmg"
+        modules = {"ds_store": types.SimpleNamespace(DSStore=object),
+                   "mac_alias": types.SimpleNamespace(Alias=object)}
+        with mock.patch.object(package_dmg.platform, "system", return_value="Darwin"), \
+             mock.patch.object(package_dmg, "required_tools"), \
+             mock.patch.object(package_dmg, "diskutil_image_create_supported", return_value=False) as probe, \
+             mock.patch.object(package_dmg, "_mount_image", return_value=output) as mount, \
+             mock.patch.dict(sys.modules, modules):
+            self.assertEqual(package_dmg.package_dmg(self.bundle, output), output)
+            probe.assert_called_once()
+            mount.assert_called_once()
+            self.assertEqual(mount.call_args.kwargs["dsstore_writer"], package_dmg.write_ds_store)
+
     def test_packaging_rejects_non_macos_hosts_before_side_effects(self):
         with mock.patch.object(package_dmg.platform, "system", return_value="Linux"):
             with self.assertRaisesRegex(package_dmg.PackageError, "only be packaged on macOS"):
