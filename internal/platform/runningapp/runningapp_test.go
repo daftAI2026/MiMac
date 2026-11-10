@@ -80,3 +80,20 @@ func TestValidateTargetRequiresFullPathsWithinBundle(t *testing.T) {
 		})
 	}
 }
+
+func TestPresenceQueryDoesNotRequireOneInstallationPath(t *testing.T) {
+	identity := target{bundleID: "dev.mimac.app"}
+	snapshots := []applicationSnapshot{{bundleID: identity.bundleID, bundlePath: "/Applications/MiMac.app", executablePath: "/Applications/MiMac.app/Contents/MacOS/MiMac", pid: 42}}
+	if pid, err := uniquePID(identity, snapshots); err != nil || pid != 42 {
+		t.Fatalf("presence = %d, %v", pid, err)
+	}
+	snapshots = append(snapshots, applicationSnapshot{bundleID: identity.bundleID, bundlePath: "/tmp/MiMac.app", executablePath: "/tmp/MiMac.app/Contents/MacOS/MiMac", pid: 43})
+	if _, err := uniquePID(identity, snapshots); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("multiple active copies = %v", err)
+	}
+	snapshots[0].terminated = true
+	snapshots[1].terminated = true
+	if _, err := uniquePID(identity, snapshots); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("terminated copies = %v", err)
+	}
+}

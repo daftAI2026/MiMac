@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -60,11 +58,11 @@ func (s *shell) remoteStart() (func() error, error) {
 		return stop, err
 	}
 	if s.remoteState.snapshotPath == "" {
-		configDir, err := os.UserConfigDir()
+		path, err := hostDataPath("voice-mapping-recovery.plist")
 		if err != nil {
 			return stop, fmt.Errorf("remote control: user config directory: %w", err)
 		}
-		s.remoteState.snapshotPath = filepath.Join(configDir, "MiMac", "voice-mapping-recovery.plist")
+		s.remoteState.snapshotPath = path
 	}
 	s.remoteState.err = nil
 	if s.coordinator != nil {
@@ -127,11 +125,11 @@ func (s *shell) acquireRemoteReservation(generation uint64, starting bool) (err 
 		return errors.New("remote control: finish the active voice session before takeover")
 	}
 	if s.remoteState.snapshotPath == "" {
-		configDir, err := os.UserConfigDir()
+		path, err := hostDataPath("voice-mapping-recovery.plist")
 		if err != nil {
 			return fmt.Errorf("remote control: user config directory: %w", err)
 		}
-		s.remoteState.snapshotPath = filepath.Join(configDir, "MiMac", "voice-mapping-recovery.plist")
+		s.remoteState.snapshotPath = path
 	}
 	s.remoteState.reserveInFlight = true
 	reservation, err := s.remoteState.reserve(s.remoteState.snapshotPath)
@@ -392,6 +390,11 @@ func (s *shell) toggleRemote() {
 }
 
 func (s *shell) enableRemote(requestPermission bool) {
+	if err := s.requireDeviceAccess(); err != nil {
+		s.remoteState.err = err
+		s.invalidateDeviceView()
+		return
+	}
 	s.remoteState.err = nil
 	s.deviceNeedsPermission = false
 	if requestPermission {

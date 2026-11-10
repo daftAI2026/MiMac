@@ -1,5 +1,11 @@
 flowchart LR
-    source["冻结源码与日期版本"] --> profile{"显式组件方案"}
+    source["冻结源码与日期版本"] --> lane{"日用或开发入口"}
+    lane -->|日用| daily["MiMac / dev.mimac.app / MiMac 配置目录"]
+    lane -->|开发| dev["MiMac Dev / dev.mimac.app.dev / MiMac Dev 配置目录"]
+    daily --> profile{"显式组件方案"}
+    dev --> profile
+    dev --> isolated["默认不接管设备、按键输出、系统输入法和音频"]
+    isolated --> handoff["显式设备验收：先退出日用版，串行交接"]
     profile -->|core-only| core["五个原生库；排除 Siri 私有库"]
     profile -->|siri-glass| gate{"arm64 + 精确系统 ABI 门满足？"}
     gate -->|否| reject["停止构建；不复用旧库"]

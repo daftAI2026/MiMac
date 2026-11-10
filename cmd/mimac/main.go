@@ -25,6 +25,11 @@ import (
 )
 
 type hostReport struct {
+	ProcessID           int                   `json:"pid"`
+	Executable          string                `json:"executable"`
+	AppName             string                `json:"app_name"`
+	ConfigDirectory     string                `json:"config_directory"`
+	IsolatedDevelopment bool                  `json:"isolated_development"`
 	Ready               bool                  `json:"host_ready"`
 	TrayCreated         bool                  `json:"tray_created"`
 	WindowsCreated      int                   `json:"windows_created"`
@@ -50,6 +55,9 @@ type hostReport struct {
 }
 
 type shell struct {
+	isolatedDevelopment bool
+	development         bool
+
 	sourceCheck *sourceCheck
 
 	settingsState
@@ -100,7 +108,7 @@ func (s *shell) showSettings() {
 		return
 	}
 	s.window = mygo.NewWindow(mygo.WindowOptions{
-		Title: "MiMac", Width: windowWidth, Height: windowHeight, MinWidth: windowMinWidth, MinHeight: windowMinHeight,
+		Title: mygo.App.Name(), Width: windowWidth, Height: windowHeight, MinWidth: windowMinWidth, MinHeight: windowMinHeight,
 		TitleBarStyle:        mygo.TitleBarHidden,
 		TrafficLightPosition: &mygo.Point{X: trafficLightInset, Y: trafficLightInset},
 		Content:              ui.View(s.settings),
@@ -148,7 +156,7 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 	s.watchPower()
 	s.loadMappings()
 	s.loadVoiceTools()
-	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: "MiMac"})
+	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: mygo.App.Name()})
 	if err != nil {
 		s.report.Error = err.Error()
 		mygo.App.Quit()
@@ -199,6 +207,8 @@ func (s *shell) ready(ctx context.Context, show bool, smoke time.Duration, captu
 }
 
 func main() {
+	initializeHostIdentity()
+	deviceAccess := flag.Bool("device-access", false, "development only: explicit serial device testing; quit daily MiMac first")
 	show := flag.Bool("show-settings", false, "open the settings window on launch")
 	smoke := flag.Duration("smoke-duration", 0, "quit after a bounded host smoke run (1s to 30s)")
 	capturePath := flag.String("host-capture", "", "capture this app settings content as PNG to this explicit path")
@@ -238,10 +248,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "set-audio-backend cannot be combined with audio-backend")
 		os.Exit(2)
 	}
+	development := mygo.App.Name() == developmentAppName
+	if development && *deviceAccess {
+		if err := checkDevelopmentDeviceAccess(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
 	preferencePath := ""
 	if !audioBackendProvided || setAudioBackendProvided {
 		var err error
-		preferencePath, err = audiobackendprefs.DefaultPath()
+		preferencePath, err = hostDataPath("audio-backend.json")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "audio backend preference path:", err)
 			os.Exit(2)
@@ -253,6 +270,11 @@ func main() {
 		os.Exit(2)
 	}
 	if startup.Exit {
+		return
+	}
+	// MyGo scopes the development single-instance lock by packaged identity.
+	// The preference-only command above can still exit without starting App.
+	if mygo.App.Name() == developmentAppName && !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
 	backend := startup.Backend
@@ -299,7 +321,13 @@ func main() {
 		os.Exit(2)
 	}
 	s.voiceOverlay.meter.trace = trace
-	mygo.App.SetName("MiMac")
+	s.development = development
+	s.isolatedDevelopment = development && !*deviceAccess
+	s.report.ProcessID = os.Getpid()
+	s.report.Executable, _ = os.Executable()
+	s.report.AppName = mygo.App.Name()
+	s.report.ConfigDirectory, _ = mygo.App.Path(mygo.PathUserData)
+	s.report.IsolatedDevelopment = s.isolatedDevelopment
 	s.loadPreferences()
 	s.applySavedAppearance()
 	flag.Visit(func(f *flag.Flag) {

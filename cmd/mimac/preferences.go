@@ -44,11 +44,7 @@ func defaultHostPreferences() hostPreferences {
 }
 
 func hostPreferencesPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "MiMac", "preferences.json"), nil
+	return hostDataPath("preferences.json")
 }
 
 func readHostPreferences(path string) (hostPreferences, error) {

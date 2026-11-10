@@ -8,7 +8,7 @@ import verify_app_bundle as bundle_check
 
 
 class FrameExportContract(unittest.TestCase):
-    def verify_fixture(self, with_frame):
+    def verify_fixture(self, with_frame, development=False, bundle_id="dev.mimac.app"):
         with tempfile.TemporaryDirectory() as directory:
             app = Path(directory) / "MiMac.app"
             contents = app / "Contents"
@@ -17,7 +17,7 @@ class FrameExportContract(unittest.TestCase):
             (contents / "MacOS").mkdir()
             (contents / "MacOS/MiMac").write_bytes(b"fixture")
             with (contents / "Info.plist").open("wb") as file:
-                plistlib.dump({"CFBundleIdentifier": "dev.mimac.app", "CFBundleExecutable": "MiMac"}, file)
+                plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleName": "MiMac Dev" if bundle_id.endswith(".dev") else "MiMac", "CFBundleExecutable": "MiMac"}, file)
             for name in [*bundle_check.REQUIRED, bundle_check.SIRI]:
                 (resources / name).write_bytes(b"fixture")
 
@@ -35,7 +35,14 @@ class FrameExportContract(unittest.TestCase):
                     self.assertEqual(arguments[2:], ["-verify_arch", "arm64"])
 
             with patch.object(bundle_check.subprocess, "run", side_effect=command), patch.object(bundle_check.subprocess, "check_output", side_effect=exports):
-                return bundle_check.verify(app, "arm64", require_siri=True)
+                return bundle_check.verify(app, "arm64", require_siri=True, development=development)
+
+    def test_identity_must_match_requested_lane(self):
+        self.assertIsNotNone(self.verify_fixture(True, development=True, bundle_id="dev.mimac.app.dev"))
+        with self.assertRaisesRegex(ValueError, "expected MiMac bundle identifier"):
+            self.verify_fixture(True, development=False, bundle_id="dev.mimac.app.dev")
+        with self.assertRaisesRegex(ValueError, "expected MiMac bundle identifier"):
+            self.verify_fixture(True, development=True)
 
     def test_old_library_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError, "missing typed frame export"):

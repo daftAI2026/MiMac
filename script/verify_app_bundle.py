@@ -18,12 +18,15 @@ REQUIRED = {
 SIRI = "libSiriGlassBridge.dylib"
 
 
-def verify(bundle, arch, require_siri=False):
+def verify(bundle, arch, require_siri=False, development=False):
     contents = bundle / "Contents"
     with (contents / "Info.plist").open("rb") as file:
         info = plistlib.load(file)
-    if info.get("CFBundleIdentifier") != "dev.mimac.app":
-        raise ValueError("expected MiMac bundle identifier dev.mimac.app")
+    expected_id = "dev.mimac.app.dev" if development else "dev.mimac.app"
+    if info.get("CFBundleIdentifier") != expected_id:
+        raise ValueError("expected MiMac bundle identifier " + expected_id)
+    if development and info.get("CFBundleName") != "MiMac Dev":
+        raise ValueError("expected development bundle name MiMac Dev")
     executable = contents / "MacOS" / info["CFBundleExecutable"]
     resources = contents / "Resources"
     libraries = dict(REQUIRED)
@@ -55,9 +58,10 @@ def main():
     parser.add_argument("bundle", type=Path)
     parser.add_argument("--arch", choices=["arm64", "amd64"], required=True)
     parser.add_argument("--require-siri", action="store_true")
+    parser.add_argument("--development", action="store_true")
     args = parser.parse_args()
     try:
-        result = verify(args.bundle, args.arch, args.require_siri)
+        result = verify(args.bundle, args.arch, args.require_siri, args.development)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"MiMac bundle verification failed: {error}\n")
     print(json.dumps(result, indent=2))

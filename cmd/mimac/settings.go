@@ -83,7 +83,7 @@ func (s *shell) settings(c *ui.Context) {
 			ui.Box(c).Grow(1)
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sidebarLabelGap).Padding(0, spaceMD, 0, sidebarItemInset).Children(func() {
 				ui.Icon(c, s.brandMark).FontSize(settingsIconSize).TextColor(a.theme.Text)
-				ui.Text(c, "MiMac").FontSize(a.fonts.body).TextColor(a.theme.Text)
+				ui.Text(c, mygo.App.Name()).FontSize(a.fonts.body).TextColor(a.theme.Text)
 			})
 		})
 		ui.Box(c).Width(lineWidth).FillHeight().Shrink(0).Background(a.separator)

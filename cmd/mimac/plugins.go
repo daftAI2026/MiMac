@@ -65,6 +65,9 @@ func (s *shell) setupPluginsWith(start startHIDMonitor) error {
 			}, nil
 		}},
 		pluginrt.Manifest{ID: outputPlugin, Requires: []string{corePlugin}, Start: func() (pluginrt.StopFunc, error) {
+			if err := s.requireDeviceAccess(); err != nil {
+				return func() error { return nil }, err
+			}
 			sink, err := keyoutput.Open(keyoutput.GlobalTarget)
 			if err != nil {
 				return func() error { return nil }, err
@@ -80,6 +83,9 @@ func (s *shell) setupPluginsWith(start startHIDMonitor) error {
 			}, err
 		}},
 		pluginrt.Manifest{ID: xiaomiPlugin, Requires: []string{corePlugin}, Start: func() (pluginrt.StopFunc, error) {
+			if err := s.requireDeviceAccess(); err != nil {
+				return func() error { return nil }, err
+			}
 			monitor, err := start(s.handleDeviceEvent)
 			if err != nil {
 				// StartMonitor cleans up partial opens itself; a failure to do so

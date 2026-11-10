@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The development lane never stops or replaces the daily-use bundle.
+if [[ "${1:-}" == --dev ]]; then
+  shift
+  DEV_MODE="${1:-run}"
+  case "$DEV_MODE" in
+    --verify) DEV_MODE=verify; shift ;;
+    --build-only) DEV_MODE=build; shift ;;
+    run) if (( $# > 0 )); then shift; fi ;;
+    *) echo "usage: $0 --dev [run|--verify|--build-only] [-- App arguments]" >&2; exit 2 ;;
+  esac
+  exec python3 "$(dirname "${BASH_SOURCE[0]}")/build_dev.py" "$DEV_MODE" "$@"
+fi
 MODE="${1:-run}"
 case "$MODE" in
   run|--verify|--debug|--logs) ;;
