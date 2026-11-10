@@ -124,20 +124,14 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 	settingsGroup(c, a, func() {
 		ui.Row(c).AlignItems(ui.Center).FillWidth().MinHeight(settingsRowHeight).Padding(settingsRowPadding, 0).Children(func() {
 			ui.Text(c, s.activeProfile().Name).FontSize(a.fonts.body).FontWeight(600).Grow(1)
-			disabled := s.remoteButtonDisabled()
-			if appButton(c, a, s.remoteButtonLabel(), disabled).Clicked() && !disabled {
-				s.toggleRemote()
+			if appButton(c, a, "按键映射", false).Clicked() {
+				s.navigate(pageMappings)
 			}
 		})
 		sectionLine(c, a)
-		settingsValueRow(c, &a.theme, a.fonts.body, "状态", s.remoteLabel())
+		settingsValueRow(c, &a.theme, a.fonts.body, "连接", s.deviceConnectionLabel())
 		sectionLine(c, a)
-		connection := s.deviceStatus
-		if connection == "" {
-			connection = "尚未检测"
-		}
-		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
-			ui.Text(c, connection).FontSize(a.fonts.body).TextColor(a.theme.TextMuted).Grow(1).MinWidth(0).Role(ui.RoleStatus)
+		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Justify(ui.End).Gap(spaceSM).Children(func() {
 			if appButton(c, a, "蓝牙设置", false).Clicked() {
 				s.performSetupAction(setupBluetoothConnection)
 			}
@@ -146,16 +140,12 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 				s.detectDevice()
 			}
 		})
-		if s.deviceLastPress != "" {
-			sectionLine(c, a)
-			settingsValueRow(c, &a.theme, a.fonts.body, "最近按键", s.deviceLastPress)
-		}
 		if s.deviceDetail != "" {
 			ui.Text(c, s.deviceDetail).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Padding(spaceSM, 0)
 		}
 		if action := s.nextSetupAction(); action != setupNone {
-			ui.Row(c).Padding(spaceSM, 0).Children(func() {
-				if appButton(c, a, action.label(), false).Clicked() {
+			ui.Row(c).FillWidth().Justify(ui.End).Gap(spaceSM).Padding(spaceSM, 0).Children(func() {
+				if action != setupBluetoothConnection && appButton(c, a, action.label(), false).Clicked() {
 					s.performSetupAction(action)
 				}
 				if action == setupBluetoothPermission || action == setupBluetoothConnection {
@@ -167,7 +157,7 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 			})
 		}
 		if s.deviceNeedsPermission {
-			ui.Text(c, "授权后回到这里，再次启用遥控器。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+			ui.Text(c, "授权后，在按键映射中启用遥控器。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
 		}
 	})
 	if s.deviceNeedsConnection {
@@ -188,8 +178,24 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 			})
 		})
 	}
-	if s.remoteTone() == toneActive && s.nextSetupAction() == setupNone {
-		ui.Text(c, "回到要输入的位置，按住语音键说话，松开完成。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+}
+
+// Connection is a projection of discovery or the existing live device owner,
+// independently of whether the user has enabled mapped output.
+func (s *shell) deviceConnectionLabel() string {
+	if s.monitor != nil && s.coordinator != nil && s.coordinator.core.Snapshot().Connected {
+		return "已连接"
+	}
+	if s.deviceReadBusy {
+		return "正在检测"
+	}
+	switch s.deviceStatus {
+	case "", "未启用", "已停止监听", "正在监听":
+		return "尚未检测"
+	case "等待支持的遥控器":
+		return "未连接"
+	default:
+		return s.deviceStatus
 	}
 }
 

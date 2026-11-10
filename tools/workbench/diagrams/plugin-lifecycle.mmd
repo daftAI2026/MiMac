@@ -22,3 +22,13 @@ flowchart LR
     runtime -->|清理失败则故障并保留依赖| audiosession
     runtime -->|无模块依赖| voice
     runtime --> cleanup
+
+    host --> catalog["同一插件目录"]
+    catalog --> visibility{"开发版？"}
+    visibility -->|是| all["显示全部插件"]
+    visibility -->|否| ready["只显示适配可用插件；不按安装状态过滤"]
+    all --> controls["MyGo Switch 读取实际启用状态"]
+    ready --> controls
+    controls -->|Changed| activation["调用原启停入口；失败后继续显示实际状态"]
+    activation --> runtime
+    saved["显示筛选不修改已保存启用项、当前选择或注册表"] -.-> visibility

@@ -43,13 +43,15 @@
   {
     "id": "plugin-lifecycle",
     "title": "插件依赖与生命周期",
-    "summary": "MyGo 串行调用固定 pluginrt 清单。Enable 按依赖序启动，Close 按逆依赖序停止；启动失败回滚，清理失败时保留故障模块及依赖。pluginrt 不创建事件循环或轮询 goroutine。",
+    "summary": "MyGo 串行调用固定 pluginrt 清单。Enable 按依赖序启动，Close 按逆依赖序停止；启动失败回滚，清理失败时保留故障模块及依赖。pluginrt 不创建事件循环或轮询 goroutine。 插件页复用MyGo Switch调用原启停入口，恢复操作保留按钮。正式版只显示适配可用插件，开发版显示全部；纯呈现筛选不改变注册、启用项或当前工具。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
       "cmd/mimac/audio_sessions.go",
       "cmd/mimac/voice_tools.go",
-      "internal/pluginrt/runtime.go"
+      "internal/pluginrt/runtime.go",
+      "cmd/mimac/plugin_visibility.go",
+      "cmd/mimac/settings_mapping.go"
     ]
   },
   {
@@ -337,7 +339,7 @@
   {
     "id": "first-use-setup",
     "title": "首次使用与设备连接",
-    "summary": "首次空配置显示设备页。连接指引由设备插件提供，系统蓝牙界面管理首次配对与重连；HID 缺失不推断为未配对。插件启停与当前语音工具选择分开，两处选择复用同一状态。权限恢复与连接检查不提前收音，不新增麦克风选择。",
+    "summary": "首次空配置显示设备页，查看连接与配对指引后前往按键映射启用遥控器。设备页不重复启停或展示最近按键；连接状态投影自现有发现与Core，导航进入时仅在未监听时重新检测。侧栏按键映射、语音工具、设备、插件、通用、关于同级。系统蓝牙管理配对与重连，HID缺失不推断未配对。插件启停与当前语音工具选择分开；不新增麦克风选择，不提前收音。",
     "sourcePaths": [
       "cmd/mimac/startup.go",
       "cmd/mimac/setup.go",
@@ -348,7 +350,9 @@
       "cmd/mimac/live_audio.go",
       "internal/devices/profile.go",
       "internal/adapters/xiaomi/profile.go",
-      "cmd/mimac/device.go"
+      "cmd/mimac/device.go",
+      "cmd/mimac/navigation.go",
+      "cmd/mimac/settings_navigation.go"
     ]
   }
 ]
