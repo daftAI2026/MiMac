@@ -26,7 +26,6 @@ const (
 	permissionGuideIconSlot               float32 = 96
 	permissionGuideIconBox                float32 = 35
 	permissionGuideControlWidth           float32 = 76
-	permissionGuideRowHeight              float32 = 75
 	permissionGuidePollInterval                   = 700 * time.Millisecond
 	permissionGuideFollowInterval                 = 33 * time.Millisecond
 	permissionGuideSettingsLookupInterval         = 500 * time.Millisecond
@@ -297,24 +296,20 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.followMoveFrom = current
 		s.followMoveStarted = time.Now()
 		s.followMoveTime = 250 * time.Millisecond
-		if !s.followActive {
-			s.followMoveTime = 350 * time.Millisecond
-		}
 		s.followTarget = target
 		s.hidePermissionGuideIllustration()
 	}
 	s.followActive = true
-	progress := min(1, float32(time.Since(s.followMoveStarted))/float32(s.followMoveTime))
-	if s.reduceMotion {
-		progress = 1
-	}
-	position := permissionGuideFollowPosition(s.followMoveFrom, target, progress, s.followMoveTime)
-	s.followMoving = progress < 1
+	pointerDown := permissionguide.PrimaryMouseButtonDown()
+	position, moving := s.nextPermissionGuideFollowFrame(target, time.Now(), s.reduceMotion || pointerDown)
+	s.followMoving = moving
 	s.followStartBounds = position
 	if current.X != position.X || current.Y != position.Y {
 		window.SetPosition(position.X, position.Y)
 	}
-	if !s.followMoving {
+	if pointerDown || s.followMoving {
+		s.hidePermissionGuideIllustration()
+	} else {
 		s.syncPermissionGuideIllustration(settingsBounds, display.WorkArea)
 	}
 	s.schedulePermissionGuideFollowTick(window, generation, permissionGuideFollowInterval)
@@ -579,6 +574,9 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 		rowHeights[index] = permissionGuideMeasuredRowHeight(c, row)
 		rowsHeight += rowHeights[index]
 	}
+	if len(rows) > 0 {
+		rowsHeight += float32(len(rows)+1) * lineWidth // Card border and row separators.
+	}
 	if s.guideWindow != nil && len(rows) > 0 {
 		height := 217 + int(math.Ceil(float64(rowsHeight)))
 		if s.guideWindow.Bounds().Height != height {
@@ -627,15 +625,15 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 }
 
 func permissionGuideMeasuredRowHeight(c *ui.Context, row permissionGuideRow) float32 {
-	width := float32(permissionGuideWidth) - 40 - 2*lineWidth - 22 - permissionGuideIconBox - 24 - permissionGuideControlWidth
+	width := float32(permissionGuideWidth) - 40 - 2*lineWidth - 24 - permissionGuideIconBox - 24 - permissionGuideControlWidth
 	_, title := c.MeasureText(width, ui.Span{Text: row.title, Size: permissionGuideRowTitle, Weight: 600})
 	_, description := c.MeasureText(width, ui.Span{Text: row.description, Size: permissionGuideCaption})
-	return max(permissionGuideRowHeight, title+4+description+24)
+	return max(permissionGuideIconBox, max(18, title)+4+description) + 24
 }
 
 func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGuideRow, height float32) {
-	ui.Row(c).Key("permission-guide/"+permissionGuideIDString(row.id)).FillWidth().MinWidth(0).
-		Height(height).Padding(0, 11).Gap(12).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Key("permission-guide/" + permissionGuideIDString(row.id)).FillWidth().MinWidth(0).
+		Height(height).Shrink(0).Padding(12).Gap(12).AlignItems(ui.Start).Children(func() {
 		ui.Box(c).Width(permissionGuideIconBox).Height(permissionGuideIconBox).Shrink(0).Radius(9).Background(a.theme.Surface).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			if icon := s.systemSymbol(row.icon, a.theme.Dark, 18); icon != nil {
 				ui.Image(c, icon).Width(18).Height(18).Fit(ui.Contain).Label(row.title)
@@ -645,7 +643,7 @@ func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGu
 			s.permissionGuideOpenSettingsButton(c, a, row)
 			ui.Text(c, row.description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 		})
-		ui.Row(c).Width(permissionGuideControlWidth).Shrink(0).AlignItems(ui.Center).Justify(ui.End).Children(func() {
+		ui.Row(c).Width(permissionGuideControlWidth).Height(permissionGuideIconBox).Shrink(0).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 			s.permissionGuideAccessControl(c, a, row)
 		})
 	})

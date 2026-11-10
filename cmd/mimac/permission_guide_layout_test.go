@@ -80,8 +80,8 @@ func TestPermissionGuideLayoutKeepsEveryRequiredRowVisible(t *testing.T) {
 	}
 }
 
-func TestPermissionGuideWrappedDescriptionsKeepControlsVerticallyCentered(t *testing.T) {
-	for _, description := range []string{"短说明。", "较长的说明会在权限名称下方自然换行，并保持图标和右侧状态在整行内容的中间。", "这段说明用于覆盖至少三行文字。权限名称与说明保持左对齐，左侧图标和右侧授权状态应当根据整行内容居中，而不是只对齐第一行标题。"} {
+func TestPermissionGuideWrappedDescriptionsKeepControlsOnTheTopIconTrack(t *testing.T) {
+	for _, description := range []string{"短说明。", "较长的说明会在权限名称下方自然换行，图标和右侧状态保持顶部对齐。", "这段说明用于覆盖至少三行文字。权限名称与说明保持左对齐，左侧图标和右侧授权状态保持顶部对齐，文字自然向下延展，不能挤压底部留白。"} {
 		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
 		s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
 		s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", size: 16}] = nil
@@ -104,8 +104,8 @@ func TestPermissionGuideWrappedDescriptionsKeepControlsVerticallyCentered(t *tes
 		if !ok {
 			t.Fatal("status absent")
 		}
-		textCenter := (title.Y + text.Y + text.H) / 2
-		if math.Abs(float64(textCenter-status.Y-status.H/2)) > 1.5 {
+		expectedControlCenter := title.Y - (18-title.H)/2 + permissionGuideIconBox/2
+		if math.Abs(float64(expectedControlCenter-status.Y-status.H/2)) > 1.5 {
 			t.Fatalf("misaligned description height %.1f: title=%v text=%v status=%v", text.H, title, text, status)
 		}
 	}
