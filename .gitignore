@@ -1,6 +1,7 @@
 .DS_Store
 .internal-docs
 .build/
+.mygo/
 dist/
 .cache/
 .toolchains/

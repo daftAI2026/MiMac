@@ -343,9 +343,9 @@ func saveProfile(path string, p mappingProfile) error {
 
 func (s *shell) loadMappings() {
 	defer s.syncVoiceBinding()
-	dir, err := os.UserConfigDir()
+	var err error
+	s.mappingPath, err = hostDataPath("mappings.json")
 	if err == nil {
-		s.mappingPath = filepath.Join(dir, "MiMac", "mappings.json")
 		s.profile, err = readProfile(s.mappingPath)
 	}
 	if err != nil {

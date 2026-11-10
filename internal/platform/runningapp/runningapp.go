@@ -58,6 +58,26 @@ func Find(ctx context.Context, bundleID, appPath, executablePath string) (int32,
 	return findNative(ctx, identity)
 }
 
+// Exists reports whether any active application has the bundle identity.
+// Unlike Find it does not grant a PID/path lease; callers use it only to
+// refuse conflicting access, never to control an application.
+func Exists(ctx context.Context, bundleID string) (bool, error) {
+	if !validIdentityString(bundleID) || strings.TrimSpace(bundleID) == "" {
+		return false, ErrInvalidTarget
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pid, err := findNative(ctx, target{bundleID: bundleID})
+	if errors.Is(err, ErrNotRunning) {
+		return false, nil
+	}
+	if errors.Is(err, ErrAmbiguous) {
+		return true, nil
+	}
+	return pid > 0, err
+}
+
 func validateTarget(bundleID, appPath, executablePath string) (target, error) {
 	if !validIdentityString(bundleID) || strings.TrimSpace(bundleID) == "" ||
 		!validIdentityString(appPath) || !filepath.IsAbs(appPath) ||
@@ -88,8 +108,8 @@ func uniquePID(identity target, applications []applicationSnapshot) (int32, erro
 		if application.pid <= 0 || !filepath.IsAbs(application.bundlePath) || !filepath.IsAbs(application.executablePath) {
 			return 0, ErrReadFailed
 		}
-		if filepath.Clean(application.bundlePath) != identity.bundlePath ||
-			filepath.Clean(application.executablePath) != identity.executablePath {
+		if identity.bundlePath != "" && (filepath.Clean(application.bundlePath) != identity.bundlePath ||
+			filepath.Clean(application.executablePath) != identity.executablePath) {
 			return 0, ErrUnexpectedPath
 		}
 		matched++

@@ -33,7 +33,7 @@ func (s *shell) updateTrayMenu() {
 		{Label: "按键映射…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showPage(pageMappings) }},
 		{Label: "设置…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showSettings() }},
 		mygo.Separator(),
-		{Label: "退出 MiMac", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
+		{Label: "退出 " + mygo.App.Name(), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 	})
 	s.tray.SetMenu(menu)
 }

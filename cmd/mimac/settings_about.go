@@ -36,7 +36,7 @@ func (s *shell) aboutSettings(c *ui.Context, a appearance) {
 					ui.Image(c, s.appIcon).Width(64).Height(64).Fit(ui.Contain).Label("MiMac Logo")
 				}
 				ui.Column(c).Gap(spaceXS).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "MiMac").FontSize(a.fonts.title).FontWeight(600)
+					ui.Text(c, mygo.App.Name()).FontSize(a.fonts.title).FontWeight(600)
 					ui.Text(c, "版本 "+mygo.App.Version()).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
 				})
 			})

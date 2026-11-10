@@ -18,6 +18,8 @@ Apple 语音识别是独立的可选插件，使用 macOS 26+ 的本机 SpeechTr
 go test ./...
 ```
 
+日用版本安装后，开发请运行 `./script/build_and_run.sh --dev`；Codex Run 也使用此入口。它构建独立的 `MiMac Dev.app`（`dev.mimac.app.dev`），配置位于 `~/Library/Application Support/MiMac Dev`，不会替换日用 App 或复制日用配置。开发版默认不接管遥控器、按键输出、系统输入法或音频通路，仍可调整界面、映射和插件配置。`--dev --verify` 执行后台启动与退出检查，`--dev --build-only` 只构建。需要开发版做真实设备验收时，先退出日用 MiMac，再使用 `--dev run -- --device-access --show-settings`；同一遥控器和系统输入源必须串行交接，不能同时接管。
+
 可用 `MIMAC_GO=/path/to/go` 指定工具链，`MIMAC_SIGN_IDENTITY` 指定本机已有签名身份。`--verify` 执行有界的设置窗口启动与退出检查。
 
 现场语音验收使用 `python3 script/live_acceptance.py prepare --help` 所示入口，统一执行构建、身份冻结、当次连接检查、输入窗口准备和被动取证；只有输出 `READY` 才开始按键测试。完成后使用 `python3 script/live_acceptance.py finish <结果目录>` 核对文字、音频桥交付与清理。需要刷新权限时先结束原运行，刷新后加 `--reuse-build --previous-run <上次结果目录>` 按原 SHA 复用同一二进制，避免重新构建使刚刷新的权限失效。 定位无字时可显式加 `--source-check`：同一源音频仅在有界内存中镜像，退出后交本机 Apple 模型复核，报告次级文字、统计和源摘要；不保存 PCM 文件，不把次级结果写进输入框。该诊断默认关闭，模型未就绪时阻止准备，不自动下载。

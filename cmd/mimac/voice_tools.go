@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -122,6 +120,14 @@ func (s *shell) ensureVoiceInputSource(tool *voiceTool) error {
 	target, required := requiredInputSourceForSelection(tool)
 	if !required {
 		return nil
+	}
+	// Selecting a tool still saves Dev preferences, without changing the
+	// system input source used by the daily app.
+	if s.isolatedDevelopment {
+		return nil
+	}
+	if err := s.requireDeviceAccess(); err != nil {
+		return err
 	}
 	controller := s.inputSourceController()
 	actual, err := controller.CurrentID()
@@ -409,12 +415,11 @@ func (s *shell) loadVoiceTools() {
 		return
 	}
 	s.toolLocator = locator
-	base, err := os.UserConfigDir()
+	s.toolPreferencesPath, err = hostDataPath("tools.json")
 	if err != nil {
 		s.toolLoadFailed, s.toolError = true, "插件设置位置不可用"
 		return
 	}
-	s.toolPreferencesPath = filepath.Join(base, "MiMac", "tools.json")
 	s.toolPreferences, err = readToolPreferences(s.toolPreferencesPath)
 	if err != nil {
 		s.toolLoadFailed, s.toolError = true, "插件设置读取失败，原文件已保留"

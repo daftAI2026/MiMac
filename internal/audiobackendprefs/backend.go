@@ -30,14 +30,6 @@ type document struct {
 	Backend string `json:"backend,omitempty"`
 }
 
-func DefaultPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "MiMac", "audio-backend.json"), nil
-}
-
 func Validate(backend string) error {
 	if backend != "" && backend != CompatibilityBackend {
 		return fmt.Errorf("audio backend must be %s or empty", CompatibilityBackend)

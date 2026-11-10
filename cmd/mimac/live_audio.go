@@ -41,7 +41,7 @@ func validateAudioBackend(backend string) error {
 }
 
 func (s *shell) desiredLiveAudioTool() *voiceTool {
-	if !s.audioRequested() || s.closing || s.plugins == nil || s.coordinator == nil ||
+	if s.requireDeviceAccess() != nil || !s.audioRequested() || s.closing || s.plugins == nil || s.coordinator == nil ||
 		!s.remoteHasReservation() || s.remoteState.stopPending || s.remoteState.cleanupInFlight {
 		return nil
 	}
