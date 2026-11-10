@@ -16,17 +16,23 @@ import (
 )
 
 var permissionGuideIconMotion = ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: .25}}
-var permissionGuideJoinEase = ui.CubicBezier(.42, 0, .58, 1)
 var permissionGuideFollowEase = ui.CubicBezier(0, 0, .58, 1)
 
-func permissionGuideFollowPosition(from, to mygo.Rectangle, progress float32, duration time.Duration) mygo.Rectangle {
+func permissionGuideFollowPosition(from, to mygo.Rectangle, progress float32) mygo.Rectangle {
 	progress = max(0, min(1, progress))
-	ease := permissionGuideFollowEase
-	if duration == 350*time.Millisecond {
-		ease = permissionGuideJoinEase
-	}
-	t := float64(ease(progress))
+	t := float64(permissionGuideFollowEase(progress))
 	return mygo.Rectangle{X: from.X + int(math.Round(float64(to.X-from.X)*t)), Y: from.Y + int(math.Round(float64(to.Y-from.Y)*t)), Width: to.Width, Height: to.Height}
+}
+
+// Direct movement completes the current transition so releasing the pointer
+// cannot replay an older interpolated position.
+func (s *shell) nextPermissionGuideFollowFrame(target mygo.Rectangle, now time.Time, direct bool) (mygo.Rectangle, bool) {
+	if direct {
+		s.followMoveFrom = target
+		s.followMoveStarted = now.Add(-s.followMoveTime)
+	}
+	progress := min(1, float32(now.Sub(s.followMoveStarted))/float32(s.followMoveTime))
+	return permissionGuideFollowPosition(s.followMoveFrom, target, progress), progress < 1
 }
 
 func (s *shell) permissionGuideAppIcon(c *ui.Context) {

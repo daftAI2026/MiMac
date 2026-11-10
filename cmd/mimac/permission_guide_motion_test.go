@@ -43,20 +43,18 @@ func TestPermissionGuideFlightStaysInsideItsTransparentWindow(t *testing.T) {
 func TestPermissionGuideFollowFinishesAtTheActualTarget(t *testing.T) {
 	from := mygo.Rectangle{X: -700, Y: 300, Width: 500, Height: 442}
 	to := mygo.Rectangle{X: 1016, Y: 96, Width: 500, Height: 442}
-	for _, duration := range []time.Duration{350 * time.Millisecond, 250 * time.Millisecond} {
-		start := permissionGuideFollowPosition(from, to, 0, duration)
-		end := permissionGuideFollowPosition(from, to, 1, duration)
-		if start != from || end != to {
-			t.Fatalf("movement endpoints: %v -> %v", start, end)
+	start := permissionGuideFollowPosition(from, to, 0)
+	end := permissionGuideFollowPosition(from, to, 1)
+	if start != from || end != to {
+		t.Fatalf("movement endpoints: %v -> %v", start, end)
+	}
+	previous := start.X
+	for i := 1; i < 100; i++ {
+		p := permissionGuideFollowPosition(from, to, float32(i)/100)
+		if p.X < previous || p.X > to.X || p.Y < to.Y || p.Y > from.Y {
+			t.Fatalf("overshot at %d: %v", i, p)
 		}
-		previous := start.X
-		for i := 1; i < 100; i++ {
-			p := permissionGuideFollowPosition(from, to, float32(i)/100, duration)
-			if p.X < previous || p.X > to.X || p.Y < to.Y || p.Y > from.Y {
-				t.Fatalf("overshot at %d: %v", i, p)
-			}
-			previous = p.X
-		}
+		previous = p.X
 	}
 }
 
@@ -125,5 +123,32 @@ func TestPermissionGuideDragPreviewContainsOnlyIconPixels(t *testing.T) {
 	}
 	if preview.RGBAAt(48, 48).A == 0 {
 		t.Fatal("icon is absent")
+	}
+}
+
+func TestPermissionGuideDirectFollowDoesNotReplayOnPointerRelease(t *testing.T) {
+	from := mygo.Rectangle{X: 100, Y: 100, Width: 500, Height: 367}
+	target := mygo.Rectangle{X: 400, Y: 200, Width: 500, Height: 367}
+	now := time.Unix(100, 0)
+	s := &shell{permissionGuideState: permissionGuideState{followMoveFrom: from, followMoveStarted: now, followMoveTime: 250 * time.Millisecond}}
+	halfway, moving := s.nextPermissionGuideFollowFrame(target, now.Add(125*time.Millisecond), false)
+	if !moving || halfway.X <= from.X || halfway.X >= target.X {
+		t.Fatalf("normal interpolation: %v %t", halfway, moving)
+	}
+	direct, moving := s.nextPermissionGuideFollowFrame(target, now.Add(130*time.Millisecond), true)
+	if direct != target || moving {
+		t.Fatalf("direct movement: %v %t", direct, moving)
+	}
+	released, moving := s.nextPermissionGuideFollowFrame(target, now.Add(150*time.Millisecond), false)
+	if released != target || moving {
+		t.Fatalf("release replayed old transition: %v %t", released, moving)
+	}
+	next := target
+	next.X += 100
+	s.followMoveFrom = target
+	s.followMoveStarted = now.Add(time.Second)
+	position, moving := s.nextPermissionGuideFollowFrame(next, now.Add(time.Second+125*time.Millisecond), false)
+	if !moving || position.X <= target.X || position.X >= next.X {
+		t.Fatalf("later idle move lost animation: %v %t", position, moving)
 	}
 }

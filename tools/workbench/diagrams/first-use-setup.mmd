@@ -23,7 +23,8 @@ flowchart TD
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权或打开设置"]
     grantAction --> settings["打开对应系统设置页，面板并排跟随窗口"]
-    settings --> illustration["透明非激活窗口显示拖放示意，减少动态效果时静止"]
+    settings --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
+    follow --> illustration["透明非激活窗口显示拖放示意，减少动态效果时静止"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
     drag --> guideRefresh
     missing -->|否| complete["显示已完成；可关闭，不接管设备"]

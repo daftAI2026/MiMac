@@ -270,6 +270,7 @@ type cgRect struct{ X, Y, Width, Height float64 }
 var windowListAPI struct {
 	once          sync.Once
 	windowList    func(uint32, uint32) uintptr
+	buttonState   func(int32, uint32) bool
 	arrayCount    func(uintptr) int64
 	arrayValue    func(uintptr, int64) uintptr
 	dictionaryGet func(uintptr, uintptr) uintptr
@@ -300,6 +301,7 @@ func loadWindowListAPI() error {
 			target  any
 		}{
 			{graphics, "CGWindowListCopyWindowInfo", &windowListAPI.windowList},
+			{graphics, "CGEventSourceButtonState", &windowListAPI.buttonState},
 			{coreFoundation, "CFArrayGetCount", &windowListAPI.arrayCount},
 			{coreFoundation, "CFArrayGetValueAtIndex", &windowListAPI.arrayValue},
 			{coreFoundation, "CFDictionaryGetValue", &windowListAPI.dictionaryGet},
@@ -399,4 +401,15 @@ type windowQueryError struct{}
 
 func (*windowQueryError) Error() string {
 	return "permissionguide: invalid CoreGraphics window metadata"
+}
+
+// PrimaryMouseButtonDown reads the HID state table. It installs no event tap
+// and neither requests Input Monitoring nor records pointer events.
+func PrimaryMouseButtonDown() bool {
+	if loadWindowListAPI() != nil {
+		return false
+	}
+	const hidSystemState int32 = 1
+	const leftMouseButton uint32 = 0
+	return windowListAPI.buttonState(hidSystemState, leftMouseButton)
 }
