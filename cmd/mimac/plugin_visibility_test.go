@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"mimac.local/mimac/internal/pluginrt"
 	"mimac.local/mimac/internal/voicetools"
 )
 
@@ -82,6 +83,26 @@ func (r *fakeVoiceToolRuntime) Enable(id string) error {
 		tool.snapshot = tool.discover(context.Background(), voicetools.Locator{})
 	}
 	return nil
+}
+
+func newVisibilityTestRuntime(t *testing.T, tools []*voiceTool) *pluginrt.Runtime {
+	t.Helper()
+	manifests := make([]pluginrt.Manifest, 0, len(tools))
+	for _, tool := range tools {
+		tool := tool
+		manifests = append(manifests, pluginrt.Manifest{ID: tool.id, Start: func() (pluginrt.StopFunc, error) {
+			tool.active = true
+			return func() error {
+				tool.active = false
+				return nil
+			}, nil
+		}})
+	}
+	runtime, err := pluginrt.New(manifests...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime
 }
 
 func TestReleaseReadyVoicePluginsStayVisibleWhenInactiveOrUninstalled(t *testing.T) {
@@ -183,6 +204,86 @@ func TestRestoreVoiceToolsUsesVisibilityGateWithoutRewritingPreferences(t *testi
 			}
 			if !bytes.Equal(got, original) {
 				t.Fatalf("tools.json bytes changed: got %q, want %q", got, original)
+			}
+		})
+	}
+}
+
+func TestVoiceToolTogglePreservesHiddenCurrentUntilExplicitSelection(t *testing.T) {
+	for _, development := range []bool{false, true} {
+		name := "release"
+		if development {
+			name = "development"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tools.json")
+			visible := &voiceTool{id: "voice-doubao", name: "Doubao", releaseReady: true}
+			hidden := &voiceTool{id: "voice-typeless", name: "Typeless"}
+			tools := []*voiceTool{visible, hidden}
+			saved := toolPreferences{Version: 1, Enabled: []string{hidden.id}, Current: hidden.id}
+			if err := saveToolPreferences(path, saved); err != nil {
+				t.Fatal(err)
+			}
+			preferences, err := readToolPreferences(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &shell{development: development, voiceToolsState: voiceToolsState{
+				tools: tools, toolPreferences: preferences, toolPreferencesPath: path,
+			}}
+			s.plugins = newVisibilityTestRuntime(t, tools)
+			if s.restoreVoiceTools(s.toolPreferences, s.plugins.Enable) {
+				t.Fatal("plugin restoration failed")
+			}
+
+			expectedRuntimeCurrent := ""
+			if development {
+				expectedRuntimeCurrent = hidden.id
+			}
+			assertSaved := func(wantEnabled []string, wantCurrent string) {
+				t.Helper()
+				got, err := readToolPreferences(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(got.Enabled, wantEnabled) || got.Current != wantCurrent {
+					t.Fatalf("saved preferences = %+v, want Enabled=%v Current=%q", got, wantEnabled, wantCurrent)
+				}
+			}
+			assertRuntimeCurrent := func() {
+				t.Helper()
+				if s.currentVoiceTool != expectedRuntimeCurrent {
+					t.Fatalf("runtime Current = %q, want %q", s.currentVoiceTool, expectedRuntimeCurrent)
+				}
+				if s.plugins.Active(hidden.id) != development {
+					t.Fatalf("hidden plugin active = %t, want %t", s.plugins.Active(hidden.id), development)
+				}
+			}
+			assertRuntimeCurrent()
+
+			if err := s.setVoiceToolEnabled(visible, true); err != nil {
+				t.Fatal(err)
+			}
+			assertSaved([]string{hidden.id, visible.id}, hidden.id)
+			assertRuntimeCurrent()
+
+			if err := s.setVoiceToolEnabled(visible, false); err != nil {
+				t.Fatal(err)
+			}
+			assertSaved([]string{hidden.id}, hidden.id)
+			assertRuntimeCurrent()
+
+			if err := s.setVoiceToolEnabled(visible, true); err != nil {
+				t.Fatal(err)
+			}
+			assertSaved([]string{hidden.id, visible.id}, hidden.id)
+			assertRuntimeCurrent()
+			if err := s.selectVoiceTool(visible); err != nil {
+				t.Fatal(err)
+			}
+			assertSaved([]string{hidden.id, visible.id}, visible.id)
+			if s.currentVoiceTool != visible.id || s.plugins.Active(hidden.id) != development {
+				t.Fatalf("explicit selection state: Current=%q hiddenActive=%t", s.currentVoiceTool, s.plugins.Active(hidden.id))
 			}
 		})
 	}

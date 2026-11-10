@@ -46,8 +46,7 @@ func TestFirstRunSettingsRequiredRequiresNoSavedHostToolMappingOrAudioConfig(t *
 		filepath.Join(root, "mappings.json"),
 		filepath.Join(root, "audio-backend.json"),
 	}
-	value := defaultHostPreferences()
-	if !firstRunSettingsRequired(value, false, paths...) {
+	if !firstRunSettingsRequired(false, paths...) {
 		t.Fatal("missing configuration should request the initial settings window")
 	}
 	for _, path := range paths {
@@ -55,7 +54,7 @@ func TestFirstRunSettingsRequiredRequiresNoSavedHostToolMappingOrAudioConfig(t *
 			if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if firstRunSettingsRequired(value, false, paths...) {
+			if firstRunSettingsRequired(false, paths...) {
 				t.Fatal("existing user configuration should suppress automatic settings")
 			}
 			if err := os.Remove(path); err != nil {
@@ -65,22 +64,19 @@ func TestFirstRunSettingsRequiredRequiresNoSavedHostToolMappingOrAudioConfig(t *
 	}
 }
 
-func TestFirstRunSettingsRequiredHonorsMarkerAndUnreadablePreferences(t *testing.T) {
+func TestFirstRunSettingsRequiredSuppressesRepeatAfterPreferencesAreSaved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+	if firstRunSettingsRequired(false, path) != true {
+		t.Fatal("missing preferences should request the initial settings window")
+	}
+	s := shell{preferencesState: preferencesState{value: defaultHostPreferences(), path: path}}
+	if err := s.markFirstRunSettingsShown(); err != nil {
 		t.Fatal(err)
 	}
-
-	value := defaultHostPreferences()
-	value.FirstRunSettingsShown = true
-	if firstRunSettingsRequired(value, false) {
-		t.Fatal("a shown first-run settings window should not appear again")
+	if firstRunSettingsRequired(false, path) {
+		t.Fatal("saved default preferences should suppress another automatic first run")
 	}
-	value.FirstRunSettingsShown = false
-	if firstRunSettingsRequired(value, true) {
+	if firstRunSettingsRequired(true, path) {
 		t.Fatal("a failed preference load should not trigger an automatic write or window")
-	}
-	if firstRunSettingsRequired(value, false, path) {
-		t.Fatal("existing host preferences should suppress automatic settings")
 	}
 }

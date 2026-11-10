@@ -32,4 +32,4 @@ flowchart LR
     controls -->|Changed| activation["调用原启停入口；失败后继续显示实际状态"]
     activation --> runtime
     ready --> restore["启动仅恢复可用插件；未开放Current在运行时清空"]
-    saved["筛选不改写已保存配置或注册表"] -.-> visibility
+    saved["筛选不改写已保存配置或注册表；启停其他项保留隐藏选择"] -.-> visibility

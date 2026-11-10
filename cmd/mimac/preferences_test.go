@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,7 +16,7 @@ func TestReadHostPreferencesMissingDefaultsToHiddenDockAndVoiceOverlay(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != preferencesVersion || got.ShowInDock || !got.ShowVoiceOverlay || got.Appearance != mygo.ThemeSystem || got.FirstRunSettingsShown {
+	if got.Version != preferencesVersion || got.ShowInDock || !got.ShowVoiceOverlay || got.Appearance != mygo.ThemeSystem {
 		t.Fatalf("default preferences = %+v, want version %d, hidden Dock, voice overlay enabled, and system appearance", got, preferencesVersion)
 	}
 }
@@ -51,7 +53,7 @@ func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemWithoutMigrat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem, FirstRunSettingsShown: true}) {
+	if got != (hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}) {
 		t.Fatalf("read legacy preferences = %+v", got)
 	}
 	after, err := os.ReadFile(path)
@@ -63,51 +65,37 @@ func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemWithoutMigrat
 	}
 }
 
-func TestReadHostPreferencesHonorsExplicitFirstRunMarker(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		raw  string
-		want bool
-	}{
-		{name: "not shown", raw: `{"version":1,"show_in_dock":false,"first_run_settings_shown":false}`, want: false},
-		{name: "shown", raw: `{"version":1,"show_in_dock":false,"first_run_settings_shown":true}`, want: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "preferences.json")
-			if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			got, err := readHostPreferences(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.FirstRunSettingsShown != tc.want {
-				t.Fatalf("first-run marker = %t, want %t", got.FirstRunSettingsShown, tc.want)
-			}
-		})
-	}
-}
-
 func TestMarkFirstRunSettingsShownPersistsWithoutChangingOtherPreferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	want := defaultHostPreferences()
 	want.ShowInDock = true
 	want.Appearance = mygo.ThemeDark
-	if err := saveHostPreferences(path, want); err != nil {
-		t.Fatal(err)
-	}
-
 	s := shell{preferencesState: preferencesState{value: want, path: path}}
 	if err := s.markFirstRunSettingsShown(); err != nil {
 		t.Fatal(err)
 	}
-	want.FirstRunSettingsShown = true
 	got, err := readHostPreferences(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != want || s.preferencesState.value != want {
-		t.Fatalf("marked preferences = %+v in-memory=%+v, want %+v", got, s.preferencesState.value, want)
+		t.Fatalf("saved preferences = %+v in-memory=%+v, want %+v", got, s.preferencesState.value, want)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previousStrictSchema struct {
+		Version          int               `json:"version"`
+		ShowInDock       *bool             `json:"show_in_dock"`
+		ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
+		Appearance       *mygo.ThemeSource `json:"appearance"`
+		TextSize         int               `json:"text_size,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&previousStrictSchema); err != nil {
+		t.Fatalf("saved preferences are unreadable by the previous strict v1 schema: %v", err)
 	}
 }
 

@@ -27,8 +27,8 @@ func firstRunSettingsPage(plan initialSettingsPlan) settingsPage {
 	return ""
 }
 
-func firstRunSettingsRequired(value hostPreferences, preferencesLoadFailed bool, configPaths ...string) bool {
-	if preferencesLoadFailed || value.FirstRunSettingsShown {
+func firstRunSettingsRequired(preferencesLoadFailed bool, configPaths ...string) bool {
+	if preferencesLoadFailed {
 		return false
 	}
 	for _, path := range configPaths {
@@ -52,7 +52,6 @@ func (s *shell) shouldPresentFirstRunSettings() bool {
 		return false
 	}
 	return firstRunSettingsRequired(
-		s.preferencesState.value,
 		s.preferencesState.loadFailed,
 		s.preferencesState.path,
 		s.mappingPath,
@@ -61,13 +60,9 @@ func (s *shell) shouldPresentFirstRunSettings() bool {
 	)
 }
 
-// Marking happens only after showSettings has created the window. The caller
-// may ignore a persistence error: the settings window remains usable.
+// Persisting the default preferences after showSettings has created the window
+// makes the existing preferences file suppress another automatic first run.
+// The caller may ignore a persistence error: the settings window remains usable.
 func (s *shell) markFirstRunSettingsShown() error {
-	if s.preferencesState.value.FirstRunSettingsShown {
-		return nil
-	}
-	next := s.preferencesState.value
-	next.FirstRunSettingsShown = true
-	return s.savePreferences(next)
+	return s.savePreferences(s.preferencesState.value)
 }

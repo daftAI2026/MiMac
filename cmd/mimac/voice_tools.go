@@ -442,19 +442,35 @@ func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
 	if tool.active == enabled {
 		return nil
 	}
-	next := toolPreferences{Version: 1, Enabled: slices.Clone(s.toolPreferences.Enabled), Current: s.currentVoiceTool}
+	// A build-hidden saved Current can be blank at runtime; unrelated toggles must preserve it.
+	runtimeCurrent := s.currentVoiceTool
+	savedCurrent := runtimeCurrent
+	if savedCurrent == "" && s.toolPreferences.Current != "" {
+		for _, candidate := range s.tools {
+			if candidate.id == s.toolPreferences.Current && !s.voicePluginVisible(candidate) {
+				savedCurrent = s.toolPreferences.Current
+				break
+			}
+		}
+	}
+	next := toolPreferences{Version: 1, Enabled: slices.Clone(s.toolPreferences.Enabled), Current: savedCurrent}
 	next.Enabled = slices.DeleteFunc(next.Enabled, func(id string) bool { return id == tool.id })
 	if enabled {
 		next.Enabled = append(next.Enabled, tool.id)
-	} else if next.Current == tool.id {
-		next.Current = ""
+	} else {
+		if next.Current == tool.id {
+			next.Current = ""
+		}
+		if runtimeCurrent == tool.id {
+			runtimeCurrent = ""
+		}
 	}
 	if err := saveToolPreferences(s.toolPreferencesPath, next); err != nil {
 		s.toolError = "保存失败，插件未更改"
 		return err
 	}
 	s.toolPreferences = next
-	s.currentVoiceTool = next.Current
+	s.currentVoiceTool = runtimeCurrent
 	var err error
 	if enabled {
 		err = s.plugins.Enable(tool.id)

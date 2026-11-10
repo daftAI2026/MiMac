@@ -1,8 +1,8 @@
 flowchart TD
-    launch["普通启动"] --> known{"已有设置或展示标记？"}
+    launch["普通启动"] --> known{"已有配置？"}
     known -->|是| tray["保留菜单栏启动行为"]
-    known -->|否| device["显示设备页，成功后记一次标记"]
-    explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不消耗首启标记"]
+    known -->|否| device["显示设备页，成功后保存原格式默认偏好"]
+    explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
     detected -->|是| connected["显示已连接，无需再次配对"]
     connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
