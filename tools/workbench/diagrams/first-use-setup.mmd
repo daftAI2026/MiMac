@@ -1,7 +1,20 @@
 flowchart TD
-    launch["普通启动"] --> known{"已有配置？"}
+    launch["普通启动"] --> resume{"首启记录未完成？"}
+    resume -->|是| onboarding["打开完整首启窗口"]
+    resume -->|否| known{"已有配置或已完成？"}
     known -->|是| tray["保留菜单栏启动行为"]
-    known -->|否| device["显示设备页，成功后保存原格式默认偏好"]
+    known -->|否| onboarding
+    reopenJourney["菜单：使用引导"] --> onboarding
+    onboarding --> deviceStep["第1步：连接遥控器"]
+    deviceStep --> device["只读检测，显示插件连接指引"]
+    deviceStep --> toolStep["第2步：准备语音工具"]
+    toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
+    explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
+    toolStep --> permissionStep["第3步：系统权限"]
+    permissionStep --> permissionGuide["显式打开可关闭的系统权限引导"]
+    permissionStep --> finish["进入按键映射：保存首启完成，不代表设备已就绪"]
+    finish --> mappings
+    onboarding -->|中途关闭| pending["保留未完成标记，下次继续"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]

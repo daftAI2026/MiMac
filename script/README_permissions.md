@@ -20,6 +20,12 @@ Beta uses the daily identity so its preferences and permissions carry across upg
 5. For a Beta artifact, freeze a clean source commit, prepare the date/build version with `release_version.py`, build through MyGo, then run `verify_release.py` for the chosen component profile. Package only that verified daily `MiMac.app` with `package_dmg.py`, keeping the JSON manifest and SHA256 alongside the DMG. The single centered app is the double-click installation entry; no Applications drag target is shown. Do not package a Dev app as Beta or replace `/Applications/MiMac.app` merely to verify an archive.
 6. Before any live test, bind the actual PID, canonical bundle path, Bundle ID, executable and native-library hashes. `live_acceptance.py prepare/finish` currently supports the daily source-build lane only: it resolves daily configuration and `dist/.../MiMac.app`, and may invoke the daily builder. Do not use it to test a Dev or installed Beta binary. Dev and Beta artifact tests must explicitly bind their own paths and avoid launching another lane; a successful source-build test is not artifact acceptance. Notify a tester only after the selected lane has verified current permissions, route, target and focus. A green System Settings toggle or a different build’s earlier result is not current capability evidence.
 
+## Inspect first-use UI
+
+Use the isolated Dev bundle with `--show-onboarding` to reopen the three-step guide. Explicit display does not reset or create the saved first-use marker; the final action records completion. An unfinished automatic first run resumes even if tool settings were saved during the guide. Existing installations without a marker keep their normal launch behavior. `--show-settings` remains the explicit settings-only diagnostic entry.
+
+Opening or navigating the guide does not enable a remote or begin recording. Choosing a voice tool uses the existing plugin and Current selection action; downloading its model or opening its download page is explicit. UI verification can navigate pages without choosing a tool, changing system input sources, or acquiring shared hardware.
+
 ## Refresh one exact privacy identity
 
 This refresh helper is intentionally restricted to the daily `dev.mimac.app` identity and the exact `MiMac` System Settings row; a Dev bundle is rejected before UI actions. For Dev permissions, use the Dev app’s own permission guide. Only the later hardware test requires an explicit device handoff. Never pass a daily path as a workaround for a Dev denial.
