@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"image"
 	"image/png"
 	"math"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	brand "mimac.local/mimac/Assets/Brand"
 	"mimac.local/mimac/internal/adapters/keyoutput"
@@ -23,31 +23,39 @@ const (
 	permissionGuideRowTitle               float32 = 14
 	permissionGuideCaption                float32 = 12
 	permissionGuideIconSize               float32 = 80
+	permissionGuideIconSlot               float32 = 96
 	permissionGuideIconBox                float32 = 35
-	permissionGuideRowHeight              float32 = 72
+	permissionGuideControlWidth           float32 = 76
+	permissionGuideRowHeight              float32 = 75
 	permissionGuidePollInterval                   = 700 * time.Millisecond
 	permissionGuideFollowInterval                 = 33 * time.Millisecond
 	permissionGuideSettingsLookupInterval         = 500 * time.Millisecond
-	permissionGuideEntranceDuration               = 250 * time.Millisecond
-	permissionGuideWindowGap                      = 12
+	permissionGuideWindowGap                      = 16
 )
 
 type permissionGuideState struct {
 	guideWindow       *mygo.Window
 	snapshot          permissionGuideSnapshot
-	dragPrompt        bool
 	phase             permissionGuidePhase
 	currentID         permissionGuideID
 	settingsOpenedFor permissionGuideID
 	generation        uint64
 	pollTimer         *time.Timer
-	animationTimer    *time.Timer
 	followTimer       *time.Timer
 	followActive      bool
 	followManual      bool
 	followTarget      mygo.Rectangle
 	followStartBounds mygo.Rectangle
-	animationStarted  time.Time
+	followMoveStarted time.Time
+	followMoveFrom    mygo.Rectangle
+	followMoveTime    time.Duration
+	followMoving      bool
+	iconDragPreview   *image.RGBA
+	iconBounds        ui.Rect
+	iconDragging      bool
+	hasDraggedIcon    bool
+	reduceMotion      bool
+	illustration      *permissionGuideIllustration
 }
 
 type permissionGuidePhase uint8
@@ -110,7 +118,8 @@ func (s *shell) showPermissionGuide() {
 	}
 	s.generation++
 	generation := s.generation
-	s.dragPrompt = false
+	s.iconBounds = ui.Rect{}
+	s.iconDragging, s.hasDraggedIcon = false, false
 	s.snapshot = s.readPermissionGuideSnapshot()
 	s.phase = permissionGuideWaiting
 	s.currentID = 0
@@ -132,7 +141,6 @@ func (s *shell) showPermissionGuide() {
 	window.OnHide(func() {
 		if s.guideWindow == window && s.generation == generation {
 			s.stopPermissionGuidePolling()
-			s.stopPermissionGuideAnimation()
 			s.stopPermissionGuideFollowing()
 		}
 	})
@@ -144,10 +152,7 @@ func (s *shell) showPermissionGuide() {
 	window.OnMove(func() {
 		if s.guideWindow == window && (s.followActive || s.followTimer != nil) {
 			bounds := window.Bounds()
-			if s.followActive && (bounds.X != s.followTarget.X || bounds.Y != s.followTarget.Y) {
-				s.followManual = true
-				s.stopPermissionGuideFollowing()
-			} else if !s.followActive && (bounds.X != s.followStartBounds.X || bounds.Y != s.followStartBounds.Y) {
+			if bounds.X != s.followStartBounds.X || bounds.Y != s.followStartBounds.Y {
 				s.followManual = true
 				s.stopPermissionGuideFollowing()
 			}
@@ -156,9 +161,10 @@ func (s *shell) showPermissionGuide() {
 	window.OnClosed(func() {
 		if s.guideWindow == window {
 			s.cancelPermissionGuideTimers()
+			s.closePermissionGuideIllustration()
 			permissionguide.CancelBluetoothRequest()
 			s.guideWindow = nil
-			s.dragPrompt = false
+			s.iconDragPreview = nil
 			s.phase = permissionGuideIdle
 			s.currentID = 0
 			s.settingsOpenedFor = 0
@@ -187,32 +193,11 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 	if window == nil || window.IsDestroyed() || s.guideWindow != window || s.generation != generation {
 		return
 	}
-	s.stopPermissionGuideAnimation()
-	window.SetOpacity(0)
 	window.Show()
 	if !window.IsVisible() {
 		return
 	}
-	s.animationStarted = time.Now()
-	s.animatePermissionGuideWindow(window, generation)
 	s.advancePermissionGuide()
-}
-
-func (s *shell) animatePermissionGuideWindow(window *mygo.Window, generation uint64) {
-	if window == nil || window.IsDestroyed() || s.guideWindow != window || s.generation != generation {
-		return
-	}
-	progress := float64(time.Since(s.animationStarted)) / float64(permissionGuideEntranceDuration)
-	progress = math.Max(0, math.Min(1, progress))
-	eased := 1 - math.Pow(1-progress, 3)
-	window.SetOpacity(eased)
-	if progress >= 1 {
-		s.animationTimer = nil
-		return
-	}
-	s.animationTimer = time.AfterFunc(16*time.Millisecond, func() {
-		mygo.RunOnMain(func() { s.animatePermissionGuideWindow(window, generation) })
-	})
 }
 
 func (s *shell) advancePermissionGuide() {
@@ -234,7 +219,6 @@ func (s *shell) advancePermissionGuide() {
 		s.phase = permissionGuideComplete
 		s.currentID = 0
 		s.settingsOpenedFor = 0
-		s.dragPrompt = false
 		s.stopPermissionGuideFollowing()
 		s.guideWindow.Invalidate()
 		return
@@ -242,16 +226,13 @@ func (s *shell) advancePermissionGuide() {
 	if s.currentID != nextID {
 		s.currentID = nextID
 		s.settingsOpenedFor = 0
-		s.dragPrompt = false
 		s.followManual = false
 		s.stopPermissionGuideFollowing()
 	}
 	s.phase = permissionGuideWaiting
-	access, _ := permissionGuideAccessForID(s.snapshot, nextID)
-	if !s.snapshot.actionsEnabled || !permissionGuideAutoOpenSettings(access) || s.settingsOpenedFor == nextID {
-		return
+	if s.followTimer == nil && !s.followManual {
+		s.schedulePermissionGuideFollowing(s.guideWindow, s.generation)
 	}
-	s.openPermissionGuideSettings(nextID, false)
 }
 
 func permissionGuideAccessForID(snapshot permissionGuideSnapshot, id permissionGuideID) (permissionGuideAccess, bool) {
@@ -261,15 +242,6 @@ func permissionGuideAccessForID(snapshot permissionGuideSnapshot, id permissionG
 		}
 	}
 	return permissionGuideUnknown, false
-}
-
-func permissionGuideAutoOpenSettings(access permissionGuideAccess) bool {
-	switch access {
-	case permissionGuideNotDetermined, permissionGuideNotGranted, permissionGuideDenied:
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *shell) schedulePermissionGuidePoll(window *mygo.Window, generation uint64) {
@@ -306,6 +278,7 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	settingsBounds, found := permissionguide.SystemSettingsWindowBounds()
 	if !found {
 		s.followActive = false
+		s.hidePermissionGuideIllustration()
 		s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
 		return
 	}
@@ -319,13 +292,31 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
 		return
 	}
-	s.followActive = true
-	s.followTarget = target
 	current := window.Bounds()
-	if current.X != target.X || current.Y != target.Y {
-		window.SetPosition(target.X, target.Y)
+	if !s.followActive || target != s.followTarget {
+		s.followMoveFrom = current
+		s.followMoveStarted = time.Now()
+		s.followMoveTime = 250 * time.Millisecond
+		if !s.followActive {
+			s.followMoveTime = 350 * time.Millisecond
+		}
+		s.followTarget = target
+		s.hidePermissionGuideIllustration()
 	}
-	s.followStartBounds = target
+	s.followActive = true
+	progress := min(1, float32(time.Since(s.followMoveStarted))/float32(s.followMoveTime))
+	if s.reduceMotion {
+		progress = 1
+	}
+	position := permissionGuideFollowPosition(s.followMoveFrom, target, progress, s.followMoveTime)
+	s.followMoving = progress < 1
+	s.followStartBounds = position
+	if current.X != position.X || current.Y != position.Y {
+		window.SetPosition(position.X, position.Y)
+	}
+	if !s.followMoving {
+		s.syncPermissionGuideIllustration(settingsBounds, display.WorkArea)
+	}
 	s.schedulePermissionGuideFollowTick(window, generation, permissionGuideFollowInterval)
 }
 
@@ -361,7 +352,7 @@ func permissionGuideCompanionBounds(settings permissionguide.Rect, workArea, cur
 	if !leftFits || (rightFits && absInt(rightX-current.X) < absInt(leftX-current.X)) {
 		x = rightX
 	}
-	y := current.Y
+	y := int(math.Round(settings.Y + 16))
 	if y < workArea.Y {
 		y = workArea.Y
 	}
@@ -385,24 +376,18 @@ func (s *shell) stopPermissionGuidePolling() {
 	}
 }
 
-func (s *shell) stopPermissionGuideAnimation() {
-	if s.animationTimer != nil {
-		s.animationTimer.Stop()
-		s.animationTimer = nil
-	}
-}
-
 func (s *shell) stopPermissionGuideFollowing() {
 	if s.followTimer != nil {
 		s.followTimer.Stop()
 		s.followTimer = nil
 	}
 	s.followActive = false
+	s.followMoving = false
+	s.hidePermissionGuideIllustration()
 }
 
 func (s *shell) cancelPermissionGuideTimers() {
 	s.stopPermissionGuidePolling()
-	s.stopPermissionGuideAnimation()
 	s.stopPermissionGuideFollowing()
 }
 
@@ -414,7 +399,7 @@ func (s *shell) refreshPermissionGuide() {
 		return
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
-	if permissionGuideWindowHeight(nextSnapshot) != permissionGuideWindowHeight(s.snapshot) {
+	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
@@ -423,7 +408,10 @@ func (s *shell) refreshPermissionGuide() {
 }
 
 func permissionGuideWindowHeight(snapshot permissionGuideSnapshot) int {
-	return 223 + len(snapshot.rows)*73
+	if len(snapshot.rows) == 0 {
+		return 261
+	}
+	return 217 + len(snapshot.rows)*75
 }
 
 func (s *shell) readPermissionGuideSnapshot() permissionGuideSnapshot {
@@ -457,9 +445,9 @@ func (s *shell) readPermissionGuideSnapshot() permissionGuideSnapshot {
 func (s *shell) requiredPermissionGuideIDs() []permissionGuideID {
 	plugin := s.activeDevicePlugin()
 	hasSelectedDevice := plugin.ModuleID != "" && plugin.Profile.ID != ""
-	hasOutputMapping := s.coordinator != nil && s.coordinator.hasExecutableMapping()
+	hasKeyOutput := hasSelectedDevice || (s.coordinator != nil && s.coordinator.hasExecutableMapping())
 	hasBluetoothVoiceRoute := s.audioRequested() && s.selectedAudioRouteTool() != nil
-	return permissionGuideCapabilityIDs(hasSelectedDevice, hasOutputMapping, hasBluetoothVoiceRoute)
+	return permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothVoiceRoute)
 }
 
 func (s *shell) permissionGuideAppBundlePath() string {
@@ -495,12 +483,12 @@ func (s *shell) permissionGuideAppBundlePath() string {
 	return bundlePath
 }
 
-func permissionGuideCapabilityIDs(hasSelectedDevice, hasOutputMapping, hasBluetoothVoiceRoute bool) []permissionGuideID {
+func permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothVoiceRoute bool) []permissionGuideID {
 	ids := make([]permissionGuideID, 0, 3)
 	if hasSelectedDevice {
 		ids = append(ids, permissionGuideInput)
 	}
-	if hasOutputMapping {
+	if hasKeyOutput {
 		ids = append(ids, permissionGuidePostEvent)
 	}
 	if hasBluetoothVoiceRoute {
@@ -577,7 +565,27 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			s.appIcon = ui.NewBitmap(img)
 		}
 	}
-	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, 20, 0).Children(func() {
+	if s.iconDragPreview == nil {
+		s.iconDragPreview = permissionGuideDragPreview()
+	}
+	s.reduceMotion = c.Preferences().ReduceMotion
+	if s.reduceMotion {
+		s.hidePermissionGuideIllustration()
+	}
+	rows := permissionGuideRows(s.snapshot)
+	var rowHeights [3]float32
+	rowsHeight := float32(0)
+	for index, row := range rows {
+		rowHeights[index] = permissionGuideMeasuredRowHeight(c, row)
+		rowsHeight += rowHeights[index]
+	}
+	if s.guideWindow != nil && len(rows) > 0 {
+		height := 217 + int(math.Ceil(float64(rowsHeight)))
+		if s.guideWindow.Bounds().Height != height {
+			s.guideWindow.SetSize(permissionGuideWidth, height)
+		}
+	}
+	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, 19, 0).Children(func() {
 		ui.Row(c).FillWidth().Height(20).Padding(0, 8).AlignItems(ui.Center).Children(func() {
 			close := ui.ButtonBase(c).Label("关闭系统权限面板").Width(20).Height(20).Padding(0).
 				Background(a.theme.Border).Radius(10).AlignItems(ui.Center).Justify(ui.Center).FocusRing(false)
@@ -594,37 +602,23 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			}
 			ui.Box(c).Grow(1).FillHeight().DragWindow()
 		})
-		ui.Box(c).FillWidth().Height(17).Shrink(0)
+		ui.Box(c).FillWidth().Height(8).Shrink(0)
 		ui.Column(c).FillWidth().Padding(0, 20).Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				if s.appIcon != nil {
-					icon := ui.Image(c, s.appIcon).Width(permissionGuideIconSize).Height(permissionGuideIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " 应用图标")
-					if s.snapshot.appBundlePath != "" {
-						if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
-							icon.DragData(data, transfer.DragOptions{Operations: transfer.Copy})
-						}
-					}
-				}
-				ui.Box(c).FillWidth().Height(19).Shrink(0)
-				ui.Text(c, "管理权限").FontSize(permissionGuideTitle).FontWeight(700).TextAlign(ui.Center)
+				s.permissionGuideAppIcon(c)
+				ui.Box(c).FillWidth().Height(12).Shrink(0)
+				ui.Text(c, "管理权限").Height(30).FontSize(permissionGuideTitle).FontWeight(700).TextAlign(ui.Center)
 			})
-			rows := permissionGuideRows(s.snapshot)
-			if s.dragPrompt && s.snapshot.appBundlePath != "" {
-				ui.Text(c, "将上方 "+mygo.App.Name()+" 图标拖入对应的权限列表。").FillWidth().Height(18).TextAlign(ui.Center).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
-			} else if s.phase == permissionGuideComplete && len(rows) > 0 {
-				ui.Text(c, "所需权限已授权，您可以关闭此面板。").FillWidth().Height(18).TextAlign(ui.Center).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
-			} else {
-				ui.Box(c).FillWidth().Height(18).Shrink(0)
-			}
+			ui.Box(c).FillWidth().Height(24).Shrink(0)
 			if len(rows) == 0 {
 				ui.Text(c, "当前配置不需要额外系统权限。您可以关闭此面板。").FillWidth().Height(44).TextAlign(ui.Center).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 			} else {
-				ui.Column(c).Key("permission-guide-card").FillWidth().MinWidth(0).Border(lineWidth, a.theme.Border).Radius(12).Background(a.theme.Background).Children(func() {
+				ui.Column(c).Key("permission-guide-card").FillWidth().MinWidth(0).Height(rowsHeight).Border(lineWidth, a.theme.Border).Radius(12).Background(a.theme.Background).Children(func() {
 					for index, row := range rows {
 						if index > 0 {
 							ui.Box(c).FillWidth().Padding(0, 11).Children(func() { sectionLine(c, a) })
 						}
-						s.permissionGuideRow(c, a, row)
+						s.permissionGuideRow(c, a, row, rowHeights[index])
 					}
 				})
 			}
@@ -632,31 +626,40 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 	})
 }
 
-func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGuideRow) {
+func permissionGuideMeasuredRowHeight(c *ui.Context, row permissionGuideRow) float32 {
+	width := float32(permissionGuideWidth) - 40 - 2*lineWidth - 22 - permissionGuideIconBox - 24 - permissionGuideControlWidth
+	_, title := c.MeasureText(width, ui.Span{Text: row.title, Size: permissionGuideRowTitle, Weight: 600})
+	_, description := c.MeasureText(width, ui.Span{Text: row.description, Size: permissionGuideCaption})
+	return max(permissionGuideRowHeight, title+4+description+24)
+}
+
+func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGuideRow, height float32) {
 	ui.Row(c).Key("permission-guide/"+permissionGuideIDString(row.id)).FillWidth().MinWidth(0).
-		Height(permissionGuideRowHeight).Padding(0, 11).Gap(12).AlignItems(ui.Center).Children(func() {
+		Height(height).Padding(0, 11).Gap(12).AlignItems(ui.Center).Children(func() {
 		ui.Box(c).Width(permissionGuideIconBox).Height(permissionGuideIconBox).Shrink(0).Radius(9).Background(a.theme.Surface).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			if icon := s.systemSymbol(row.icon, a.theme.Dark, 18); icon != nil {
 				ui.Image(c, icon).Width(18).Height(18).Fit(ui.Contain).Label(row.title)
 			}
 		})
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(4).Children(func() {
-			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(4).Children(func() {
-				ui.Text(c, row.title).SingleLine().FontSize(permissionGuideRowTitle).FontWeight(600).Shrink(1)
-				s.permissionGuideOpenSettingsButton(c, a, row)
-			})
+			s.permissionGuideOpenSettingsButton(c, a, row)
 			ui.Text(c, row.description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 		})
-		s.permissionGuideAccessControl(c, a, row)
+		ui.Row(c).Width(permissionGuideControlWidth).Shrink(0).AlignItems(ui.Center).Justify(ui.End).Children(func() {
+			s.permissionGuideAccessControl(c, a, row)
+		})
 	})
 }
 
 func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, row permissionGuideRow) {
-	button := ui.ButtonBase(c).Label("在系统设置中管理" + row.title).Width(18).Height(18).Shrink(0).Padding(0).FocusRing(false).Disabled(!s.snapshot.actionsEnabled)
+	button := ui.ButtonBase(c).Label("在系统设置中管理" + row.title).Height(18).Padding(0).Justify(ui.Start).FocusRing(false).Cursor(ui.CursorPointer).Disabled(!s.snapshot.actionsEnabled)
 	button.Children(func() {
-		if icon := s.systemSymbol("arrow.up.right.circle", a.theme.Dark, 16); icon != nil {
-			ui.Image(c, icon).Width(16).Height(16).Fit(ui.Contain)
-		}
+		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
+			ui.Text(c, row.title).SingleLine().FontSize(permissionGuideRowTitle).FontWeight(600)
+			if icon := s.systemSymbol("arrow.up.right.circle", a.theme.Dark, 16); icon != nil {
+				ui.Image(c, icon).Width(16).Height(16).Fit(ui.Contain)
+			}
+		})
 	})
 	if button.Clicked() && s.snapshot.actionsEnabled {
 		s.openPermissionGuideSettings(row.id, true)
@@ -674,7 +677,7 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 	}
 	label := permissionGuideActionLabel(row)
 	button := styleAppButton(ui.ButtonBase(c).Label(label), a, !s.snapshot.actionsEnabled).
-		MinWidth(64).Height(28).Padding(0, 8).Radius(14)
+		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
 	if button.Clicked() && s.snapshot.actionsEnabled {
 		s.performPermissionGuideAction(row.id)
@@ -686,7 +689,7 @@ func permissionGuideActionLabel(row permissionGuideRow) string {
 	case permissionGuideInput:
 		switch row.access {
 		case permissionGuideNotDetermined:
-			return "请求授权"
+			return "授权…"
 		case permissionGuideDenied:
 			return "打开设置"
 		case permissionGuideUnknown:
@@ -699,14 +702,14 @@ func permissionGuideActionLabel(row permissionGuideRow) string {
 		case permissionGuideDenied:
 			return "打开设置"
 		case permissionGuideNotGranted:
-			return "请求授权"
+			return "授权…"
 		default:
 			return "打开设置"
 		}
 	case permissionGuideBluetooth:
 		switch row.access {
 		case permissionGuideNotDetermined:
-			return "请求授权"
+			return "授权…"
 		case permissionGuideDenied:
 			return "打开设置"
 		case permissionGuideUnknown:
@@ -732,7 +735,7 @@ func permissionGuideAccessLabel(access permissionGuideAccess) string {
 }
 
 func permissionGuideBadge(c *ui.Context, a appearance, symbol, label string) {
-	ui.Row(c).Height(26).Shrink(0).AlignItems(ui.Center).Gap(4).Padding(0, 9).Radius(13).Background(a.theme.Surface).Children(func() {
+	ui.Row(c).Height(26).Shrink(0).AlignItems(ui.Center).Gap(5).Children(func() {
 		if symbol != "" {
 			ui.Text(c, symbol).FontSize(permissionGuideCaption).FontWeight(600)
 		}
@@ -771,9 +774,6 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 		}
 	}
 	s.refreshPermissionGuide()
-	if nextAccess, exists := permissionGuideAccessForID(s.snapshot, id); exists && nextAccess != permissionGuideGranted && s.settingsOpenedFor != id {
-		s.openPermissionGuideSettings(id, false)
-	}
 }
 
 func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
@@ -799,8 +799,6 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	case permissionGuideBluetooth:
 		_ = mygo.Shell.OpenExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth")
 	}
-	s.dragPrompt = permissionGuideAllowsAppDrag(id) && s.snapshot.appBundlePath != ""
-	s.guideWindow.Focus()
 	s.schedulePermissionGuideFollowing(s.guideWindow, s.generation)
 	s.guideWindow.Invalidate()
 }

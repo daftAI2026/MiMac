@@ -344,7 +344,7 @@
   {
     "id": "first-use-setup",
     "title": "首次使用与设备连接",
-    "summary": "首次空配置显示设备页与可关闭的系统权限引导，仍保存原格式默认偏好；已有配置不重复提示。权限面板从现有能力只读查询状态，缺项时打开对应系统设置并以侧伴面板引导；只有显式动作才请求系统授权，面板可见时和返回后重新核实，逐项推进，关闭释放跟随与轮询，不提前监听或收音。菜单和设备页可重进。系统蓝牙管理配对与重连，HID缺失不推断未配对。插件启停与Current选择分开；选择工具复用适配器自动选源，按键映射与工具页面保持原结构。",
+    "summary": "首次空配置显示设备页与可关闭的系统权限引导，仍保存原格式默认偏好；已有配置不重复提示。权限面板从现有能力只读查询状态，缺项时保留明确操作入口；只有显式动作才请求系统授权或打开对应设置；已有系统设置时面板可并排跟随，并以非激活、鼠标穿透窗口演示拖放；真实拖动或减少动态效果时停止示意，面板可见时和返回后重新核实，逐项推进，关闭释放跟随、轮询和示意窗口，不提前监听或收音。菜单和设备页可重进。系统蓝牙管理配对与重连，HID缺失不推断未配对。插件启停与Current选择分开；选择工具复用适配器自动选源，按键映射与工具页面保持原结构。",
     "sourcePaths": [
       "cmd/mimac/startup.go",
       "cmd/mimac/setup.go",
@@ -361,7 +361,8 @@
       "cmd/mimac/permission_guide.go",
       "cmd/mimac/main.go",
       "cmd/mimac/tray.go",
-      "internal/platform/permissionguide/permissionguide_darwin.go"
+      "internal/platform/permissionguide/permissionguide_darwin.go",
+      "cmd/mimac/permission_guide_motion.go"
     ]
   }
 ]

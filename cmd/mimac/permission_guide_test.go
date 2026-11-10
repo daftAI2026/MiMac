@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mimac.local/mimac/internal/devices"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -51,7 +52,7 @@ func TestPermissionGuideUnknownInputOffersRetryAndExplicitRequestForUndetermined
 		t.Fatalf("unknown query action = %q, want retry", unknown)
 	}
 	undetermined := permissionGuideActionLabel(permissionGuideRow{id: permissionGuideInput, access: permissionGuideNotDetermined})
-	if undetermined != "请求授权" {
+	if undetermined != "授权…" {
 		t.Fatalf("notDetermined action = %q, want explicit request", undetermined)
 	}
 }
@@ -76,19 +77,6 @@ func TestPermissionGuideCapabilityRowsFollowEnabledCapabilities(t *testing.T) {
 	withoutAudio := permissionGuideCapabilityIDs(true, true, false)
 	if len(withoutAudio) != 2 || withoutAudio[1] != permissionGuidePostEvent {
 		t.Fatalf("rows without selected audio route = %v", withoutAudio)
-	}
-}
-
-func TestPermissionGuideOnlyOpensSettingsForKnownMissingStates(t *testing.T) {
-	for _, access := range []permissionGuideAccess{permissionGuideNotDetermined, permissionGuideNotGranted, permissionGuideDenied} {
-		if !permissionGuideAutoOpenSettings(access) {
-			t.Fatalf("known missing state %v did not trigger Settings", access)
-		}
-	}
-	for _, access := range []permissionGuideAccess{permissionGuideUnknown, permissionGuideRestricted, permissionGuideGranted} {
-		if permissionGuideAutoOpenSettings(access) {
-			t.Fatalf("state %v should not open Settings automatically", access)
-		}
 	}
 }
 
@@ -142,11 +130,19 @@ func TestPermissionGuideCompanionBoundsUsesOnlyFreeWorkArea(t *testing.T) {
 	settings := permissionguide.Rect{X: 400, Y: 80, Width: 600, Height: 700}
 	workArea := mygo.Rectangle{X: 0, Y: 0, Width: 1600, Height: 900}
 	got, ok := permissionGuideCompanionBounds(settings, workArea, current)
-	if !ok || got.X != 1012 || got.Y != current.Y || got.Width != current.Width || got.Height != current.Height {
+	if !ok || got.X != 1016 || got.Y != 96 || got.Width != current.Width || got.Height != current.Height {
 		t.Fatalf("companion bounds = %#v, %t", got, ok)
 	}
 	tooSmall := mygo.Rectangle{X: 0, Y: 0, Width: 1000, Height: 900}
 	if _, ok := permissionGuideCompanionBounds(permissionguide.Rect{X: 100, Y: 40, Width: 800, Height: 700}, tooSmall, current); ok {
 		t.Fatal("guide moved when Settings leaves no adjacent space")
+	}
+}
+
+func TestPermissionGuideSelectedDeviceIncludesCaptureAndKeyOutputBeforeMappings(t *testing.T) {
+	s := &shell{deviceProfiles: []devicePlugin{{ModuleID: "device", Profile: devices.Profile{ID: "selected"}}}, selectedProfile: "selected"}
+	ids := s.requiredPermissionGuideIDs()
+	if len(ids) != 2 || ids[0] != permissionGuideInput || ids[1] != permissionGuidePostEvent {
+		t.Fatalf("initial device permissions = %v", ids)
 	}
 }

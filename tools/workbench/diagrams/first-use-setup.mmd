@@ -8,14 +8,17 @@ flowchart TD
     reopen["菜单或设备页：系统权限"] --> permissionGuide
     permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
-    missing -->|是| settings["打开对应系统设置页，侧伴面板跟随窗口"]
-    settings --> grantAction["用户显式点击授权或拖入当前 App"]
+    missing -->|是| grantAction["用户显式点击授权或打开设置"]
+    grantAction --> settings["打开对应系统设置页，面板并排跟随窗口"]
+    settings --> illustration["透明非激活窗口显示拖放示意，减少动态效果时静止"]
+    illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
+    drag --> guideRefresh
     missing -->|否| complete["显示已完成；可关闭，不接管设备"]
     grantAction --> nativeGrant["由对应能力调用原有系统授权入口"]
     nativeGrant --> guideRefresh["面板可见时及回到 App 查询实际授权状态，逐项推进"]
     guideRefresh --> permissionGuide
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
-    permissionGuide -->|关闭| keepSettings["停止面板计时与跟随，保留设置与菜单入口"]
+    permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]
     connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
     mappings --> enable

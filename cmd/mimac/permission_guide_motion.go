@@ -1,0 +1,226 @@
+package main
+
+import (
+	"bytes"
+	"image"
+	"image/png"
+	"math"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
+	"github.com/egoist/mygo/ui"
+	"golang.org/x/image/draw"
+	brand "mimac.local/mimac/Assets/Brand"
+	"mimac.local/mimac/internal/platform/permissionguide"
+)
+
+var permissionGuideIconMotion = ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: .25}}
+var permissionGuideJoinEase = ui.CubicBezier(.42, 0, .58, 1)
+var permissionGuideFollowEase = ui.CubicBezier(0, 0, .58, 1)
+
+func permissionGuideFollowPosition(from, to mygo.Rectangle, progress float32, duration time.Duration) mygo.Rectangle {
+	progress = max(0, min(1, progress))
+	ease := permissionGuideFollowEase
+	if duration == 350*time.Millisecond {
+		ease = permissionGuideJoinEase
+	}
+	t := float64(ease(progress))
+	return mygo.Rectangle{X: from.X + int(math.Round(float64(to.X-from.X)*t)), Y: from.Y + int(math.Round(float64(to.Y-from.Y)*t)), Width: to.Width, Height: to.Height}
+}
+
+func (s *shell) permissionGuideAppIcon(c *ui.Context) {
+	icon := ui.Box(c).Key("permission-guide-app-icon").Width(permissionGuideIconSlot).Height(permissionGuideIconSlot).Shrink(0).
+		Label(mygo.App.Name() + " 应用图标").AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorGrab)
+	if s.snapshot.appBundlePath != "" {
+		icon.Tooltip("拖入系统设置的权限列表")
+		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
+			window, generation := s.guideWindow, s.generation
+			icon.DragData(data, transfer.DragOptions{Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(48, 48), Done: func(transfer.Result) {
+				if s.guideWindow != window || s.generation != generation {
+					return
+				}
+				s.hasDraggedIcon, s.iconDragging = true, false
+				s.hidePermissionGuideIllustration()
+				s.refreshPermissionGuide()
+			}})
+		}
+	}
+	hovered, pressed, dragging := icon.Hovered(), icon.Pressed(), icon.Dragging()
+	s.iconDragging = dragging
+	if dragging {
+		s.hasDraggedIcon = true
+		s.hidePermissionGuideIllustration()
+	}
+	if pressed || dragging {
+		icon.Cursor(ui.CursorGrabbing)
+	}
+	scale, alpha, radius, y := float32(1), float32(.15), float32(4), float32(2)
+	if hovered {
+		scale, alpha, radius, y = 1.06, .35, 10, 5
+	}
+	if pressed || dragging {
+		scale = .96
+	}
+	if dragging {
+		alpha = 0
+	}
+	scale = icon.AnimateTo("scale", scale, permissionGuideIconMotion)
+	alpha = icon.AnimateTo("shadow-alpha", alpha, permissionGuideIconMotion)
+	radius = icon.AnimateTo("shadow-radius", radius, permissionGuideIconMotion)
+	y = icon.AnimateTo("shadow-y", y, permissionGuideIconMotion)
+	icon.Children(func() {
+		if s.appIcon != nil {
+			ui.Image(c, s.appIcon).Width(permissionGuideIconSize).Height(permissionGuideIconSize).Fit(ui.Contain).
+				Radius(16).Scale(scale, scale).Shadow(0, y, radius, 0, ui.RGB(0, 0, 0).Alpha(alpha))
+		}
+	})
+	if bounds := icon.LayoutBounds(); bounds.W > 0 && bounds.H > 0 {
+		s.iconBounds = bounds
+	} else {
+		c.After(time.Millisecond)
+	}
+}
+
+// Supply only the icon pixels. The default native drag preview captures the
+// composited element rectangle, which includes the panel behind the icon.
+func permissionGuideDragPreview() *image.RGBA {
+	source, err := png.Decode(bytes.NewReader(brand.AboutIconPNG))
+	if err != nil {
+		return nil
+	}
+	preview := image.NewRGBA(image.Rect(0, 0, 96, 96))
+	// Match the pressed icon size, retaining a transparent margin and hotspot.
+	draw.CatmullRom.Scale(preview, image.Rect(10, 10, 86, 86), source, source.Bounds(), draw.Src, nil)
+	return preview
+}
+
+type permissionGuideFlightGeometry struct {
+	bounds              mygo.Rectangle
+	start, control, end ui.Point
+}
+
+func permissionGuideFlightBounds(icon ui.Rect, panel mygo.Rectangle, settings permissionguide.Rect, area mygo.Rectangle) permissionGuideFlightGeometry {
+	start := ui.Point{X: float32(panel.X) + icon.X + icon.W/2, Y: float32(panel.Y) + icon.Y + icon.H/2}
+	end := ui.Point{X: float32(settings.X + settings.Width/2), Y: float32(settings.Y + min(130, settings.Height/2))}
+	lift := float32(math.Hypot(float64(end.X-start.X), float64(end.Y-start.Y))) / 4
+	top := min(start.Y, end.Y)
+	padding := permissionGuideIconSlot/2 + 16
+	control := ui.Point{X: (start.X + end.X) / 2, Y: top - min(lift, max(0, top-float32(area.Y)-padding))}
+	left, right := min(start.X, end.X, control.X)-padding, max(start.X, end.X, control.X)+padding
+	upper, lower := min(start.Y, end.Y, control.Y)-padding, max(start.Y, end.Y, control.Y)+padding
+	bounds := mygo.Rectangle{X: int(math.Floor(float64(left))), Y: int(math.Floor(float64(upper))), Width: int(math.Ceil(float64(right - left))), Height: int(math.Ceil(float64(lower - upper)))}
+	local := func(p ui.Point) ui.Point { return ui.Point{X: p.X - float32(bounds.X), Y: p.Y - float32(bounds.Y)} }
+	return permissionGuideFlightGeometry{bounds: bounds, start: local(start), control: local(control), end: local(end)}
+}
+
+func (g permissionGuideFlightGeometry) point(t float32) ui.Point {
+	t = max(0, min(1, t))
+	u := 1 - t
+	return ui.Point{X: u*u*g.start.X + 2*u*t*g.control.X + t*t*g.end.X, Y: u*u*g.start.Y + 2*u*t*g.control.Y + t*t*g.end.Y}
+}
+
+type permissionGuideIllustration struct {
+	window        *mygo.Window
+	geometry      permissionGuideFlightGeometry
+	active, ready bool
+	run           uint64
+}
+
+func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, area mygo.Rectangle) {
+	access, exists := permissionGuideAccessForID(s.snapshot, s.currentID)
+	if !exists || access == permissionGuideGranted || access == permissionGuideUnknown || access == permissionGuideRestricted ||
+		!s.snapshot.actionsEnabled || !permissionGuideAllowsAppDrag(s.currentID) || s.reduceMotion || s.hasDraggedIcon || s.iconDragging || s.followManual || s.iconBounds.W <= 0 {
+		s.hidePermissionGuideIllustration()
+		return
+	}
+	geometry := permissionGuideFlightBounds(s.iconBounds, s.guideWindow.Bounds(), settings, area)
+	if s.illustration == nil {
+		view := &permissionGuideIllustration{}
+		s.illustration = view
+		view.window = mygo.NewWindow(mygo.WindowOptions{Title: mygo.App.Name() + " 权限拖放引导", Width: geometry.bounds.Width, Height: geometry.bounds.Height,
+			UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true, Parent: s.guideWindow,
+			Content: ui.View(func(c *ui.Context) { s.drawPermissionGuideIllustration(c, view) })})
+		view.window.SetIgnoreMouseEvents(true)
+		view.window.OnReadyToShow(func() {
+			view.ready = true
+			if view.active {
+				view.window.ShowInactive()
+			}
+		})
+	}
+	view := s.illustration
+	if view.active && view.geometry == geometry {
+		return
+	}
+	view.geometry, view.active = geometry, true
+	view.run++
+	view.window.SetBounds(geometry.bounds)
+	if view.ready {
+		view.window.ShowInactive()
+	}
+	view.window.Invalidate()
+}
+
+func (s *shell) hidePermissionGuideIllustration() {
+	if view := s.illustration; view != nil && view.active {
+		view.active = false
+		if !view.window.IsDestroyed() {
+			view.window.Hide()
+		}
+	}
+}
+
+func (s *shell) closePermissionGuideIllustration() {
+	if view := s.illustration; view != nil {
+		s.illustration = nil
+		view.active = false
+		if !view.window.IsDestroyed() {
+			view.window.Close()
+		}
+	}
+}
+
+var permissionGuideFlightOpacity = []ui.Keyframe{
+	{Value: 0}, {At: 200 * time.Millisecond, Value: 1}, {At: 2150 * time.Millisecond, Value: 1},
+	{At: 2450 * time.Millisecond, Value: 0}, {At: 4 * time.Second, Value: 0},
+}
+var permissionGuideFlightProgress = []ui.Keyframe{
+	{Value: 0}, {At: 150 * time.Millisecond, Value: 0}, {At: 2150 * time.Millisecond, Value: 1},
+	{At: 2450 * time.Millisecond, Value: 1}, {At: 3650 * time.Millisecond, Value: 0}, {At: 4 * time.Second, Value: 0},
+}
+var permissionGuideFlightScale = []ui.Keyframe{
+	{Value: 1}, {At: 500 * time.Millisecond, Value: 1.08, Ease: permissionGuideFlightSpring},
+	{At: 2500 * time.Millisecond, Value: 1, Ease: ui.CubicBezier(.42, 0, 1, 1)}, {At: 4 * time.Second, Value: 1},
+}
+
+func permissionGuideFlightSpring(t float32) float32 {
+	if t <= 0 {
+		return 0
+	}
+	if t >= 1 {
+		return 1
+	}
+	// Unit-mass spring with a 0.5 second response and damping ratio 0.85.
+	x := float64(t) * 2 * math.Pi
+	z := .85
+	d := math.Sqrt(1 - z*z)
+	return float32(1 - math.Exp(-z*x)*(math.Cos(d*x)+z/d*math.Sin(d*x)))
+}
+
+func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionGuideIllustration) {
+	c.Root().Background(ui.Transparent)
+	root := ui.Box(c).Fill().Background(ui.Transparent)
+	if !view.active || s.appIcon == nil || c.Preferences().ReduceMotion {
+		return
+	}
+	options := ui.KeyframeOptions{Run: view.run, Repeat: ui.RepeatForever}
+	opacity := root.Keyframes("opacity", permissionGuideFlightOpacity, options)
+	progress := root.Keyframes("progress", permissionGuideFlightProgress, options)
+	scale := root.Keyframes("scale", permissionGuideFlightScale, options)
+	point := view.geometry.point(progress)
+	root.Children(func() {
+		ui.Image(c, s.appIcon).Absolute().Left(point.X-permissionGuideIconSize/2).Top(point.Y-permissionGuideIconSize/2).
+			Width(permissionGuideIconSize).Height(permissionGuideIconSize).Fit(ui.Contain).Scale(scale, scale).Opacity(opacity)
+	})
+}
