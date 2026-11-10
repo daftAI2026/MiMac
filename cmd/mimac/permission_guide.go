@@ -22,6 +22,8 @@ const (
 	permissionGuideTitle                  float32 = 26
 	permissionGuideRowTitle               float32 = 14
 	permissionGuideCaption                float32 = 12
+	permissionGuideLinkIconSize           float32 = 13
+	permissionGuideLinkIconWeight                 = .3
 	permissionGuideIconSize               float32 = 80
 	permissionGuideIconSlot               float32 = 96
 	permissionGuideIconBox                float32 = 35
@@ -654,8 +656,8 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 	button.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
 			ui.Text(c, row.title).SingleLine().FontSize(permissionGuideRowTitle).FontWeight(600)
-			if icon := s.systemSymbol("arrow.up.right.circle", a.theme.Dark, 16); icon != nil {
-				ui.Image(c, icon).Width(16).Height(16).Fit(ui.Contain)
+			if icon := s.symbolBitmap(symbolKey{name: "arrow.up.right.circle", dark: a.theme.Dark, size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}); icon != nil {
+				ui.Image(c, icon).Width(permissionGuideLinkIconSize).Height(permissionGuideLinkIconSize).Fit(ui.Contain)
 			}
 		})
 	})

@@ -21,7 +21,7 @@ func TestPermissionGuideLayoutKeepsEveryRequiredRowVisible(t *testing.T) {
 				s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
 				s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
 				for _, palette := range []bool{false, true} {
-					s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", dark: palette, size: 16}] = nil
+					s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", dark: palette, size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}] = nil
 					for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent, permissionGuideBluetooth} {
 						s.navigationSymbols[symbolKey{name: permissionGuideRowFor(id).icon, dark: palette, size: 18}] = nil
 					}
@@ -84,7 +84,7 @@ func TestPermissionGuideWrappedDescriptionsKeepControlsOnTheTopIconTrack(t *test
 	for _, description := range []string{"短说明。", "较长的说明会在权限名称下方自然换行，图标和右侧状态保持顶部对齐。", "这段说明用于覆盖至少三行文字。权限名称与说明保持左对齐，左侧图标和右侧授权状态保持顶部对齐，文字自然向下延展，不能挤压底部留白。"} {
 		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
 		s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
-		s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", size: 16}] = nil
+		s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}] = nil
 		s.navigationSymbols[symbolKey{name: "keyboard", size: 18}] = nil
 		row := permissionGuideRowFor(permissionGuideInput)
 		row.description = description
