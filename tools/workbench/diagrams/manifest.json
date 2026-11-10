@@ -286,7 +286,7 @@
   {
     "id": "release-components",
     "title": "发行组件与校验",
-    "summary": "发行组件由显式方案决定，不随构建机偶然具备的库改变。core-only 排除 Siri 私有库；siri-glass 要求精确 ABI 门与六库整包校验。本机两类 arm64 实包已通过；预览包校验不代表签名公证或正式发布，也不自动替换现用全功能包。 日用与开发使用独立 Bundle ID、名称、产物和用户配置目录；开发默认不接管共享输入及音频，显式设备验收先退出日用版。原生库与身份校验通过后才启动。",
+    "summary": "发行组件由显式方案决定，不随构建机偶然具备的库改变。core-only 排除 Siri 私有库；siri-glass 要求精确 ABI 门与六库整包校验。本机两类 arm64 实包已通过；预览包校验不代表签名公证或正式发布，也不自动替换现用全功能包。 日用与开发使用独立 Bundle ID、名称、产物和用户配置目录；开发默认不接管共享输入及音频，显式设备验收先退出日用版。原生库与身份校验通过后才启动。 已校验 App 通过独立构建脚本生成固定 Finder 窗口、Retina 品牌背景和单图标双击安装入口，输出只读 DMG；CI 同时保留 ZIP 和校验和，不改变 App 内部内容。 镜像启动时在宿主层完成来源识别、可回退复制、新位置重启与旧镜像退出；Dev不进入正式安装。",
     "sourcePaths": [
       "script/build_voice_overlay.sh",
       "script/verify_release.py",
@@ -297,7 +297,12 @@
       "cmd/mimac/voice_tools.go",
       "script/build_dev.py",
       "script/verify_app_bundle.py",
-      "internal/platform/runningapp/runningapp.go"
+      "internal/platform/runningapp/runningapp.go",
+      "script/package_dmg.py",
+      "Assets/Installer/render_background.swift",
+      "cmd/mimac/install.go",
+      "internal/platform/appinstall/appinstall_darwin.go",
+      "script/README_permissions.md"
     ]
   },
   {
@@ -339,7 +344,7 @@
   {
     "id": "first-use-setup",
     "title": "首次使用与设备连接",
-    "summary": "首次空配置显示设备页，成功后保存原格式默认偏好；已有配置不重复提示。查看连接与配对指引后前往按键映射启用遥控器。设备页不重复启停或展示最近按键；连接状态投影自现有发现与Core，导航进入时仅在未监听时重新检测。侧栏按键映射、语音工具、设备、插件、通用、关于同级。系统蓝牙管理配对与重连，HID缺失不推断未配对。插件启停与当前语音工具选择分开；不新增麦克风选择，不提前收音。",
+    "summary": "完整首启窗口使用三步展示导航：连接遥控器、准备语音工具、系统权限。设备/插件/Current/权限沿用现有能力所有者；只在用户明确选择时启用工具或下载模型，不自动监听、开麦或安装组件。独立首启标记允许中途关闭后恢复，已有安装不被强制重引导。权限面板并排跟随系统设置，透明示意与真实系统文件拖放分开，关闭释放窗口和轮询。",
     "sourcePaths": [
       "cmd/mimac/startup.go",
       "cmd/mimac/setup.go",
@@ -352,7 +357,14 @@
       "internal/adapters/xiaomi/profile.go",
       "cmd/mimac/device.go",
       "cmd/mimac/navigation.go",
-      "cmd/mimac/settings_navigation.go"
+      "cmd/mimac/settings_navigation.go",
+      "cmd/mimac/permission_guide.go",
+      "cmd/mimac/main.go",
+      "cmd/mimac/tray.go",
+      "internal/platform/permissionguide/permissionguide_darwin.go",
+      "cmd/mimac/permission_guide_motion.go",
+      "cmd/mimac/onboarding.go",
+      "cmd/mimac/onboarding_view.go"
     ]
   }
 ]

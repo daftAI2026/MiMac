@@ -51,6 +51,7 @@ type hostReport struct {
 	AudioError          string                `json:"audio_error,omitempty"`
 	AudioBackend        string                `json:"audio_backend"` // Resolved configuration, not route readiness.
 	AudioCleanupFailed  bool                  `json:"audio_cleanup_failed,omitempty"`
+	OnboardingError     string                `json:"onboarding_error,omitempty"`
 	RemoteRecovery      []remoteRecoveryEvent `json:"remote_recovery,omitempty"`
 }
 
@@ -63,7 +64,10 @@ type shell struct {
 	settingsState
 	preferencesState
 	voiceToolsState
+	onboarding onboardingState
 	remoteState
+	permissionGuideState
+	appInstallState
 	voiceOverlay                     voiceOverlayState
 	readyIndicator                   readyIndicatorState
 	powerState                       powerState
@@ -166,22 +170,18 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 	s.tray = tray
 	s.report.Ready, s.report.TrayCreated = true, true
 	s.updateTrayMenu()
-	firstRunCandidate := false
-	if !showSpecified {
-		firstRunCandidate = s.shouldPresentFirstRunSettings()
-	}
-	settingsPlan := planInitialSettings(showSpecified, show, firstRunCandidate)
+	settingsPlan := planInitialSettings(showSpecified, show, false)
 	if settingsPlan.open {
-		if page := firstRunSettingsPage(settingsPlan); page != "" {
-			s.page = page
-		}
 		s.showSettings()
-		if settingsPlan.firstRun && s.window != nil {
-			// A write failure must not prevent the first-run window from being used.
-			_ = s.markFirstRunSettingsShown()
+	}
+	if !showSpecified {
+		if s.onboarding.showOnboardingOnLaunch {
+			s.showOnboarding()
+		} else if s.shouldPresentInitialOnboarding() {
+			s.showInitialOnboarding()
 		}
 	}
-	settingsShown := s.window != nil
+	settingsShown := s.window != nil || s.onboarding.window != nil
 	if capturePath != "" {
 		s.captureSettings(ctx, capturePath)
 	}
@@ -201,6 +201,9 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 					mygo.RunOnMain(func() {
 						if !s.closing && s.window != nil {
 							s.window.Close()
+						}
+						if !s.closing && s.onboarding.window != nil {
+							s.closeOnboarding()
 						}
 					})
 				}
@@ -231,6 +234,7 @@ func main() {
 	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded I/O timing and frequency/display metadata on exit; excludes PCM and text")
 	sourceCheckPath := flag.String("source-check-report", "", "explicit diagnostic: mirror one source in memory and replay to local Apple ASR on exit; report text/statistics only, no PCM file")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
+	showOnboarding := flag.Bool("show-onboarding", false, "open the three-step first-use guide without changing saved setup state")
 	audioBackend := flag.String("audio-backend", "", "one-run override: mimac-compat or empty; never installs a component")
 	setAudioBackend := flag.String("set-audio-backend", "", "persist mimac-compat or empty, then exit before app startup")
 	flag.Parse()
@@ -298,6 +302,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend}}
+	s.onboarding.showOnboardingOnLaunch = *showOnboarding
 	sourceCheckLibrary := ""
 	if *sourceCheckPath != "" {
 		for _, other := range []string{*reportPath, *voiceReportPath, *capturePath} {
@@ -360,6 +365,16 @@ func main() {
 	})
 	mygo.App.OnActivate(func(_ bool) {
 		if s.report.Ready && !s.closing {
+			if s.guideWindow != nil {
+				s.refreshSetupAfterActivation()
+				s.guideWindow.Show()
+				s.guideWindow.Focus()
+				return
+			}
+			if s.onboarding.window != nil {
+				s.refreshOnboardingAfterActivation()
+				return
+			}
 			s.showSettings()
 			if s.window != nil {
 				s.window.Focus()
@@ -370,6 +385,9 @@ func main() {
 	// A settings window is disposable; closing it must leave the menu bar host running.
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
+		if s.deferInstallQuit(event.PreventDefault) {
+			return
+		}
 		s.closeVoiceOverlay()
 		s.cancelPowerResume()
 		s.cancelRemoteReservationRetry()
@@ -382,6 +400,8 @@ func main() {
 			return
 		}
 		s.closing = true
+		s.closeOnboarding()
+		s.closePermissionGuide()
 		s.clearReadyIndicator()
 		s.unwatchPower()
 		s.closeGeneralControls()
@@ -403,7 +423,11 @@ func main() {
 			s.tray.Destroy()
 		}
 	})
-	mygo.App.WhenReady(func() { s.ready(ctx, *show, showSettingsSpecified, *smoke, *capturePath) })
+	mygo.App.WhenReady(func() {
+		s.installFromDiskImage(ctx, func() {
+			s.ready(ctx, *show, showSettingsSpecified, *smoke, *capturePath)
+		})
+	})
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
 	}

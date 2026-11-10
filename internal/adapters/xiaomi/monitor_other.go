@@ -4,6 +4,12 @@ package xiaomi
 
 import "fmt"
 
+// ListenAccess is unknown off macOS. It never attempts to start a monitor.
+func ListenAccess() ListenAccessState { return ListenAccessUnknown }
+
+// requestListenAccess is unavailable off macOS and never requests access.
+func requestListenAccess() ListenAccessState { return ListenAccessUnknown }
+
 // StartMonitor requires the macOS IOHIDManager APIs. On other platforms it
 // returns ErrMonitorUnavailable without attempting device access.
 func StartMonitor(onEvent func(MonitorEvent)) (*Monitor, error) {

@@ -48,12 +48,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install DMG metadata dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mimac-packaging-venv"
+          "$RUNNER_TEMP/mimac-packaging-venv/bin/python" -m pip install --requirement script/requirements-packaging.txt
+          echo "$RUNNER_TEMP/mimac-packaging-venv/bin" >> "$GITHUB_PATH"
+
       - name: Test release version planner and component profiles
         run: |
           python3 script/release_version_test.py
           python3 script/test_verify_release.py
           python3 script/test_build_audio_compat.py
           python3 script/test_package_audio_component.py
+          python3 script/test_package_dmg.py
           python3 script/test_build_voice_overlay.py
           python3 script/test_verify_app_bundle_frame.py
           python3 script/test_inspect_voice_report.py
@@ -122,7 +129,7 @@ jobs:
             python3 script/verify_release.py "${verify_args[@]}"
           done
 
-      - name: Package apps and checksums
+      - name: Package apps, DMGs and checksums
         env:
           ASSET_STEM: ${{ steps.version.outputs.asset_stem }}
         run: |
@@ -133,8 +140,13 @@ jobs:
           amd64_zip="MiMac-${ASSET_STEM}-darwin-amd64.zip"
           ditto -c -k --sequesterRsrc --keepParent dist/darwin-arm64/MiMac.app "$release_dir/$arm64_zip"
           ditto -c -k --sequesterRsrc --keepParent dist/darwin-amd64/MiMac.app "$release_dir/$amd64_zip"
+          python3 script/package_dmg.py dist/darwin-arm64/MiMac.app \
+            --output "$release_dir/MiMac-${ASSET_STEM}-darwin-arm64.dmg"
+          python3 script/package_dmg.py dist/darwin-amd64/MiMac.app \
+            --output "$release_dir/MiMac-${ASSET_STEM}-darwin-amd64.dmg"
           cd "$release_dir"
           shasum -a 256 "$arm64_zip" "$amd64_zip" \
+            "MiMac-${ASSET_STEM}-darwin-arm64.dmg" "MiMac-${ASSET_STEM}-darwin-amd64.dmg" \
             "MiMac-${ASSET_STEM}-darwin-arm64.json" "MiMac-${ASSET_STEM}-darwin-amd64.json" > SHA256SUMS
 
       - name: Upload verified build artifacts
@@ -167,5 +179,6 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             "$release_dir"/*.zip \
+            "$release_dir"/*.dmg \
             "$release_dir"/*.json \
             "$release_dir/SHA256SUMS"

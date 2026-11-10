@@ -21,6 +21,7 @@ import (
 
 type voiceTool struct {
 	id, name             string
+	installURL           string
 	kind                 voiceToolKind
 	discover             func(context.Context, voicetools.Locator) voicetools.Snapshot
 	locateApplication    func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
@@ -218,9 +219,9 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
 		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo", releaseReady: true},
-		{id: "voice-doubao", name: "豆包输入法", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
+		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
-		{id: "voice-wetype", name: "微信输入法", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
+		{id: "voice-wetype", name: "微信输入法", installURL: "https://z.weixin.qq.com/", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}

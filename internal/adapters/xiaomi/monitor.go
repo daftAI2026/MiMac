@@ -18,6 +18,24 @@ var (
 	ErrUnsupportedDevice       = errors.New("xiaomi HID: device does not match the observed report profile")
 )
 
+// ListenAccessState is a read-only snapshot of the process's macOS Input
+// Monitoring permission. Unknown includes platforms or native-query failures
+// where MiMac cannot claim either grant or denial.
+type ListenAccessState uint8
+
+const (
+	ListenAccessUnknown ListenAccessState = iota
+	ListenAccessNotDetermined
+	ListenAccessGranted
+	ListenAccessDenied
+)
+
+// RequestListenAccess explicitly asks macOS for Input Monitoring access. It
+// does not create an HID manager or start listening for device reports.
+func RequestListenAccess() ListenAccessState {
+	return requestListenAccess()
+}
+
 const (
 	MonitorStateWaiting      = devices.InputStateWaiting
 	MonitorStateConnected    = devices.InputStateConnected

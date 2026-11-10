@@ -1,0 +1,129 @@
+package main
+
+import (
+	"image"
+	"image/color"
+	"math"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"mimac.local/mimac/internal/platform/permissionguide"
+)
+
+func TestPermissionGuideFlightStaysInsideItsTransparentWindow(t *testing.T) {
+	for _, panel := range []mygo.Rectangle{{X: 100, Y: 60, Width: 500, Height: 442}, {X: 1050, Y: 400, Width: 500, Height: 442}, {X: -1300, Y: -250, Width: 500, Height: 367}} {
+		settings := permissionguide.Rect{X: float64(panel.X) - 650, Y: float64(panel.Y) + 40, Width: 600, Height: 700}
+		area := mygo.Rectangle{X: panel.X - 1000, Y: panel.Y - 60, Width: 2000, Height: 1000}
+		icon := ui.Rect{X: 202, Y: 36, W: 96, H: 96}
+		g := permissionGuideFlightBounds(icon, panel, settings, area)
+		start, end := g.point(0), g.point(1)
+		if start != g.start || end != g.end {
+			t.Fatalf("endpoints = %v / %v", start, end)
+		}
+		if got := end.X + float32(g.bounds.X); got != float32(settings.X+settings.Width/2) {
+			t.Fatalf("target x %v", got)
+		}
+		if got := end.Y + float32(g.bounds.Y); got != float32(settings.Y+130) {
+			t.Fatalf("target y %v", got)
+		}
+		for i := 0; i <= 100; i++ {
+			p := g.point(float32(i) / 100)
+			if p.X < 48 || p.Y < 48 || p.X > float32(g.bounds.Width)-48 || p.Y > float32(g.bounds.Height)-48 {
+				t.Fatalf("clipped flight at %d: %v in %v", i, p, g.bounds)
+			}
+		}
+		if g.control.Y > min(g.start.Y, g.end.Y) {
+			t.Fatalf("curve bends down: %v", g)
+		}
+	}
+}
+
+func TestPermissionGuideFollowFinishesAtTheActualTarget(t *testing.T) {
+	from := mygo.Rectangle{X: -700, Y: 300, Width: 500, Height: 442}
+	to := mygo.Rectangle{X: 1016, Y: 96, Width: 500, Height: 442}
+	for _, duration := range []time.Duration{350 * time.Millisecond, 250 * time.Millisecond} {
+		start := permissionGuideFollowPosition(from, to, 0, duration)
+		end := permissionGuideFollowPosition(from, to, 1, duration)
+		if start != from || end != to {
+			t.Fatalf("movement endpoints: %v -> %v", start, end)
+		}
+		previous := start.X
+		for i := 1; i < 100; i++ {
+			p := permissionGuideFollowPosition(from, to, float32(i)/100, duration)
+			if p.X < previous || p.X > to.X || p.Y < to.Y || p.Y > from.Y {
+				t.Fatalf("overshot at %d: %v", i, p)
+			}
+			previous = p.X
+		}
+	}
+}
+
+func TestPermissionGuideFlightSpringIsFiniteAndHasExactEndpoints(t *testing.T) {
+	if permissionGuideFlightSpring(0) != 0 || permissionGuideFlightSpring(1) != 1 {
+		t.Fatal("spring endpoint mismatch")
+	}
+	for i := 0; i <= 100; i++ {
+		v := float64(permissionGuideFlightSpring(float32(i) / 100))
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Fatal("nonfinite spring")
+		}
+	}
+}
+
+func TestPermissionGuideIllustrationLeavesDesktopTransparentAndStopsScheduling(t *testing.T) {
+	pixels := image.NewRGBA(image.Rect(0, 0, 80, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 80; x++ {
+			pixels.SetRGBA(x, y, color.RGBA{A: 255})
+		}
+	}
+	s := &shell{settingsState: settingsState{appIcon: ui.NewBitmap(pixels)}}
+	view := &permissionGuideIllustration{active: true, run: 1, geometry: permissionGuideFlightGeometry{bounds: mygo.Rectangle{Width: 400, Height: 200}, start: ui.Point{X: 330, Y: 130}, control: ui.Point{X: 220, Y: 70}, end: ui.Point{X: 70, Y: 130}}}
+	renderer := ui.NewTester(func(c *ui.Context) { s.drawPermissionGuideIllustration(c, view) }, 400, 200)
+	renderer.Advance(400 * time.Millisecond)
+	if got := renderer.Image().RGBAAt(0, 0).A; got != 0 {
+		t.Fatalf("overlay paints desktop background alpha=%d", got)
+	}
+	visible := false
+	for _, a := range renderer.Image().Pix {
+		if a != 0 {
+			visible = true
+			break
+		}
+	}
+	if !visible {
+		t.Fatal("active illustration rendered no icon")
+	}
+	view.active = false
+	renderer.Frame()
+	if renderer.FramePending() {
+		t.Fatal("hidden illustration still schedules animation frames")
+	}
+	for _, a := range renderer.Image().Pix {
+		if a != 0 {
+			t.Fatal("hidden illustration left pixels behind")
+		}
+	}
+}
+
+func TestPermissionGuideDragPreviewContainsOnlyIconPixels(t *testing.T) {
+	preview := permissionGuideDragPreview()
+	if preview == nil {
+		t.Fatal("missing native icon preview")
+	}
+	if preview.Bounds() != image.Rect(0, 0, 96, 96) {
+		t.Fatal(preview.Bounds())
+	}
+	for y := 0; y < 96; y++ {
+		for x := 0; x < 96; x++ {
+			if (x < 10 || y < 10 || x >= 86 || y >= 86) && preview.RGBAAt(x, y).A != 0 {
+				t.Fatalf("panel pixels in drag margin at %d,%d", x, y)
+			}
+		}
+	}
+	if preview.RGBAAt(48, 48).A == 0 {
+		t.Fatal("icon is absent")
+	}
+}

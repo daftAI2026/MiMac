@@ -132,6 +132,9 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 		settingsValueRow(c, &a.theme, a.fonts.body, "连接", s.deviceConnectionLabel())
 		sectionLine(c, a)
 		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Justify(ui.End).Gap(spaceSM).Children(func() {
+			if appButton(c, a, "系统权限…", false).Clicked() {
+				s.showPermissionGuide()
+			}
 			if appButton(c, a, "蓝牙设置", false).Clicked() {
 				s.performSetupAction(setupBluetoothConnection)
 			}

@@ -1,9 +1,37 @@
 flowchart TD
-    launch["普通启动"] --> known{"已有配置？"}
+    launch["普通启动"] --> resume{"首启记录未完成？"}
+    resume -->|是| onboarding["打开完整首启窗口"]
+    resume -->|否| known{"已有配置或已完成？"}
     known -->|是| tray["保留菜单栏启动行为"]
-    known -->|否| device["显示设备页，成功后保存原格式默认偏好"]
+    known -->|否| onboarding
+    reopenJourney["菜单：使用引导"] --> onboarding
+    onboarding --> deviceStep["第1步：连接遥控器"]
+    deviceStep --> device["只读检测，显示插件连接指引"]
+    deviceStep --> toolStep["第2步：准备语音工具"]
+    toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
+    explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
+    toolStep --> permissionStep["第3步：系统权限"]
+    permissionStep --> permissionGuide["显式打开可关闭的系统权限引导"]
+    permissionStep --> finish["进入按键映射：保存首启完成，不代表设备已就绪"]
+    finish --> mappings
+    onboarding -->|中途关闭| pending["保留未完成标记，下次继续"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
+    device --> permissionGuide["显示可关闭的系统权限引导"]
+    reopen["菜单或设备页：系统权限"] --> permissionGuide
+    permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
+    inspect --> missing{"所需能力仍缺权限？"}
+    missing -->|是| grantAction["用户显式点击授权或打开设置"]
+    grantAction --> settings["打开对应系统设置页，面板并排跟随窗口"]
+    settings --> illustration["透明非激活窗口显示拖放示意，减少动态效果时静止"]
+    illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
+    drag --> guideRefresh
+    missing -->|否| complete["显示已完成；可关闭，不接管设备"]
+    grantAction --> nativeGrant["由对应能力调用原有系统授权入口"]
+    nativeGrant --> guideRefresh["面板可见时及回到 App 查询实际授权状态，逐项推进"]
+    guideRefresh --> permissionGuide
+    identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
+    permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]
     connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
     mappings --> enable
@@ -24,6 +52,8 @@ flowchart TD
     available --> choose["用户在语音工具页或按键映射中选择工具"]
     choose --> current["共用唯一 Current 和既有选择入口"]
     current --> resolve["适配器提供动作；桥接模块准备现有音频路径"]
+    current --> selectSource["选择工具时，由既有插件自动选中系统输入源"]
+    selectSource --> resolve
     resolve --> ready{"按键、动作与所需音频均就绪？"}
     enable --> ready
     ready -->|是| action["回到输入位置，按住说话，松开完成"]
