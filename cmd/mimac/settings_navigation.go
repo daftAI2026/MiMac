@@ -103,6 +103,7 @@ func (s *shell) navigationSymbol(page settingsPage, dark bool) *ui.Bitmap {
 type symbolKey struct {
 	name    string
 	size    float32
+	weight  float64
 	dark    bool
 	sidebar bool
 }
@@ -119,8 +120,8 @@ func (s *shell) symbolBitmap(key symbolKey) *ui.Bitmap {
 		return bitmap
 	}
 	var bitmap *ui.Bitmap
-	if pixels, err := symbols.Image(key.name, key.dark, float64(key.size)); err == nil {
-		bitmap = ui.NewBitmap(pixels)
+	if pixels, err := symbols.Images([]string{key.name}, key.dark, float64(key.size), key.weight); err == nil && len(pixels) == 1 {
+		bitmap = ui.NewBitmap(pixels[0])
 	}
 	s.navigationSymbols[key] = bitmap
 	return bitmap
