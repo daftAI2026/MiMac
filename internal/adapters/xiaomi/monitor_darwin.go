@@ -64,6 +64,41 @@ var nativeMonitor struct {
 	err  error
 }
 
+type listenAccessAPI struct {
+	checkAccess   func(int32) int32
+	requestAccess func(int32) bool
+}
+
+var nativeListenAccess struct {
+	once sync.Once
+	api  *listenAccessAPI
+	err  error
+}
+
+func listenAccessFunctions() (*listenAccessAPI, error) {
+	nativeListenAccess.once.Do(func() {
+		io, err := purego.Dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", purego.RTLD_NOW|purego.RTLD_LOCAL)
+		if err != nil {
+			nativeListenAccess.err = err
+			return
+		}
+		a := &listenAccessAPI{}
+		for symbol, destination := range map[string]any{
+			"IOHIDCheckAccess":   &a.checkAccess,
+			"IOHIDRequestAccess": &a.requestAccess,
+		} {
+			address, err := purego.Dlsym(io, symbol)
+			if err != nil {
+				nativeListenAccess.err = fmt.Errorf("xiaomi HID: resolve %s: %w", symbol, err)
+				return
+			}
+			purego.RegisterFunc(destination, address)
+		}
+		nativeListenAccess.api = a
+	})
+	return nativeListenAccess.api, nativeListenAccess.err
+}
+
 func monitorFunctions() (*monitorAPI, error) {
 	nativeMonitor.once.Do(func() {
 		registry, err := registryFunctions()
@@ -156,6 +191,50 @@ func monitorFunctions() (*monitorAPI, error) {
 		nativeMonitor.api = a
 	})
 	return nativeMonitor.api, nativeMonitor.err
+}
+
+// ListenAccess reads the current Input Monitoring decision without requesting
+// access, opening an HID manager, or connecting to a device.
+func ListenAccess() ListenAccessState {
+	api, err := listenAccessFunctions()
+	if err != nil || api == nil || api.checkAccess == nil {
+		return ListenAccessUnknown
+	}
+	switch api.checkAccess(listenEventRequestType) {
+	case accessGranted:
+		return ListenAccessGranted
+	case accessDenied:
+		return ListenAccessDenied
+	case accessUnknown:
+		return ListenAccessNotDetermined
+	default:
+		return ListenAccessUnknown
+	}
+}
+
+func requestListenAccess() ListenAccessState {
+	api, err := listenAccessFunctions()
+	if err != nil || api == nil || api.checkAccess == nil || api.requestAccess == nil {
+		return ListenAccessUnknown
+	}
+	if access := api.checkAccess(listenEventRequestType); access == accessUnknown {
+		listenAccessRequest.Lock()
+		shouldRequest := !listenAccessRequest.attempted
+		if shouldRequest {
+			listenAccessRequest.attempted = true
+		}
+		listenAccessRequest.Unlock()
+		if shouldRequest {
+			api.requestAccess(listenEventRequestType)
+		}
+	} else if access == accessDenied {
+		return ListenAccessDenied
+	} else if access == accessGranted {
+		return ListenAccessGranted
+	} else {
+		return ListenAccessUnknown
+	}
+	return ListenAccess()
 }
 
 var callbackContexts = struct {

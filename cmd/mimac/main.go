@@ -64,6 +64,8 @@ type shell struct {
 	preferencesState
 	voiceToolsState
 	remoteState
+	permissionGuideState
+	appInstallState
 	voiceOverlay                     voiceOverlayState
 	readyIndicator                   readyIndicatorState
 	powerState                       powerState
@@ -179,6 +181,7 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 		if settingsPlan.firstRun && s.window != nil {
 			// A write failure must not prevent the first-run window from being used.
 			_ = s.markFirstRunSettingsShown()
+			s.showPermissionGuide()
 		}
 	}
 	settingsShown := s.window != nil
@@ -360,6 +363,12 @@ func main() {
 	})
 	mygo.App.OnActivate(func(_ bool) {
 		if s.report.Ready && !s.closing {
+			if s.guideWindow != nil {
+				s.refreshSetupAfterActivation()
+				s.guideWindow.Show()
+				s.guideWindow.Focus()
+				return
+			}
 			s.showSettings()
 			if s.window != nil {
 				s.window.Focus()
@@ -370,6 +379,9 @@ func main() {
 	// A settings window is disposable; closing it must leave the menu bar host running.
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
+		if s.deferInstallQuit(event.PreventDefault) {
+			return
+		}
 		s.closeVoiceOverlay()
 		s.cancelPowerResume()
 		s.cancelRemoteReservationRetry()
@@ -382,6 +394,7 @@ func main() {
 			return
 		}
 		s.closing = true
+		s.closePermissionGuide()
 		s.clearReadyIndicator()
 		s.unwatchPower()
 		s.closeGeneralControls()
@@ -403,7 +416,11 @@ func main() {
 			s.tray.Destroy()
 		}
 	})
-	mygo.App.WhenReady(func() { s.ready(ctx, *show, showSettingsSpecified, *smoke, *capturePath) })
+	mygo.App.WhenReady(func() {
+		s.installFromDiskImage(ctx, func() {
+			s.ready(ctx, *show, showSettingsSpecified, *smoke, *capturePath)
+		})
+	})
 	if err := mygo.App.Run(); err != nil {
 		s.report.Error = err.Error()
 	}

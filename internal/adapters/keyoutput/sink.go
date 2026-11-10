@@ -25,6 +25,16 @@ const (
 	SelfTarget
 )
 
+// PermissionState separates an unavailable preflight API from a process that
+// can query Post Event access but has not been granted it.
+type PermissionState uint8
+
+const (
+	PermissionStateUnknown PermissionState = iota
+	PermissionStateNotGranted
+	PermissionStateGranted
+)
+
 const (
 	privateEventSourceState int32  = -1
 	hidEventTapLocation     int32  = 0
@@ -62,8 +72,19 @@ func getDefaultAPI() (*eventAPI, error) {
 // HasAccess reports the current Post Event permission state. It never requests
 // permission; call RequestAccess only from an explicit user action.
 func HasAccess() bool {
+	return ReadPermissionState() == PermissionStateGranted
+}
+
+// ReadPermissionState checks Post Event access without requesting permission.
+func ReadPermissionState() PermissionState {
 	api, err := getDefaultAPI()
-	return err == nil && hasAccess(api)
+	if err != nil || api == nil || api.preflight == nil {
+		return PermissionStateUnknown
+	}
+	if hasAccess(api) {
+		return PermissionStateGranted
+	}
+	return PermissionStateNotGranted
 }
 
 // RequestAccess asks macOS for Post Event permission. Call it only from an

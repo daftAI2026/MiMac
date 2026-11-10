@@ -32,6 +32,7 @@ func (s *shell) updateTrayMenu() {
 		mygo.Separator(),
 		{Label: "按键映射…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showPage(pageMappings) }},
 		{Label: "设置…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showSettings() }},
+		{Label: "系统权限…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showPermissionGuide() }},
 		mygo.Separator(),
 		{Label: "退出 " + mygo.App.Name(), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 	})

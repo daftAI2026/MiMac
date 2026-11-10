@@ -9,7 +9,7 @@ var SVG string
 //go:embed tray.png
 var TrayPNG []byte
 
-// AboutIconPNG is exported at 2x for the 64pt settings logo. The full icon
+// AboutIconPNG is exported at 2x for logos up to 80pt. The full icon
 // stays a bundle asset instead of a large embedded runtime image.
 //
 //go:embed about-icon.png

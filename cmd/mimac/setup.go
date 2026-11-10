@@ -83,6 +83,7 @@ func (s *shell) refreshSetupAfterActivation() {
 	if s.closing {
 		return
 	}
+	s.refreshPermissionGuide()
 	if s.outputNeedsPermission && s.requireDeviceAccess() == nil {
 		s.refreshRemoteOutput(false)
 	}

@@ -4,6 +4,18 @@ flowchart TD
     known -->|否| device["显示设备页，成功后保存原格式默认偏好"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
+    device --> permissionGuide["显示可关闭的系统权限引导"]
+    reopen["菜单或设备页：系统权限"] --> permissionGuide
+    permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
+    inspect --> missing{"所需能力仍缺权限？"}
+    missing -->|是| settings["打开对应系统设置页，侧伴面板跟随窗口"]
+    settings --> grantAction["用户显式点击授权或拖入当前 App"]
+    missing -->|否| complete["显示已完成；可关闭，不接管设备"]
+    grantAction --> nativeGrant["由对应能力调用原有系统授权入口"]
+    nativeGrant --> guideRefresh["面板可见时及回到 App 查询实际授权状态，逐项推进"]
+    guideRefresh --> permissionGuide
+    identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
+    permissionGuide -->|关闭| keepSettings["停止面板计时与跟随，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]
     connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
     mappings --> enable
@@ -24,6 +36,8 @@ flowchart TD
     available --> choose["用户在语音工具页或按键映射中选择工具"]
     choose --> current["共用唯一 Current 和既有选择入口"]
     current --> resolve["适配器提供动作；桥接模块准备现有音频路径"]
+    current --> selectSource["选择工具时，由既有插件自动选中系统输入源"]
+    selectSource --> resolve
     resolve --> ready{"按键、动作与所需音频均就绪？"}
     enable --> ready
     ready -->|是| action["回到输入位置，按住说话，松开完成"]
