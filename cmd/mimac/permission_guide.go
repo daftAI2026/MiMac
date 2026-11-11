@@ -687,7 +687,7 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
 			ui.Text(c, row.title).SingleLine().FontSize(permissionGuideRowTitle).FontWeight(600)
 			if icon := s.symbolBitmap(symbolKey{name: "arrow.up.right.circle", dark: a.theme.Dark, size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}); icon != nil {
-				ui.Image(c, icon).Width(permissionGuideLinkIconSize).Height(permissionGuideLinkIconSize).Fit(ui.Contain)
+				ui.Image(c, icon).Width(permissionGuideLinkIconSize).Height(permissionGuideLinkIconSize).Fit(ui.Contain).Opacity(.55)
 			}
 		})
 	})

@@ -394,9 +394,9 @@ func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) {
 			continue
 		}
 		numberValue := windowListAPI.dictionaryGet(entry, windowListAPI.numberKey)
-		var number int64
-		// kCFNumberSInt64Type preserves the complete uint32 CGWindowID range.
-		if numberValue == 0 || !windowListAPI.numberGet(numberValue, 4, unsafe.Pointer(&number)) || number <= 0 || number > 1<<32-1 {
+		var number int32
+		// kCGWindowNumber stores SInt32; CGWindowID uses its uint32 bit pattern.
+		if numberValue == 0 || !windowListAPI.numberGet(numberValue, 3, unsafe.Pointer(&number)) || number == 0 {
 			continue
 		}
 		match = WindowSnapshot{ID: uint32(number), Frame: Rect(bounds)}
