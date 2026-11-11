@@ -47,10 +47,14 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 		icon.Tooltip("拖入系统设置的权限列表")
 		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
 			window, generation := s.guideWindow, s.generation
-			icon.DragData(data, transfer.DragOptions{Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(48, 48), Done: func(transfer.Result) {
+			icon.DragDataFrom(func() transfer.Data {
+				s.startPermissionGuideDrop()
+				return data
+			}, transfer.DragOptions{Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(48, 48), Done: func(transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
 					return
 				}
+				s.stopPermissionGuideDrop()
 				s.hasDraggedIcon, s.iconDragging = true, false
 				s.hidePermissionGuideIllustration()
 				s.refreshPermissionGuide()
@@ -262,9 +266,14 @@ func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionG
 // System Settings reserves a sidebar and toolbar before the permission list.
 // Small windows fall back to their full frame if the list area is empty.
 func permissionGuideFlightDestination(settings permissionguide.Rect) ui.Point {
-	content := settings
-	if settings.Width > 256 && settings.Height > 76 {
-		content = permissionguide.Rect{X: settings.X + 244, Y: settings.Y + 64, Width: settings.Width - 256, Height: settings.Height - 76}
-	}
+	content := permissionGuideSettingsContent(settings)
 	return ui.Point{X: float32(content.X + content.Width/2), Y: float32(content.Y + min(content.Height/2, 130))}
+}
+
+// Shared by the illustration destination and the live drop spotlight.
+func permissionGuideSettingsContent(settings permissionguide.Rect) permissionguide.Rect {
+	if settings.Width > 256 && settings.Height > 76 {
+		return permissionguide.Rect{X: settings.X + 244, Y: settings.Y + 64, Width: settings.Width - 256, Height: settings.Height - 76}
+	}
+	return settings
 }

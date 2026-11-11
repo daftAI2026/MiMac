@@ -63,6 +63,7 @@ type permissionGuideState struct {
 	hasDraggedIcon      bool
 	reduceMotion        bool
 	illustration        *permissionGuideIllustration
+	dropGuide           *permissionGuideDrop
 }
 
 type permissionGuidePhase uint8
@@ -149,6 +150,7 @@ func (s *shell) showPermissionGuide() {
 		if s.guideWindow == window && s.generation == generation {
 			s.stopPermissionGuidePolling()
 			s.stopPermissionGuideFollowing()
+			s.stopPermissionGuideDrop()
 		}
 	})
 	window.OnFocus(func() {
@@ -409,6 +411,7 @@ func (s *shell) stopPermissionGuideFollowing() {
 }
 
 func (s *shell) cancelPermissionGuideTimers() {
+	s.stopPermissionGuideDrop()
 	s.stopPermissionGuidePolling()
 	s.stopPermissionGuideFollowing()
 }
