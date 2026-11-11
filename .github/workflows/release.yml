@@ -75,6 +75,12 @@ jobs:
           go test ./...
           go vet ./...
 
+      - name: Test native first-install process queries
+        env:
+          MIMAC_APPINSTALL_NATIVE_FIXTURE: "1"
+        run: |
+          go test ./internal/platform/appinstall -run '^TestAppinstallNative(FreshTransactionQueriesMissingTarget|MissingDestinationIsNotRunning)$' -count=1 -timeout=30s
+
       - name: Read all releases for tag planning
         env:
           GH_TOKEN: ${{ github.token }}

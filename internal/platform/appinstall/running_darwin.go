@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -50,7 +51,7 @@ func withExactApplication(ctx context.Context, bundleID, path string, terminate 
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	canonical, err := filepath.EvalSymlinks(path)
+	canonical, err := canonicalInstallPath(path)
 	if err != nil {
 		return false, err
 	}
@@ -109,7 +110,7 @@ func withExactApplication(ctx context.Context, bundleID, path string, terminate 
 		if err != nil {
 			return false, err
 		}
-		observedCanonical, err := filepath.EvalSymlinks(observedPath)
+		observedCanonical, err := canonicalInstallPath(observedPath)
 		if err != nil {
 			return false, fmt.Errorf("resolve running application bundle path: %w", err)
 		}
@@ -131,6 +132,22 @@ func withExactApplication(ctx context.Context, bundleID, path string, terminate 
 		return false, errors.New("normal app termination is unavailable")
 	}
 	return objc.Send[bool](match, installerSelector("terminate")), nil
+}
+
+// A first-install destination has an existing Applications parent but no app
+// yet. Resolve that parent without mistaking the missing leaf for a query
+// failure. Still inspect registered processes: a running app's directory may
+// have been removed without its process having exited.
+func canonicalInstallPath(path string) (string, error) {
+	canonical, err := filepath.EvalSymlinks(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return canonical, err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(path)), nil
 }
 
 func installerSupportsApplication(application objc.ID) bool {
