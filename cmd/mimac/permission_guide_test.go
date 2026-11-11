@@ -2,7 +2,9 @@ package main
 
 import (
 	"mimac.local/mimac/internal/devices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/keyoutput"
@@ -144,5 +146,102 @@ func TestPermissionGuideSelectedDeviceIncludesCaptureAndKeyOutputBeforeMappings(
 	ids := s.requiredPermissionGuideIDs()
 	if len(ids) != 2 || ids[0] != permissionGuideInput || ids[1] != permissionGuidePostEvent {
 		t.Fatalf("initial device permissions = %v", ids)
+	}
+}
+
+func TestPermissionGuideMissingAccessUsesOneGrantAction(t *testing.T) {
+	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent, permissionGuideBluetooth} {
+		for _, access := range []permissionGuideAccess{permissionGuideNotDetermined, permissionGuideNotGranted, permissionGuideDenied} {
+			if got := permissionGuideActionLabel(permissionGuideRow{id: id, access: access}); got != "授权…" {
+				t.Errorf("id=%v access=%v label=%q, want 授权…", id, access, got)
+			}
+		}
+	}
+}
+
+func TestPermissionGuideGrantCompletesOrOpensTheSameSettingsPath(t *testing.T) {
+	cases := []struct {
+		name          string
+		id            permissionGuideID
+		before, after permissionGuideAccess
+		want          string
+	}{
+		{"first input request", permissionGuideInput, permissionGuideNotDetermined, permissionGuideNotDetermined, "request,refresh,settings"},
+		{"denied input", permissionGuideInput, permissionGuideDenied, permissionGuideDenied, "refresh,settings"},
+		{"post event remains missing", permissionGuidePostEvent, permissionGuideNotGranted, permissionGuideNotGranted, "request,refresh,settings"},
+		{"native grant succeeds", permissionGuidePostEvent, permissionGuideNotGranted, permissionGuideGranted, "request,refresh"},
+		{"query unknown", permissionGuideInput, permissionGuideUnknown, permissionGuideNotGranted, "refresh"},
+		{"query becomes unknown", permissionGuideInput, permissionGuideNotDetermined, permissionGuideUnknown, "request,refresh"},
+		{"already granted", permissionGuideInput, permissionGuideGranted, permissionGuideGranted, ""},
+		{"restricted", permissionGuideInput, permissionGuideRestricted, permissionGuideRestricted, ""},
+		{"bluetooth prompt pending", permissionGuideBluetooth, permissionGuideNotDetermined, permissionGuideNotDetermined, "request,refresh"},
+		{"bluetooth denied", permissionGuideBluetooth, permissionGuideDenied, permissionGuideDenied, "refresh,settings"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []string
+			runPermissionGuideGrant(tc.id, tc.before, func(id permissionGuideID) {
+				if id != tc.id {
+					t.Fatal("wrong request target")
+				}
+				events = append(events, "request")
+			}, func() permissionGuideAccess { events = append(events, "refresh"); return tc.after }, func(id permissionGuideID) {
+				if id != tc.id {
+					t.Fatal("wrong settings target")
+				}
+				events = append(events, "settings")
+			})
+			if got := strings.Join(events, ","); got != tc.want {
+				t.Fatalf("actions=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPermissionGuideJoinRequiresAnExplicitSearchAndStableWindow(t *testing.T) {
+	now := time.Unix(10, 0)
+	sample := permissionguide.WindowSnapshot{ID: 40, Frame: permissionguide.Rect{X: 30, Y: 50, Width: 600, Height: 700}}
+	s := permissionGuideState{}
+	if ready, expired := s.permissionGuideSettingsJoinReady(sample, true, now); ready || !expired {
+		t.Fatal("idle panel followed an unrelated settings window")
+	}
+	s.settingsSearchUntil = now.Add(permissionGuideSettingsSearchDuration)
+	if ready, _ := s.permissionGuideSettingsJoinReady(sample, true, now); ready {
+		t.Fatal("first observation treated as stable")
+	}
+	moved := sample
+	moved.Frame.X++
+	if ready, _ := s.permissionGuideSettingsJoinReady(moved, true, now.Add(100*time.Millisecond)); ready {
+		t.Fatal("changed frame treated as stable")
+	}
+	replacement := moved
+	replacement.ID++
+	if ready, _ := s.permissionGuideSettingsJoinReady(replacement, true, now.Add(200*time.Millisecond)); ready {
+		t.Fatal("different window with same frame treated as stable")
+	}
+	if ready, expired := s.permissionGuideSettingsJoinReady(replacement, true, now.Add(300*time.Millisecond)); !ready || expired {
+		t.Fatal("two identical observations did not join")
+	}
+	s.followActive = true
+	s.followWindowID = replacement.ID
+	if ready, _ := s.permissionGuideSettingsJoinReady(moved, true, now.Add(400*time.Millisecond)); ready {
+		t.Fatal("replacement window bypassed initial stability")
+	}
+	if ready, _ := s.permissionGuideSettingsJoinReady(moved, true, now.Add(500*time.Millisecond)); !ready {
+		t.Fatal("stable replacement did not join")
+	}
+	s.followActive = false
+	s.settingsOpenedFor = permissionGuideInput
+	if ready, expired := s.permissionGuideSettingsJoinReady(moved, true, s.settingsSearchUntil); ready || !expired {
+		t.Fatal("deadline allowed another join")
+	}
+	if s.settingsOpenedFor != 0 {
+		t.Fatal("expired search can be rearmed by permission polling")
+	}
+	s.settingsSearchUntil = now.Add(permissionGuideSettingsSearchDuration)
+	s.settingsCandidate = sample
+	s.permissionGuideSettingsJoinReady(permissionguide.WindowSnapshot{}, false, now)
+	if ready, _ := s.permissionGuideSettingsJoinReady(sample, true, now); ready {
+		t.Fatal("missing observation preserved a stale candidate")
 	}
 }

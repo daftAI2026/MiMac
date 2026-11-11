@@ -302,7 +302,7 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 			})
 		}
 		ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
-			if appButton(c, a, "设置权限…", false).Clicked() {
+			if appButton(c, a, "授权…", false).Clicked() {
 				s.showOnboardingPermissionGuide()
 			}
 		})

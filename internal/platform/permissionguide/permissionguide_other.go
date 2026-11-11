@@ -9,3 +9,5 @@ func CancelBluetoothRequest()                  {}
 func SystemSettingsWindowBounds() (Rect, bool) { return Rect{}, false }
 
 func PrimaryMouseButtonDown() bool { return false }
+
+func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) { return WindowSnapshot{}, false }

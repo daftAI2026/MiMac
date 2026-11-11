@@ -280,6 +280,7 @@ var windowListAPI struct {
 	ownerPIDKey   uintptr
 	layerKey      uintptr
 	boundsKey     uintptr
+	numberKey     uintptr
 	err           error
 }
 
@@ -334,6 +335,7 @@ func loadWindowListAPI() error {
 			"kCGWindowOwnerPID": &windowListAPI.ownerPIDKey,
 			"kCGWindowLayer":    &windowListAPI.layerKey,
 			"kCGWindowBounds":   &windowListAPI.boundsKey,
+			"kCGWindowNumber":   &windowListAPI.numberKey,
 		} {
 			address, err := purego.Dlsym(graphics, name)
 			if err != nil {
@@ -351,20 +353,25 @@ func loadWindowListAPI() error {
 }
 
 func SystemSettingsWindowBounds() (Rect, bool) {
+	snapshot, found := SystemSettingsWindowSnapshot()
+	return snapshot.Frame, found
+}
+
+func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) {
 	pid, ok := systemSettingsPID()
 	if !ok || loadWindowListAPI() != nil {
-		return Rect{}, false
+		return WindowSnapshot{}, false
 	}
 	list := windowListAPI.windowList(1, 0) // kCGWindowListOptionOnScreenOnly, kCGNullWindowID.
 	if list == 0 {
-		return Rect{}, false
+		return WindowSnapshot{}, false
 	}
 	defer windowListAPI.release(list)
 	count := windowListAPI.arrayCount(list)
 	if count < 0 || count > 8192 {
-		return Rect{}, false
+		return WindowSnapshot{}, false
 	}
-	var match Rect
+	var match WindowSnapshot
 	matches := 0
 	for index := int64(0); index < count; index++ {
 		entry := windowListAPI.arrayValue(list, index)
@@ -386,11 +393,17 @@ func SystemSettingsWindowBounds() (Rect, bool) {
 		if !windowListAPI.rectFromDict(boundsValue, &bounds) || bounds.Width < 200 || bounds.Height < 150 {
 			continue
 		}
-		match = Rect(bounds)
+		numberValue := windowListAPI.dictionaryGet(entry, windowListAPI.numberKey)
+		var number int64
+		// kCFNumberSInt64Type preserves the complete uint32 CGWindowID range.
+		if numberValue == 0 || !windowListAPI.numberGet(numberValue, 4, unsafe.Pointer(&number)) || number <= 0 || number > 1<<32-1 {
+			continue
+		}
+		match = WindowSnapshot{ID: uint32(number), Frame: Rect(bounds)}
 		matches++
 	}
 	if matches != 1 {
-		return Rect{}, false
+		return WindowSnapshot{}, false
 	}
 	return match, true
 }

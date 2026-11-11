@@ -30,33 +30,38 @@ const (
 	permissionGuideControlWidth           float32 = 76
 	permissionGuidePollInterval                   = 700 * time.Millisecond
 	permissionGuideFollowInterval                 = 33 * time.Millisecond
-	permissionGuideSettingsLookupInterval         = 500 * time.Millisecond
+	permissionGuideSettingsLookupInterval         = 100 * time.Millisecond
+	permissionGuideSettingsSearchDuration         = 6 * time.Second
 	permissionGuideWindowGap                      = 16
 )
 
 type permissionGuideState struct {
-	guideWindow       *mygo.Window
-	snapshot          permissionGuideSnapshot
-	phase             permissionGuidePhase
-	currentID         permissionGuideID
-	settingsOpenedFor permissionGuideID
-	generation        uint64
-	pollTimer         *time.Timer
-	followTimer       *time.Timer
-	followActive      bool
-	followManual      bool
-	followTarget      mygo.Rectangle
-	followStartBounds mygo.Rectangle
-	followMoveStarted time.Time
-	followMoveFrom    mygo.Rectangle
-	followMoveTime    time.Duration
-	followMoving      bool
-	iconDragPreview   *image.RGBA
-	iconBounds        ui.Rect
-	iconDragging      bool
-	hasDraggedIcon    bool
-	reduceMotion      bool
-	illustration      *permissionGuideIllustration
+	guideWindow         *mygo.Window
+	snapshot            permissionGuideSnapshot
+	phase               permissionGuidePhase
+	currentID           permissionGuideID
+	settingsOpenedFor   permissionGuideID
+	generation          uint64
+	pollTimer           *time.Timer
+	followTimer         *time.Timer
+	followActive        bool
+	followManual        bool
+	followTarget        mygo.Rectangle
+	followStartBounds   mygo.Rectangle
+	followMoveStarted   time.Time
+	followMoveFrom      mygo.Rectangle
+	followMoveTime      time.Duration
+	followMoveInitial   bool
+	settingsSearchUntil time.Time
+	settingsCandidate   permissionguide.WindowSnapshot
+	followWindowID      uint32
+	followMoving        bool
+	iconDragPreview     *image.RGBA
+	iconBounds          ui.Rect
+	iconDragging        bool
+	hasDraggedIcon      bool
+	reduceMotion        bool
+	illustration        *permissionGuideIllustration
 }
 
 type permissionGuidePhase uint8
@@ -199,6 +204,10 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 		return
 	}
 	s.advancePermissionGuide()
+	// Presentation can join an already-open Settings window, without opening it.
+	if len(s.snapshot.rows) > 0 && s.phase == permissionGuideWaiting && !s.followManual {
+		s.schedulePermissionGuideFollowing(window, generation)
+	}
 }
 
 func (s *shell) advancePermissionGuide() {
@@ -206,7 +215,16 @@ func (s *shell) advancePermissionGuide() {
 		return
 	}
 	var nextID permissionGuideID
-	if access, exists := permissionGuideAccessForID(s.snapshot, s.currentID); exists && access != permissionGuideGranted {
+	s.phase = permissionGuideComplete
+	for _, row := range s.snapshot.rows {
+		if row.access != permissionGuideGranted {
+			s.phase = permissionGuideWaiting
+			break
+		}
+	}
+	if _, exists := permissionGuideAccessForID(s.snapshot, s.settingsOpenedFor); exists {
+		nextID = s.settingsOpenedFor
+	} else if access, exists := permissionGuideAccessForID(s.snapshot, s.currentID); exists && access != permissionGuideGranted {
 		nextID = s.currentID
 	} else {
 		for _, row := range s.snapshot.rows {
@@ -229,10 +247,6 @@ func (s *shell) advancePermissionGuide() {
 		s.settingsOpenedFor = 0
 		s.followManual = false
 		s.stopPermissionGuideFollowing()
-	}
-	s.phase = permissionGuideWaiting
-	if s.followTimer == nil && !s.followManual {
-		s.schedulePermissionGuideFollowing(s.guideWindow, s.generation)
 	}
 }
 
@@ -268,6 +282,7 @@ func (s *shell) schedulePermissionGuideFollowing(window *mygo.Window, generation
 	}
 	s.followActive = false
 	s.followStartBounds = window.Bounds()
+	s.settingsSearchUntil = time.Now().Add(permissionGuideSettingsSearchDuration)
 	s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
 }
 
@@ -276,13 +291,20 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.stopPermissionGuideFollowing()
 		return
 	}
-	settingsBounds, found := permissionguide.SystemSettingsWindowBounds()
-	if !found {
-		s.followActive = false
+	settings, found := permissionguide.SystemSettingsWindowSnapshot()
+	now := time.Now()
+	ready, expired := s.permissionGuideSettingsJoinReady(settings, found, now)
+	if !ready {
 		s.hidePermissionGuideIllustration()
-		s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
+		if expired {
+			s.stopPermissionGuideFollowing()
+		} else {
+			s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
+		}
 		return
 	}
+	initial := !s.followActive
+	settingsBounds := settings.Frame
 	display := mygo.Screen.DisplayMatching(mygo.Rectangle{
 		X: int(math.Round(settingsBounds.X)), Y: int(math.Round(settingsBounds.Y)),
 		Width: int(math.Round(settingsBounds.Width)), Height: int(math.Round(settingsBounds.Height)),
@@ -298,10 +320,15 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.followMoveFrom = current
 		s.followMoveStarted = time.Now()
 		s.followMoveTime = 250 * time.Millisecond
+		s.followMoveInitial = initial
+		if initial {
+			s.followMoveTime = 350 * time.Millisecond
+		}
 		s.followTarget = target
 		s.hidePermissionGuideIllustration()
 	}
 	s.followActive = true
+	s.followWindowID = settings.ID
 	pointerDown := permissionguide.PrimaryMouseButtonDown()
 	position, moving := s.nextPermissionGuideFollowFrame(target, time.Now(), s.reduceMotion || pointerDown)
 	s.followMoving = moving
@@ -379,6 +406,9 @@ func (s *shell) stopPermissionGuideFollowing() {
 		s.followTimer = nil
 	}
 	s.followActive = false
+	s.settingsSearchUntil = time.Time{}
+	s.settingsCandidate = permissionguide.WindowSnapshot{}
+	s.followWindowID = 0
 	s.followMoving = false
 	s.hidePermissionGuideIllustration()
 }
@@ -685,38 +715,10 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 }
 
 func permissionGuideActionLabel(row permissionGuideRow) string {
-	switch row.id {
-	case permissionGuideInput:
-		switch row.access {
-		case permissionGuideNotDetermined:
-			return "授权…"
-		case permissionGuideDenied:
-			return "打开设置"
-		case permissionGuideUnknown:
-			return "重试"
-		}
-	case permissionGuidePostEvent:
-		switch row.access {
-		case permissionGuideUnknown:
-			return "重试"
-		case permissionGuideDenied:
-			return "打开设置"
-		case permissionGuideNotGranted:
-			return "授权…"
-		default:
-			return "打开设置"
-		}
-	case permissionGuideBluetooth:
-		switch row.access {
-		case permissionGuideNotDetermined:
-			return "授权…"
-		case permissionGuideDenied:
-			return "打开设置"
-		case permissionGuideUnknown:
-			return "重试"
-		}
+	if row.access == permissionGuideUnknown {
+		return "重试"
 	}
-	return "打开设置"
+	return "授权…"
 }
 
 func permissionGuideAccessLabel(access permissionGuideAccess) string {
@@ -751,29 +753,20 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 	if !exists {
 		return
 	}
-	if access == permissionGuideUnknown {
-		s.refreshPermissionGuide()
-		return
-	}
-	if access == permissionGuideDenied {
-		s.openPermissionGuideSettings(id, true)
-		return
-	}
-	switch id {
-	case permissionGuideInput:
-		if access == permissionGuideNotDetermined {
+	runPermissionGuideGrant(id, access, func(id permissionGuideID) {
+		switch id {
+		case permissionGuideInput:
 			_ = xiaomi.RequestListenAccess()
-		}
-	case permissionGuidePostEvent:
-		if access == permissionGuideNotGranted {
+		case permissionGuidePostEvent:
 			_ = keyoutput.RequestAccess()
-		}
-	case permissionGuideBluetooth:
-		if access == permissionGuideNotDetermined {
+		case permissionGuideBluetooth:
 			_ = permissionguide.RequestBluetoothAccess()
 		}
-	}
-	s.refreshPermissionGuide()
+	}, func() permissionGuideAccess {
+		s.refreshPermissionGuide()
+		fresh, _ := permissionGuideAccessForID(s.snapshot, id)
+		return fresh
+	}, func(id permissionGuideID) { s.openPermissionGuideSettings(id, true) })
 }
 
 func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
@@ -818,4 +811,53 @@ func permissionGuideIDString(id permissionGuideID) string {
 	default:
 		return "unknown"
 	}
+}
+
+func runPermissionGuideGrant(id permissionGuideID, access permissionGuideAccess, request func(permissionGuideID), refresh func() permissionGuideAccess, open func(permissionGuideID)) {
+	if access == permissionGuideUnknown {
+		refresh()
+		return
+	}
+	if access == permissionGuideGranted || access == permissionGuideRestricted {
+		return
+	}
+	if (id == permissionGuideInput && access == permissionGuideNotDetermined) ||
+		(id == permissionGuidePostEvent && access == permissionGuideNotGranted) ||
+		(id == permissionGuideBluetooth && access == permissionGuideNotDetermined) {
+		request(id)
+	}
+	fresh := refresh()
+	if fresh == permissionGuideNotDetermined || fresh == permissionGuideNotGranted || fresh == permissionGuideDenied {
+		// A first Bluetooth request is answered in its own system prompt.
+		if id == permissionGuideBluetooth && fresh == permissionGuideNotDetermined {
+			return
+		}
+		open(id)
+	}
+}
+
+// The initial join is bounded and waits for two identical native observations.
+// Ordinary following resumes only after that first stable window is known.
+func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permissionguide.WindowSnapshot, found bool, now time.Time) (ready, expired bool) {
+	if s.followActive && found && settings.ID == s.followWindowID {
+		return true, false
+	}
+	if s.followActive {
+		s.followActive = false
+		s.settingsSearchUntil = now.Add(permissionGuideSettingsSearchDuration)
+		s.settingsCandidate = permissionguide.WindowSnapshot{}
+	}
+	if s.settingsSearchUntil.IsZero() || !now.Before(s.settingsSearchUntil) {
+		s.settingsOpenedFor = 0
+		return false, true
+	}
+	if !found {
+		s.settingsCandidate = permissionguide.WindowSnapshot{}
+		return false, false
+	}
+	if settings == s.settingsCandidate {
+		return true, false
+	}
+	s.settingsCandidate = settings
+	return false, false
 }

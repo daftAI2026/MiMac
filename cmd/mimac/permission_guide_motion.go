@@ -16,6 +16,7 @@ import (
 )
 
 var permissionGuideIconMotion = ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: .25}}
+var permissionGuideJoinEase = ui.CubicBezier(.42, 0, .58, 1)
 var permissionGuideFollowEase = ui.CubicBezier(0, 0, .58, 1)
 
 func permissionGuideFollowPosition(from, to mygo.Rectangle, progress float32) mygo.Rectangle {
@@ -32,6 +33,10 @@ func (s *shell) nextPermissionGuideFollowFrame(target mygo.Rectangle, now time.T
 		s.followMoveStarted = now.Add(-s.followMoveTime)
 	}
 	progress := min(1, float32(now.Sub(s.followMoveStarted))/float32(s.followMoveTime))
+	if s.followMoveInitial {
+		t := float64(permissionGuideJoinEase(max(0, min(1, progress))))
+		return mygo.Rectangle{X: s.followMoveFrom.X + int(math.Round(float64(target.X-s.followMoveFrom.X)*t)), Y: s.followMoveFrom.Y + int(math.Round(float64(target.Y-s.followMoveFrom.Y)*t)), Width: target.Width, Height: target.Height}, progress < 1
+	}
 	return permissionGuideFollowPosition(s.followMoveFrom, target, progress), progress < 1
 }
 
