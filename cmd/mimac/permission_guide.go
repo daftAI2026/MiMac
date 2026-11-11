@@ -904,9 +904,9 @@ func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
 func drawPermissionGuideGrantedBadge(c *ui.Context, icon *ui.Bitmap, foreground, fill ui.Color) {
 	ui.Row(c).Height(24).Shrink(0).Padding(0, 9).Gap(5).AlignItems(ui.Center).Radius(12).Background(fill).Children(func() {
 		if icon != nil {
-			ui.Image(c, icon).Width(permissionGuideCaption).Height(permissionGuideCaption).Fit(ui.Contain).Label("已授权")
+			ui.Image(c, icon).Width(permissionGuideCaption).Height(permissionGuideCaption).Fit(ui.Contain)
 		} else {
-			ui.Text(c, "✓").FontSize(permissionGuideCaption).TextColor(foreground)
+			ui.Text(c, "✓").Role(ui.RoleNone).FontSize(permissionGuideCaption).TextColor(foreground)
 		}
 		ui.Text(c, "已授权").SingleLine().FontSize(permissionGuideCaption).TextColor(foreground)
 	})
