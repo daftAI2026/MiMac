@@ -196,3 +196,41 @@ func TestPermissionGuideIllustrationKeepsHandAboveTranslucentArtwork(t *testing.
 		t.Fatal("guidance paints the desktop")
 	}
 }
+
+func TestPermissionGuideFlightUsesCompleteNativeTiming(t *testing.T) {
+	for name, frames := range map[string][]ui.Keyframe{"progress": permissionGuideFlightProgress, "opacity": permissionGuideFlightOpacity, "scale": permissionGuideFlightScale} {
+		if got := frames[len(frames)-1].At; got != 3650*time.Millisecond {
+			t.Errorf("%s duration=%v, want 3.65s", name, got)
+		}
+	}
+	var value float32
+	renderer := ui.NewTester(func(c *ui.Context) { value = ui.Box(c).Keyframes("scale", permissionGuideFlightScale) }, 100, 100)
+	previous := time.Duration(0)
+	for _, sample := range []struct {
+		at    time.Duration
+		value float32
+	}{
+		{0 * time.Millisecond, 1.000000000000},
+		{50 * time.Millisecond, 1.011056828217},
+		{100 * time.Millisecond, 1.031048195663},
+		{150 * time.Millisecond, 1.049414791976},
+		{200 * time.Millisecond, 1.049358005607},
+		{250 * time.Millisecond, 1.049193678577},
+		{300 * time.Millisecond, 1.048929775116},
+		{350 * time.Millisecond, 1.048573411193},
+		{400 * time.Millisecond, 1.048130760264},
+		{450 * time.Millisecond, 1.047607336025},
+		{500 * time.Millisecond, 1.047007992416},
+		{1000 * time.Millisecond, 1.037622124464},
+		{2000 * time.Millisecond, 1.006019355182},
+		{2150 * time.Millisecond, 1.000000000000},
+		{3000 * time.Millisecond, 1.000000000000},
+		{3650 * time.Millisecond, 1.000000000000},
+	} {
+		renderer.Advance(sample.at - previous)
+		previous = sample.at
+		if math.Abs(float64(value-sample.value)) > 0.00001 {
+			t.Errorf("scale at %v=%g, native=%g", sample.at, value, sample.value)
+		}
+	}
+}

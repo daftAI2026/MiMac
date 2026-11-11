@@ -26,7 +26,7 @@ flowchart TD
     titleLink["用户点击权限标题链接"] --> settings["打开对应系统设置页"]
     settings --> stable["面板显示或显式设置动作开启：六秒内查找同一窗口与完整frame，两次稳定后350ms ease-in-out贴边"]
     stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
-    follow --> illustration["位置稳定且鼠标松开后显示半透明应用图标与原生抓手，沿二次曲线指向设置列表；拖动及减少动态效果时隐藏"]
+    follow --> illustration["位置稳定且鼠标松开后显示半透明应用图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
     drag --> guideRefresh
     missing -->|否| complete["显示已完成；可关闭，不接管设备"]

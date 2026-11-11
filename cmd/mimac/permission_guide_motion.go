@@ -206,15 +206,15 @@ func (s *shell) closePermissionGuideIllustration() {
 
 var permissionGuideFlightOpacity = []ui.Keyframe{
 	{Value: 0}, {At: 200 * time.Millisecond, Value: 1}, {At: 2150 * time.Millisecond, Value: 1},
-	{At: 2450 * time.Millisecond, Value: 0}, {At: 4 * time.Second, Value: 0},
+	{At: 2450 * time.Millisecond, Value: 0}, {At: 3650 * time.Millisecond, Value: 0},
 }
 var permissionGuideFlightProgress = []ui.Keyframe{
 	{Value: 0}, {At: 150 * time.Millisecond, Value: 0}, {At: 2150 * time.Millisecond, Value: 1},
-	{At: 2450 * time.Millisecond, Value: 1}, {At: 3650 * time.Millisecond, Value: 0}, {At: 4 * time.Second, Value: 0},
+	{At: 2450 * time.Millisecond, Value: 1}, {At: 3650 * time.Millisecond, Value: 0},
 }
 var permissionGuideFlightScale = []ui.Keyframe{
-	{Value: 1}, {At: 500 * time.Millisecond, Value: 1.08, Ease: permissionGuideFlightSpring},
-	{At: 2500 * time.Millisecond, Value: 1, Ease: ui.CubicBezier(.42, 0, 1, 1)}, {At: 4 * time.Second, Value: 1},
+	{Value: 1}, {At: 150 * time.Millisecond, Value: float32(1 + .08*permissionGuideSpringResponse(.3)), Ease: permissionGuideFlightSpring},
+	{At: 2150 * time.Millisecond, Value: 1, Ease: ui.CubicBezier(.42, 0, 1, 1)}, {At: 3650 * time.Millisecond, Value: 1},
 }
 
 func permissionGuideFlightSpring(t float32) float32 {
@@ -224,11 +224,16 @@ func permissionGuideFlightSpring(t float32) float32 {
 	if t >= 1 {
 		return 1
 	}
-	// Unit-mass spring with a 0.5 second response and damping ratio 0.85.
-	x := float64(t) * 2 * math.Pi
+	// The 150 ms segment samples a spring with a 500 ms response. Normalize
+	// its actual endpoint so the next segment continues without snapping.
+	return float32(permissionGuideSpringResponse(float64(t)*.3) / permissionGuideSpringResponse(.3))
+}
+
+func permissionGuideSpringResponse(t float64) float64 {
+	x := t * 2 * math.Pi
 	z := .85
 	d := math.Sqrt(1 - z*z)
-	return float32(1 - math.Exp(-z*x)*(math.Cos(d*x)+z/d*math.Sin(d*x)))
+	return 1 - math.Exp(-z*x)*(math.Cos(d*x)+z/d*math.Sin(d*x))
 }
 
 func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionGuideIllustration) {
