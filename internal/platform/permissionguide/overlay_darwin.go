@@ -26,6 +26,10 @@ func ConfigureDropOverlay(window *mygo.Window) {
 		}
 
 		nativeWindow := objc.ID(handle)
+		// MyGo Frameless hides title chrome but retains NSWindowStyleMaskTitled.
+		// A screen veil must be truly borderless to cover the menu-bar strip.
+		// Keep the nonactivating-panel bit established at window creation.
+		nativeWindow.Send(objc.RegisterName("setStyleMask:"), uint64(1<<7))
 		nativeWindow.Send(objc.RegisterName("setLevel:"), int64(4))
 		nativeWindow.Send(objc.RegisterName("setHidesOnDeactivate:"), false)
 		nativeWindow.Send(objc.RegisterName("setOpaque:"), false)
