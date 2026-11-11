@@ -273,3 +273,31 @@ func TestPermissionGuideListPermissionsOpenSettingsWithoutAnExtraPrompt(t *testi
 		}
 	}
 }
+
+func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		running, enabled bool
+		rows             []permissionGuideRow
+		want             permissionGuideID
+	}{
+		{name: "closed", enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}},
+		{name: "existing", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}, want: permissionGuideInput},
+		{name: "skip granted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideGranted}, {id: permissionGuidePostEvent, access: permissionGuideNotGranted}}, want: permissionGuidePostEvent},
+		{name: "no bluetooth prompt", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideBluetooth, access: permissionGuideNotDetermined}}},
+		{name: "restricted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideRestricted}}},
+		{name: "disabled", running: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var opened permissionGuideID
+			joins := 0
+			runPermissionGuidePresentation(permissionGuideSnapshot{actionsEnabled: test.enabled, rows: test.rows}, test.running, func(id permissionGuideID) { opened = id }, func() { joins++ })
+			if opened != test.want {
+				t.Errorf("opened=%v, want%v", opened, test.want)
+			}
+			if test.want == 0 && joins != 1 || test.want != 0 && joins != 0 {
+				t.Errorf("duplicate or missing join: %d", joins)
+			}
+		})
+	}
+}

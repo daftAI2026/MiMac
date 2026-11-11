@@ -19,7 +19,9 @@ flowchart TD
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
-    permissionGuide -->|只读查找已经打开的设置窗，不主动打开| stable
+    permissionGuide --> existingSettings{"系统设置已经运行？"}
+    existingSettings -->|是且有缺失列表权限：切到对应页| settings
+    existingSettings -->|否：不启动设置，只读等待现窗| stable
     permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]

@@ -204,9 +204,12 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 		return
 	}
 	s.advancePermissionGuide()
-	// Presentation can join an already-open Settings window, without opening it.
+	// An existing Settings session is routed to the missing list before joining.
+	// A closed Settings app remains closed until an explicit row action.
 	if len(s.snapshot.rows) > 0 && s.phase == permissionGuideWaiting && !s.followManual {
-		s.schedulePermissionGuideFollowing(window, generation)
+		runPermissionGuidePresentation(s.snapshot, permissionguide.SystemSettingsRunning(),
+			func(id permissionGuideID) { s.openPermissionGuideSettings(id, true) },
+			func() { s.schedulePermissionGuideFollowing(window, generation) })
 	}
 }
 
@@ -851,4 +854,18 @@ func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permiss
 	}
 	s.settingsCandidate = settings
 	return false, false
+}
+
+// Presentation may attach to an existing settings session. It must not launch
+// one implicitly or issue native permission requests.
+func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, settingsRunning bool, open func(permissionGuideID), join func()) {
+	if settingsRunning && snapshot.actionsEnabled {
+		for _, row := range snapshot.rows {
+			if permissionGuideAllowsAppDrag(row.id) && row.access != permissionGuideGranted && row.access != permissionGuideRestricted {
+				open(row.id)
+				return
+			}
+		}
+	}
+	join()
 }

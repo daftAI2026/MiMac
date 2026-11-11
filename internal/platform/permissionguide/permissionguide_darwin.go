@@ -225,6 +225,12 @@ func loadAppKitFramework() error {
 	return appKitFramework.err
 }
 
+// SystemSettingsRunning only queries the existing application; it never launches it.
+func SystemSettingsRunning() bool {
+	_, running := systemSettingsPID()
+	return running
+}
+
 func systemSettingsPID() (int32, bool) {
 	if loadAppKitFramework() != nil {
 		return 0, false
