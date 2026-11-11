@@ -338,6 +338,43 @@ func TestExecutePlanQueriesRunningStateWithExactTargetPath(t *testing.T) {
 	assertEventOrder(t, fixture.events, "running", "launch", "wait-running", "schedule-exit")
 }
 
+func TestAppinstallNativeFreshTransactionQueriesMissingTarget(t *testing.T) {
+	if os.Getenv(nativeFixtureOptIn) != "1" {
+		t.Skipf("set %s=1 for the native transaction query", nativeFixtureOptIn)
+	}
+	fixture := newInstallFixture(t, "2.1.0", "9", "new-release")
+	hooks := fixtureHooks(fixture)
+	hooks.running = nativeHostExactTargetRunning
+	result, err := executePlan(context.Background(), fixture.plan, hooks)
+	if err != nil {
+		t.Fatalf("fresh transaction with native process query: %v", err)
+	}
+	if result.Disposition != Relaunch || readFixturePayload(t, fixture.plan.TargetPath) != "new-release" {
+		t.Fatal("fresh installation did not finish")
+	}
+}
+
+func TestAppinstallNativeMissingDestinationIsNotRunning(t *testing.T) {
+	if os.Getenv(nativeFixtureOptIn) != "1" {
+		t.Skipf("set %s=1 for the read-only native query", nativeFixtureOptIn)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "MiMac.app")
+	running, err := nativeHostExactTargetRunning(context.Background(), fixtureBundleID, missing)
+	if err != nil {
+		t.Fatalf("fresh install destination: %v", err)
+	}
+	if running {
+		t.Fatal("nonexistent fresh destination matched a running app")
+	}
+	if _, err := os.Lstat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("query created destination: %v", err)
+	}
+}
+
 func TestAppinstallNativeExactIDAndPathQuery(t *testing.T) {
 	if os.Getenv(nativeFixtureOptIn) != "1" {
 		t.Skipf("set %s=1 to launch a self-owned temporary app fixture", nativeFixtureOptIn)
