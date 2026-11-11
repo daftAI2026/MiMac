@@ -50,7 +50,7 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 			icon.DragDataFrom(func() transfer.Data {
 				s.startPermissionGuideDrop()
 				return data
-			}, transfer.DragOptions{Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(48, 48), Done: func(transfer.Result) {
+			}, transfer.DragOptions{Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
 					return
 				}
@@ -104,9 +104,9 @@ func permissionGuideDragPreview() *image.RGBA {
 	if err != nil {
 		return nil
 	}
-	preview := image.NewRGBA(image.Rect(0, 0, 96, 96))
+	preview := image.NewRGBA(image.Rect(0, 0, 192, 192))
 	// Match the pressed icon size, retaining a transparent margin and hotspot.
-	draw.CatmullRom.Scale(preview, image.Rect(10, 10, 86, 86), source, source.Bounds(), draw.Src, nil)
+	draw.CatmullRom.Scale(preview, image.Rect(20, 20, 172, 172), source, source.Bounds(), draw.Src, nil)
 	return preview
 }
 

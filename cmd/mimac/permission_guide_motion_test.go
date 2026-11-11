@@ -111,17 +111,17 @@ func TestPermissionGuideDragPreviewContainsOnlyIconPixels(t *testing.T) {
 	if preview == nil {
 		t.Fatal("missing native icon preview")
 	}
-	if preview.Bounds() != image.Rect(0, 0, 96, 96) {
+	if preview.Bounds() != image.Rect(0, 0, 192, 192) {
 		t.Fatal(preview.Bounds())
 	}
-	for y := 0; y < 96; y++ {
-		for x := 0; x < 96; x++ {
-			if (x < 10 || y < 10 || x >= 86 || y >= 86) && preview.RGBAAt(x, y).A != 0 {
+	for y := 0; y < 192; y++ {
+		for x := 0; x < 192; x++ {
+			if (x < 20 || y < 20 || x >= 172 || y >= 172) && preview.RGBAAt(x, y).A != 0 {
 				t.Fatalf("panel pixels in drag margin at %d,%d", x, y)
 			}
 		}
 	}
-	if preview.RGBAAt(48, 48).A == 0 {
+	if preview.RGBAAt(96, 96).A == 0 {
 		t.Fatal("icon is absent")
 	}
 }

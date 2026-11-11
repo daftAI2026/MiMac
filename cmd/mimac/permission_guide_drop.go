@@ -60,7 +60,11 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 	}
 	if !sameScreens {
 		for _, p := range d.panels {
-			p.close()
+			// Old and new screen veils must never overlap during a display change.
+			p.closing = true
+			if p.window != nil && !p.window.IsDestroyed() {
+				p.window.Close()
+			}
 		}
 		d.panels = nil
 	}
