@@ -44,6 +44,10 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 		return
 	}
 	target, found := permissionguide.SystemSettingsWindowSnapshot()
+	if !found {
+		s.stopPermissionGuideDrop()
+		return
+	}
 	displays := mygo.Screen.Displays()
 	sameScreens := len(displays) == len(d.panels)
 	if sameScreens {
@@ -54,7 +58,7 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 			}
 		}
 	}
-	if !found || !sameScreens {
+	if !sameScreens {
 		for _, p := range d.panels {
 			p.close()
 		}
