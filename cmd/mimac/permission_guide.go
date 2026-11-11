@@ -139,7 +139,7 @@ func (s *shell) showPermissionGuide() {
 		Title: mygo.App.Name() + " 系统权限",
 		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot),
 		DisableResize: true, DisableMinimize: true, DisableMaximize: true, DisableFullScreen: true,
-		TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true, Panel: true, Hidden: true,
+		TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true, Hidden: true,
 		Content: ui.View(s.permissionGuideView),
 	})
 	s.guideWindow = window
@@ -451,7 +451,7 @@ func (s *shell) readPermissionGuideSnapshot() permissionGuideSnapshot {
 		case permissionGuideInput:
 			row.access = permissionGuideInputAccess(xiaomi.ListenAccess())
 		case permissionGuidePostEvent:
-			row.access = permissionGuideOutputAccess(keyoutput.ReadPermissionState())
+			row.access = permissionGuideAccessibilityAccess(permissionguide.ReadAccessibilityAccess())
 		case permissionGuideBluetooth:
 			bluetoothAccess := permissionguide.ReadBluetoothAccess()
 			if bluetoothAccess != permissionguide.BluetoothAccessNotDetermined && bluetoothAccess != permissionguide.BluetoothAccessUnknown {
@@ -560,14 +560,14 @@ func permissionGuideInputAccess(state xiaomi.ListenAccessState) permissionGuideA
 	}
 }
 
-func permissionGuideOutputAccess(state keyoutput.PermissionState) permissionGuideAccess {
-	switch state {
-	case keyoutput.PermissionStateGranted:
-		return permissionGuideGranted
-	case keyoutput.PermissionStateNotGranted:
-		return permissionGuideNotGranted
-	default:
+func permissionGuideAccessibilityAccess(trusted bool, err error) permissionGuideAccess {
+	switch {
+	case err != nil:
 		return permissionGuideUnknown
+	case trusted:
+		return permissionGuideGranted
+	default:
+		return permissionGuideNotGranted
 	}
 }
 

@@ -1,13 +1,13 @@
 package main
 
 import (
+	"errors"
 	"mimac.local/mimac/internal/devices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo"
-	"mimac.local/mimac/internal/adapters/keyoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
@@ -34,11 +34,14 @@ func TestPermissionGuideAccessProbesPreserveUnknownAndNotDetermined(t *testing.T
 	if got := permissionGuideInputAccess(xiaomi.ListenAccessGranted); got != permissionGuideGranted {
 		t.Fatalf("Input Monitoring grant mapped to %v", got)
 	}
-	if got := permissionGuideOutputAccess(keyoutput.PermissionStateUnknown); got != permissionGuideUnknown {
-		t.Fatalf("Post Event query error mapped to %v", got)
+	if got := permissionGuideAccessibilityAccess(false, errors.New("native query unavailable")); got != permissionGuideUnknown {
+		t.Fatalf("Accessibility query error mapped to %v", got)
 	}
-	if got := permissionGuideOutputAccess(keyoutput.PermissionStateNotGranted); got != permissionGuideNotGranted {
-		t.Fatalf("Post Event missing grant mapped to %v", got)
+	if got := permissionGuideAccessibilityAccess(false, nil); got != permissionGuideNotGranted {
+		t.Fatalf("Accessibility missing grant mapped to %v", got)
+	}
+	if got := permissionGuideAccessibilityAccess(true, nil); got != permissionGuideGranted {
+		t.Fatalf("Accessibility grant mapped to %v", got)
 	}
 	if got := permissionGuideBluetoothAccess(permissionguide.BluetoothAccessNotDetermined); got != permissionGuideNotDetermined {
 		t.Fatalf("Bluetooth notDetermined mapped to %v", got)

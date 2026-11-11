@@ -19,10 +19,11 @@ flowchart TD
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
+    permissionGuide -.-> nativeWindow["普通宿主窗口：系统设置激活时自然交接键盘，不随App停用自动隐藏"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
     existingSettings -->|否：不启动设置，只读等待现窗| stable
-    permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
+    permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
     titleLink["用户点击权限标题链接"] --> settings["打开对应系统设置页"]
@@ -59,7 +60,8 @@ flowchart TD
     evidence["HID / ATVV 未发现不等于未配对；配对记录由系统蓝牙界面确认"] -.-> saved
     enable["在按键映射或插件页启用遥控器"]
     enable --> grants["按能力申请输入监控 / 辅助功能 / 蓝牙"]
-    grants --> returnApp["返回后只复核已请求权限，不开始收音"]
+    grants --> outputPreflight["需要键输出时沿既有显式启用路径请求与预检PostEvent服务；权限卡刷新不请求"]
+    outputPreflight --> returnApp["返回后只复核已请求权限，不开始收音"]
     plugins["插件页：启用 / 停用适配器"] --> discovery["自动定位应用与配置"]
     discovery --> available["已启用工具出现在语音工具页和映射选择中"]
     available --> choose["用户在语音工具页或按键映射中选择工具"]
