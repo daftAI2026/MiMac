@@ -12,7 +12,7 @@ flowchart TD
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
     toolStep --> permissionStep["第3步：系统权限"]
     permissionStep --> permissionGuide["点击授权打开可关闭的系统权限引导"]
-    permissionStep --> finish["进入按键映射：保存首启完成，不代表设备已就绪"]
+    permissionStep --> finish["开始使用：保存首启完成，不代表设备已就绪"]
     finish --> mappings
     onboarding -->|中途关闭| pending["保留未完成标记，下次继续"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]

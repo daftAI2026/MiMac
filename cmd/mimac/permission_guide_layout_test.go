@@ -85,8 +85,8 @@ func TestPermissionGuideWrappedDescriptionsKeepControlsOnTheTopIconTrack(t *test
 		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
 		s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
 		s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}] = nil
-		s.navigationSymbols[symbolKey{name: "keyboard", size: 18}] = nil
 		row := permissionGuideRowFor(permissionGuideInput)
+		s.navigationSymbols[symbolKey{name: row.icon, size: 18}] = nil
 		row.description = description
 		row.access = permissionGuideGranted
 		s.snapshot.rows = []permissionGuideRow{row}

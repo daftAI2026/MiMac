@@ -56,7 +56,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 					}
 					label := "继续"
 					if s.onboarding.step == onboardingStepPermissions {
-						label = "进入按键映射"
+						label = "开始使用"
 					}
 					if appButton(c, a, label, false).Clicked() {
 						if s.onboarding.step == onboardingStepPermissions {

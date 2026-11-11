@@ -52,7 +52,7 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 				}
 				next := "继续"
 				if step == onboardingStepPermissions {
-					next = "进入按键映射"
+					next = "开始使用"
 				}
 				rect, ok := v.Find(next)
 				if !ok || rect.Y < 48 || rect.Y+rect.H > 620 {
