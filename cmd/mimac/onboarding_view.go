@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image/png"
 
 	"github.com/egoist/mygo"
@@ -50,7 +51,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 				}
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
 					if s.onboarding.step > onboardingStepDevice {
-						if appButton(c, a, "上一步", false).Clicked() {
+						if s.onboardingBackButton(c, a).Clicked() {
 							s.moveOnboarding(-1)
 						}
 					}
@@ -58,7 +59,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 					if s.onboarding.step == onboardingStepPermissions {
 						label = "开始使用"
 					}
-					if appButton(c, a, label, false).Clicked() {
+					if s.onboardingPrimaryButton(c, a, label, s.onboarding.step != onboardingStepPermissions).Clicked() {
 						if s.onboarding.step == onboardingStepPermissions {
 							s.finishOnboarding()
 						} else {
@@ -70,6 +71,51 @@ func (s *shell) onboardingView(c *ui.Context) {
 		})
 		ui.Text(c, onboardingStepPosition(s.onboarding.step)).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 	})
+}
+
+func (s *shell) onboardingBackButton(c *ui.Context, a appearance) ui.Element {
+	button := styleAppButton(ui.ButtonBase(c).Key("onboarding-previous").Label("上一步"), a, false).
+		Width(navigationHeight).Height(navigationHeight).Padding(0).
+		Radius(navigationHeight / 2).Justify(ui.Center).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	icon := s.symbolBitmap(symbolKey{name: "arrow.left", dark: a.theme.Dark, size: settingsIconSize, tint: a.theme.Text})
+	button.Children(func() {
+		if icon != nil {
+			ui.Image(c, icon).Width(settingsIconSize).Height(settingsIconSize).Fit(ui.Contain)
+		}
+	})
+	return button
+}
+
+func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label string, showArrow bool) ui.Element {
+	button := ui.ButtonBase(c).Key("onboarding-next").Label(label).FocusRing(false).
+		Cursor(ui.CursorPointer).Height(navigationHeight).Padding(0, spaceMD).
+		Radius(navigationHeight/2).Background(a.theme.Text).
+		Border(lineWidth, a.theme.Text).TextColor(a.theme.Background)
+	if button.Pressed() {
+		button.Background(a.theme.Text.Alpha(.8))
+	} else if button.Hovered() {
+		button.Background(a.theme.Text.Alpha(.9))
+	}
+	if button.FocusVisible() {
+		button.BorderColor(a.theme.Background)
+	}
+	var icon *ui.Bitmap
+	if showArrow {
+		icon = s.symbolBitmap(symbolKey{name: "arrow.right", dark: a.theme.Dark, size: settingsIconSize, tint: a.theme.Background})
+	}
+	button.Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+			ui.Text(c, label).SingleLine().FontSize(a.fonts.body).TextColor(a.theme.Background)
+			if showArrow {
+				if icon != nil {
+					ui.Image(c, icon).Width(settingsIconSize).Height(settingsIconSize).Fit(ui.Contain)
+				} else {
+					ui.Box(c).Width(settingsIconSize).Height(settingsIconSize).Shrink(0)
+				}
+			}
+		})
+	})
+	return button
 }
 
 func onboardingStepHeading(step onboardingStep) string {
@@ -124,17 +170,19 @@ func (s *shell) onboardingDeviceStep(c *ui.Context, a appearance) {
 					s.detectDevice()
 				}
 			})
-		})
-		guide := profile.ConnectionGuide
-		if guide.FirstPairing == "" {
-			guide.FirstPairing = "让遥控器进入配对模式，在蓝牙设置中选择它。"
-		}
-		if guide.Reconnect == "" {
-			guide.Reconnect = "唤醒遥控器，在蓝牙设置中确认已连接。"
-		}
-		ui.Row(c).FillWidth().Gap(spaceMD).AlignItems(ui.Start).Children(func() {
-			s.onboardingInfoCard(c, a, "首次连接", guide.FirstPairing)
-			s.onboardingInfoCard(c, a, "已经配对", guide.Reconnect)
+			sectionLine(c, a)
+			guide := profile.ConnectionGuide
+			if guide.FirstPairing == "" {
+				guide.FirstPairing = "让遥控器进入配对模式，在蓝牙设置中选择它。"
+			}
+			if guide.Reconnect == "" {
+				guide.Reconnect = "唤醒遥控器，在蓝牙设置中确认已连接。"
+			}
+			ui.Row(c).FillWidth().Gap(0).Children(func() {
+				s.onboardingInfoCard(c, a, "首次连接", guide.FirstPairing)
+				ui.Box(c).Width(lineWidth).FillHeight().Shrink(0).Background(a.separator)
+				s.onboardingInfoCard(c, a, "已经配对", guide.Reconnect)
+			})
 		})
 	})
 }
@@ -278,8 +326,9 @@ func slicesContainsVoiceTool(tools []*voiceTool, target *voiceTool) bool {
 }
 func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 	snapshot := s.onboarding.permissionSnapshot
+	summary := summarizeOnboardingPermissions(snapshot.rows)
 	ui.Column(c).FillWidth().Gap(spaceMD).Children(func() {
-		if len(snapshot.rows) == 0 {
+		if summary.total == 0 {
 			ui.Text(c, "当前无需额外权限").FillWidth().FontSize(onboardingBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 		} else {
 			settingsGroup(c, a, func() {
@@ -298,16 +347,51 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 							ui.Text(c, permissionGuideAccessLabel(row.access)).FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 						})
 					}
+					sectionLine(c, a)
+					ui.Row(c).Key("onboarding-permission-summary").FillWidth().MinHeight(navigationHeight).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
+						if summary.allGranted() {
+							ui.Box(c).Grow(1)
+							s.permissionGuideGrantedBadge(c, a)
+							return
+						}
+						ui.Text(c, summary.label()).FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+						ui.Box(c).Grow(1)
+						if appButton(c, a, "授权…", false).Clicked() {
+							s.showOnboardingPermissionGuide()
+						}
+					})
 				})
 			})
 		}
-		ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
-			if appButton(c, a, "授权…", false).Clicked() {
-				s.showOnboardingPermissionGuide()
-			}
-		})
 	})
 }
+
+type onboardingPermissionSummary struct {
+	granted int
+	total   int
+}
+
+func summarizeOnboardingPermissions(rows []permissionGuideRow) onboardingPermissionSummary {
+	summary := onboardingPermissionSummary{total: len(rows)}
+	for _, row := range rows {
+		if row.access == permissionGuideGranted {
+			summary.granted++
+		}
+	}
+	return summary
+}
+
+func (s onboardingPermissionSummary) allGranted() bool {
+	return s.total > 0 && s.granted == s.total
+}
+
+func (s onboardingPermissionSummary) label() string {
+	if s.total == 0 || s.allGranted() {
+		return ""
+	}
+	return fmt.Sprintf("已授权 %d/%d", s.granted, s.total)
+}
+
 func (s *shell) invalidateOnboardingWindow() {
 	if s.onboarding.window != nil && !s.onboarding.window.IsDestroyed() {
 		s.onboarding.window.Invalidate()

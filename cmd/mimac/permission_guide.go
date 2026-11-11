@@ -137,12 +137,13 @@ func (s *shell) showPermissionGuide() {
 	s.settingsOpenedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 系统权限",
-		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot),
+		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot), Panel: true,
 		DisableResize: true, DisableMinimize: true, DisableMaximize: true, DisableFullScreen: true,
 		TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true, Hidden: true,
 		Content: ui.View(s.permissionGuideView),
 	})
 	s.guideWindow = window
+	permissionguide.ConfigurePermissionPanel(window)
 	window.SetMovable(true)
 	window.OnShow(func() {
 		if s.guideWindow == window && s.generation == generation {
@@ -432,6 +433,7 @@ func (s *shell) refreshPermissionGuide() {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
+	s.updateOnboardingPermissions(nextSnapshot)
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
 }
