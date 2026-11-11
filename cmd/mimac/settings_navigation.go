@@ -106,6 +106,7 @@ type symbolKey struct {
 	weight  float64
 	dark    bool
 	sidebar bool
+	tint    ui.Color
 }
 
 func (s *shell) systemSymbol(name string, dark bool, size float32) *ui.Bitmap {
@@ -120,7 +121,14 @@ func (s *shell) symbolBitmap(key symbolKey) *ui.Bitmap {
 		return bitmap
 	}
 	var bitmap *ui.Bitmap
-	if pixels, err := symbols.Images([]string{key.name}, key.dark, float64(key.size), key.weight); err == nil && len(pixels) == 1 {
+	var pixels []image.Image
+	var err error
+	if key.tint.A != 0 {
+		pixels, err = symbols.ImagesInColor([]string{key.name}, key.dark, float64(key.size), key.weight, [4]uint8{key.tint.R, key.tint.G, key.tint.B, key.tint.A})
+	} else {
+		pixels, err = symbols.Images([]string{key.name}, key.dark, float64(key.size), key.weight)
+	}
+	if err == nil && len(pixels) == 1 {
 		bitmap = ui.NewBitmap(pixels[0])
 	}
 	s.navigationSymbols[key] = bitmap

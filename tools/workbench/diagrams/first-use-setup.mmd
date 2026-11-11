@@ -39,6 +39,9 @@ flowchart TD
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
     nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]
     bluetoothGrant --> guideRefresh["重新查询实际授权状态，不把请求返回当授权完成"]
+    activeReturn["App实际成为活动应用：沿MyGo事件立即重新查询，不重开或移动权限面板"] --> guideRefresh
+    grantedFeedback["读到真实已授权：以SF圆圈勾与已授权胶囊替换按钮，停止对应拖放示意"] --> permissionGuide
+    guideRefresh -->|实际状态为已授权| grantedFeedback
     guideRefresh --> permissionGuide
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
     permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意与拖动遮罩窗口，保留设置与菜单入口"]

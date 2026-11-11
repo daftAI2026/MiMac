@@ -15,6 +15,7 @@ import (
 	"mimac.local/mimac/internal/adapters/keyoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/platform/permissionguide"
+	"mimac.local/mimac/internal/platform/statuscolor"
 )
 
 const (
@@ -64,6 +65,7 @@ type permissionGuideState struct {
 	reduceMotion        bool
 	illustration        *permissionGuideIllustration
 	dropGuide           *permissionGuideDrop
+	grantedStyles       [2]permissionGuideGrantedStyle
 }
 
 type permissionGuidePhase uint8
@@ -125,6 +127,7 @@ func (s *shell) showPermissionGuide() {
 		return
 	}
 	s.generation++
+	s.preparePermissionGuideGrantedStyles()
 	generation := s.generation
 	s.iconBounds = ui.Rect{}
 	s.iconDragging, s.hasDraggedIcon = false, false
@@ -174,6 +177,7 @@ func (s *shell) showPermissionGuide() {
 			permissionguide.CancelBluetoothRequest()
 			s.guideWindow = nil
 			s.iconDragPreview = nil
+			s.grantedStyles = [2]permissionGuideGrantedStyle{}
 			s.phase = permissionGuideIdle
 			s.currentID = 0
 			s.settingsOpenedFor = 0
@@ -696,7 +700,7 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 
 func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row permissionGuideRow) {
 	if row.access == permissionGuideGranted {
-		permissionGuideBadge(c, a, "✓", "已授权")
+		s.permissionGuideGrantedBadge(c, a)
 		return
 	}
 	if !s.snapshot.actionsEnabled || row.access == permissionGuideRestricted {
@@ -863,4 +867,43 @@ func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, settingsRu
 		}
 	}
 	join()
+}
+
+type permissionGuideGrantedStyle struct {
+	color ui.Color
+	icon  *ui.Bitmap
+}
+
+func (s *shell) preparePermissionGuideGrantedStyles() {
+	for i, dark := range []bool{false, true} {
+		foreground := appAppearance(dark, s.preferencesState.value.TextSize).theme.Success
+		if green, err := statuscolor.SystemGreen(dark); err == nil {
+			foreground = green
+		}
+		icon := s.symbolBitmap(symbolKey{name: "checkmark.circle", dark: dark, size: permissionGuideCaption, tint: foreground})
+		s.grantedStyles[i] = permissionGuideGrantedStyle{color: foreground, icon: icon}
+	}
+}
+
+func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
+	index := 0
+	if a.theme.Dark {
+		index = 1
+	}
+	style := s.grantedStyles[index]
+	if style.color.A == 0 {
+		style.color = a.theme.Success
+	}
+	drawPermissionGuideGrantedBadge(c, style.icon, style.color)
+}
+
+func drawPermissionGuideGrantedBadge(c *ui.Context, icon *ui.Bitmap, foreground ui.Color) {
+	ui.Row(c).Height(24).Shrink(0).Padding(0, 9).Gap(5).AlignItems(ui.Center).Radius(12).Background(foreground.Alpha(.08)).Children(func() {
+		if icon != nil {
+			ui.Image(c, icon).Width(permissionGuideCaption).Height(permissionGuideCaption).Fit(ui.Contain).Label("已授权")
+		} else {
+			ui.Text(c, "✓").FontSize(permissionGuideCaption).TextColor(foreground)
+		}
+		ui.Text(c, "已授权").SingleLine().FontSize(permissionGuideCaption).TextColor(foreground)
+	})
 }

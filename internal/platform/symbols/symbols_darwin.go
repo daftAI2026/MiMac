@@ -54,6 +54,15 @@ func Image(name string, dark bool, pointSize float64) (image.Image, error) {
 // must be called while MyGo's event loop is active; AppKit work runs in one
 // main-thread callback and one autorelease pool.
 func Images(names []string, dark bool, pointSize, weight float64) ([]image.Image, error) {
+	return images(names, dark, pointSize, weight, nil)
+}
+
+// ImagesInColor applies one sRGB foreground to every layer of each SF Symbol.
+func ImagesInColor(names []string, dark bool, pointSize, weight float64, foreground [4]uint8) ([]image.Image, error) {
+	return images(names, dark, pointSize, weight, &foreground)
+}
+
+func images(names []string, dark bool, pointSize, weight float64, foreground *[4]uint8) ([]image.Image, error) {
 	for i, name := range names {
 		if name == "" {
 			return nil, fmt.Errorf("symbols: empty SF Symbol name at index %d", i)
@@ -79,7 +88,7 @@ func Images(names []string, dark bool, pointSize, weight float64) ([]image.Image
 	var result []image.Image
 	err := errors.New("symbols: MyGo main loop is unavailable")
 	mygo.RunOnMain(func() {
-		result, err = imagesOnMain(symbolNames, dark, pointSize, weight)
+		result, err = imagesOnMain(symbolNames, dark, pointSize, weight, foreground)
 	})
 	return result, err
 }
@@ -112,7 +121,7 @@ type configuredSymbol struct {
 	natural nsSize
 }
 
-func imagesOnMain(names []string, dark bool, pointSize, weight float64) ([]image.Image, error) {
+func imagesOnMain(names []string, dark bool, pointSize, weight float64, foreground *[4]uint8) ([]image.Image, error) {
 	poolClass := objc.GetClass("NSAutoreleasePool")
 	if poolClass == 0 {
 		return nil, errors.New("symbols: AppKit autorelease pool unavailable")
@@ -152,7 +161,11 @@ func imagesOnMain(names []string, dark bool, pointSize, weight float64) ([]image
 	if dark {
 		red, green, blue = 244.0/255, 244.0/255, 245.0/255
 	}
-	color := objc.ID(colorClass).Send(selector("colorWithSRGBRed:green:blue:alpha:"), red, green, blue, 1.0)
+	alpha := 1.0
+	if foreground != nil {
+		red, green, blue, alpha = float64(foreground[0])/255, float64(foreground[1])/255, float64(foreground[2])/255, float64(foreground[3])/255
+	}
+	color := objc.ID(colorClass).Send(selector("colorWithSRGBRed:green:blue:alpha:"), red, green, blue, alpha)
 	if color == 0 {
 		return nil, errors.New("symbols: could not create SF Symbol color")
 	}
