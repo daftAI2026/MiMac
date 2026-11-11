@@ -38,10 +38,10 @@ func TestPermissionGuideLayoutKeepsEveryRequiredRowVisible(t *testing.T) {
 				view.Advance(2 * time.Millisecond)
 				icon := s.iconBounds
 				title, ok := view.Find("管理权限")
-				if !ok || math.Abs(float64(title.Y-144)) > 1 || title.H != 30 {
+				if !ok || math.Abs(float64(title.Y-160)) > 1 || title.H != 30 {
 					t.Fatalf("title geometry: %v %t", title, ok)
 				}
-				if icon.X != 202 || icon.Y != 36 || icon.W != 96 || icon.H != 96 {
+				if icon.X != 202 || icon.Y != 52 || icon.W != 96 || icon.H != 96 {
 					t.Fatalf("icon slot: %v", icon)
 				}
 				for _, row := range s.snapshot.rows {

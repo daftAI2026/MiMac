@@ -122,22 +122,25 @@ func TestPermissionGuideWindowHeightTracksRequiredRows(t *testing.T) {
 	noRows := permissionGuideWindowHeight(permissionGuideSnapshot{})
 	twoRows := permissionGuideWindowHeight(permissionGuideSnapshot{rows: make([]permissionGuideRow, 2)})
 	threeRows := permissionGuideWindowHeight(permissionGuideSnapshot{rows: make([]permissionGuideRow, 3)})
-	if noRows >= twoRows || twoRows >= 442 || threeRows != 442 {
+	if noRows >= twoRows || twoRows >= 474 || threeRows != 474 {
 		t.Fatalf("heights no/two/three = %d/%d/%d", noRows, twoRows, threeRows)
 	}
 }
 
-func TestPermissionGuideCompanionBoundsUsesOnlyFreeWorkArea(t *testing.T) {
+func TestPermissionGuideCompanionBoundsAlignsTopAndStaysVisible(t *testing.T) {
 	current := mygo.Rectangle{X: 40, Y: 20, Width: 500, Height: 369}
 	settings := permissionguide.Rect{X: 400, Y: 80, Width: 600, Height: 700}
 	workArea := mygo.Rectangle{X: 0, Y: 0, Width: 1600, Height: 900}
 	got, ok := permissionGuideCompanionBounds(settings, workArea, current)
-	if !ok || got.X != 1016 || got.Y != 96 || got.Width != current.Width || got.Height != current.Height {
+	if !ok || got.X != 1016 || got.Y != 80 || got.Width != current.Width || got.Height != current.Height {
 		t.Fatalf("companion bounds = %#v, %t", got, ok)
 	}
 	tooSmall := mygo.Rectangle{X: 0, Y: 0, Width: 1000, Height: 900}
-	if _, ok := permissionGuideCompanionBounds(permissionguide.Rect{X: 100, Y: 40, Width: 800, Height: 700}, tooSmall, current); ok {
-		t.Fatal("guide moved when Settings leaves no adjacent space")
+	if got, ok := permissionGuideCompanionBounds(permissionguide.Rect{X: 100, Y: 40, Width: 800, Height: 700}, tooSmall, current); !ok || got.X != 500 || got.Y != 40 {
+		t.Fatalf("guide should clamp to the work area when neither side fits: %v %t", got, ok)
+	}
+	if got, ok := permissionGuideCompanionBounds(permissionguide.Rect{X: 700, Y: 80, Width: 300, Height: 600}, mygo.Rectangle{Width: 1800, Height: 900}, current); !ok || got.X != 1016 {
+		t.Fatalf("when both sides fit, prefer right independently of old position: %v %t", got, ok)
 	}
 }
 

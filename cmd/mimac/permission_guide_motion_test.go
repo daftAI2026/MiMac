@@ -173,7 +173,7 @@ func TestPermissionGuideIllustrationKeepsHandAboveTranslucentArtwork(t *testing.
 		hand.Pix[i+2], hand.Pix[i+3] = 255, 255
 	}
 	s := &shell{settingsState: settingsState{appIcon: ui.NewBitmap(icon)}}
-	view := &permissionGuideIllustration{active: true, run: 1, cursor: ui.NewBitmap(hand), cursorWidth: 32, cursorHeight: 32, geometry: permissionGuideFlightGeometry{bounds: mygo.Rectangle{Width: 400, Height: 200}, start: ui.Point{X: 330, Y: 130}, control: ui.Point{X: 220, Y: 70}, end: ui.Point{X: 70, Y: 130}, iconSize: 80}}
+	view := &permissionGuideIllustration{active: true, run: 1, cursor: ui.NewBitmap(hand), cursorWidth: 32, cursorHeight: 32, geometry: permissionGuideFlightGeometry{bounds: mygo.Rectangle{Width: 400, Height: 200}, start: ui.Point{X: 330, Y: 130}, control: ui.Point{X: 220, Y: 70}, end: ui.Point{X: 70, Y: 130}, iconSize: 96}}
 	v := ui.NewTester(func(c *ui.Context) { s.drawPermissionGuideIllustration(c, view) }, 400, 200)
 	v.Advance(400 * time.Millisecond)
 	red, blue := false, false

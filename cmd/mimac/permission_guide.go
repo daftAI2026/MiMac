@@ -19,6 +19,7 @@ import (
 
 const (
 	permissionGuideWidth                          = 500
+	permissionGuideChromeHeight                   = 249
 	permissionGuideTitle                  float32 = 26
 	permissionGuideRowTitle               float32 = 14
 	permissionGuideCaption                float32 = 12
@@ -370,16 +371,14 @@ func permissionGuideCompanionBounds(settings permissionguide.Rect, workArea, cur
 	if current.Width > workArea.Width || current.Height > workArea.Height {
 		return mygo.Rectangle{}, false
 	}
-	leftFits := leftX >= workArea.X && leftX+current.Width <= workRight
-	rightFits := rightX >= workArea.X && rightX+current.Width <= workRight
-	if !leftFits && !rightFits {
-		return mygo.Rectangle{}, false
+	leftSpace := settings.X - float64(workArea.X)
+	rightSpace := float64(workRight) - (settings.X + settings.Width)
+	x := rightX
+	if rightSpace < float64(current.Width+permissionGuideWindowGap) && leftSpace > rightSpace {
+		x = leftX
 	}
-	x := leftX
-	if !leftFits || (rightFits && absInt(rightX-current.X) < absInt(leftX-current.X)) {
-		x = rightX
-	}
-	y := int(math.Round(settings.Y + 16))
+	x = max(workArea.X, min(x, workRight-current.Width))
+	y := int(math.Round(settings.Y))
 	if y < workArea.Y {
 		y = workArea.Y
 	}
@@ -387,13 +386,6 @@ func permissionGuideCompanionBounds(settings permissionguide.Rect, workArea, cur
 		y = workBottom - current.Height
 	}
 	return mygo.Rectangle{X: x, Y: y, Width: current.Width, Height: current.Height}, true
-}
-
-func absInt(value int) int {
-	if value < 0 {
-		return -value
-	}
-	return value
 }
 
 func (s *shell) stopPermissionGuidePolling() {
@@ -439,9 +431,9 @@ func (s *shell) refreshPermissionGuide() {
 
 func permissionGuideWindowHeight(snapshot permissionGuideSnapshot) int {
 	if len(snapshot.rows) == 0 {
-		return 261
+		return permissionGuideChromeHeight + 44
 	}
-	return 217 + len(snapshot.rows)*75
+	return permissionGuideChromeHeight + len(snapshot.rows)*75
 }
 
 func (s *shell) readPermissionGuideSnapshot() permissionGuideSnapshot {
@@ -613,12 +605,12 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 		rowsHeight += float32(len(rows)+1) * lineWidth // Card border and row separators.
 	}
 	if s.guideWindow != nil && len(rows) > 0 {
-		height := 217 + int(math.Ceil(float64(rowsHeight)))
+		height := permissionGuideChromeHeight + int(math.Ceil(float64(rowsHeight)))
 		if s.guideWindow.Bounds().Height != height {
 			s.guideWindow.SetSize(permissionGuideWidth, height)
 		}
 	}
-	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, 19, 0).Children(func() {
+	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, 35, 0).Children(func() {
 		ui.Row(c).FillWidth().Height(20).Padding(0, 8).AlignItems(ui.Center).Children(func() {
 			close := ui.ButtonBase(c).Label("关闭系统权限面板").Width(20).Height(20).Padding(0).
 				Background(a.theme.Border).Radius(10).AlignItems(ui.Center).Justify(ui.Center).FocusRing(false)
@@ -635,7 +627,7 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			}
 			ui.Box(c).Grow(1).FillHeight().DragWindow()
 		})
-		ui.Box(c).FillWidth().Height(8).Shrink(0)
+		ui.Box(c).FillWidth().Height(24).Shrink(0)
 		ui.Column(c).FillWidth().Padding(0, 20).Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				s.permissionGuideAppIcon(c)

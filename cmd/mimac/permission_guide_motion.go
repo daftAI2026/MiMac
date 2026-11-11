@@ -148,12 +148,9 @@ func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, a
 		s.hidePermissionGuideIllustration()
 		return
 	}
-	// Use the painted image frame, excluding the surrounding drag hit area.
-	source := s.iconBounds
-	source.X += (source.W - permissionGuideIconSize) / 2
-	source.Y += (source.H - permissionGuideIconSize) / 2
-	source.W, source.H = permissionGuideIconSize, permissionGuideIconSize
-	geometry := permissionGuideFlightBounds(source, s.guideWindow.Bounds(), settings, area)
+	// The source rectangle includes the icon's transparent margin. Preserve it
+	// for the group size and flight bounds, rather than measuring painted pixels.
+	geometry := permissionGuideFlightBounds(s.iconBounds, s.guideWindow.Bounds(), settings, area)
 	if s.illustration == nil {
 		view := &permissionGuideIllustration{}
 		if graphic, err := permissionguide.ClosedHandCursorImage(); err == nil {
@@ -249,11 +246,12 @@ func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionG
 	point := view.geometry.point(progress)
 	size := view.geometry.iconSize
 	if size <= 0 {
-		size = permissionGuideIconSize
+		size = permissionGuideIconSlot
 	}
 	root.Children(func() {
 		ui.Box(c).Absolute().Left(point.X-size/2).Top(point.Y-size/2).Width(size).Height(size).Scale(scale, scale).Opacity(opacity).Children(func() {
-			ui.Image(c, s.appIcon).Fill().Fit(ui.FillBox).Opacity(.55)
+			artworkSize := size * permissionGuideIconSize / permissionGuideIconSlot
+			ui.Image(c, s.appIcon).Absolute().Left((size - artworkSize) / 2).Top((size - artworkSize) / 2).Width(artworkSize).Height(artworkSize).Fit(ui.FillBox).Opacity(.55)
 			if view.cursor != nil {
 				ui.Image(c, view.cursor).Absolute().Left((size - view.cursorWidth) / 2).Top((size - view.cursorHeight) / 2).Width(view.cursorWidth).Height(view.cursorHeight).Fit(ui.Contain)
 			}
