@@ -12,6 +12,7 @@ import tempfile
 import time
 
 from verify_app_bundle import verify
+from dev_launch_registration import ensure_current_dev_registration
 
 
 def development_config(config, root):
@@ -72,6 +73,38 @@ def device_access_requested(arguments):
     return requested
 
 
+def primary_repository_root(root):
+    try:
+        common_dir = subprocess.check_output(
+            ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+            cwd=root,
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f'git rev-parse --git-common-dir failed with exit code {error.returncode}'
+        ) from error
+    common_dir = Path(common_dir)
+    if not common_dir.is_absolute():
+        raise RuntimeError(f'git rev-parse returned a non-absolute common directory: {common_dir}')
+    common_dir = common_dir.resolve(strict=False)
+    if common_dir.name != '.git':
+        raise RuntimeError(f'git common directory is not the expected .git directory: {common_dir}')
+    repository_root = common_dir.parent
+    if not (repository_root / 'mygo.json').is_file():
+        raise RuntimeError(f'Git common directory does not identify the MiMac source root: {repository_root}')
+    return repository_root
+
+
+def launch_development(bundle, root, arch, open_options, app_args, device_access=False, **run_options):
+    repository_root = primary_repository_root(root)
+    ensure_current_dev_registration(bundle, root, arch, repository_root)
+    if device_access:
+        require_device_handoff()  # Recheck after registration and immediately before Launch Services launch.
+    command = ['/usr/bin/open', *open_options, str(bundle), '--args', *app_args]
+    return subprocess.run(command, check=True, **run_options)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', nargs='?', choices=['run', 'build', 'verify'], default='run')
@@ -119,8 +152,9 @@ def main():
     if args.mode == 'verify':
         with tempfile.TemporaryDirectory(prefix='mimac-dev-host-') as directory:
             report = Path(directory) / 'host.json'
-            subprocess.run(['/usr/bin/open', '-g', '-n', '-W', str(bundle), '--args',
-                            '--show-settings=false', '--smoke-duration', '1s', '--host-report', str(report)], check=True, timeout=15)
+            launch_development(bundle, root, arch, ['-g', '-n', '-W'],
+                               ['--show-settings=false', '--smoke-duration', '1s', '--host-report', str(report)],
+                               timeout=15)
             result = json.loads(report.read_text())
             assert result['host_ready'] and result['tray_created'] and result['normal_exit'], result
             assert result['app_name'] == 'MiMac Dev' and result['isolated_development'], result
@@ -130,9 +164,7 @@ def main():
             (bundle.parent / 'host-verification.json').write_text(json.dumps(result, indent=2) + '\n')
             print(json.dumps(result), flush=True)
         return
-    if device_access:
-        require_device_handoff()  # Recheck after the build, not just at entry.
-    subprocess.run(['/usr/bin/open', '-n', str(bundle), '--args', *app_args], check=True)
+    launch_development(bundle, root, arch, ['-n'], app_args, device_access=device_access)
 
 
 if __name__ == '__main__':

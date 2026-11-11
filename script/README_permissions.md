@@ -9,7 +9,9 @@
 
 Dev remains a local `.app` bundle so macOS can identify its permissions; it is not a distributed DMG or release artifact. Only the daily/Beta lane is packaged for users.
 
-Beta uses the daily identity so its preferences and permissions carry across upgrades when macOS accepts the code identity. It is not a third testing identity. Dev permissions do not authorize the daily app, or vice versa; an ad-hoc rebuild may require revalidation even when the Bundle ID stays the same. Never rename a Dev bundle to make it a daily package.
+Beta uses the daily identity so its preferences and permissions carry across upgrades when macOS accepts the code identity. It is not a third testing identity. Dev launches select the fixed checkout bundle as the Launch Services default for `dev.mimac.app.dev`, so system Quit & Reopen cannot select a retired worktree copy. The builder removes only known local duplicate Dev registrations, preserves their files and the daily identity, and verifies the selected URL before launch. An out-of-scope duplicate stops with its exact path.
+
+Dev permissions do not authorize the daily app, or vice versa; an ad-hoc rebuild may require revalidation even when the Bundle ID stays the same. Never rename a Dev bundle to make it a daily package.
 
 ## Build, test and package
 

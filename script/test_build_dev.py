@@ -53,6 +53,75 @@ class DevelopmentBuildIsolation(unittest.TestCase):
         with patch.object(build_dev.subprocess, "check_output", return_value=rows):
             self.assertEqual(build_dev.owned_pids(dev), [101])
 
+    def test_primary_repository_root_comes_from_git_common_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "web" / "mimac"
+            (root / "mygo.json").parent.mkdir(parents=True)
+            (root / "mygo.json").write_text(json.dumps({"identifier": "dev.mimac.app", "name": "MiMac"}) + "\n")
+            common_dir = root / ".git"
+            common_dir.mkdir()
+            checkout = base / "web" / "mimac-research" / "permission-entry" / "worktree"
+            checkout.mkdir(parents=True)
+            with patch.object(build_dev.subprocess, "check_output", return_value=str(common_dir) + "\n") as query:
+                self.assertEqual(build_dev.primary_repository_root(checkout), root)
+
+        self.assertEqual(query.call_args.args[0], ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        self.assertEqual(query.call_args.kwargs["cwd"], checkout)
+
+    def test_launch_registration_and_device_handoff_precede_launch_services(self):
+        events = []
+        bundle = Path("/fixed/project/.mygo/dev/darwin-arm64/MiMac Dev.app")
+        root = Path("/fixed/project")
+        primary_root = Path("/primary/mimac")
+
+        def record_registration(*args):
+            events.append(("registration", args))
+
+        def record_handoff():
+            events.append(("device_handoff",))
+
+        def record_open(command, **kwargs):
+            events.append(("open", command, kwargs))
+
+        with patch.object(build_dev, "primary_repository_root", return_value=primary_root), \
+                patch.object(build_dev, "ensure_current_dev_registration", side_effect=record_registration), \
+                patch.object(build_dev, "require_device_handoff", side_effect=record_handoff), \
+                patch.object(build_dev.subprocess, "run", side_effect=record_open):
+            build_dev.launch_development(
+                bundle, root, "arm64", ["-n"], ["--device-access"], device_access=True
+            )
+
+        self.assertEqual([event[0] for event in events], ["registration", "device_handoff", "open"])
+        self.assertEqual(events[0][1], (bundle, root, "arm64", primary_root))
+        self.assertEqual(events[2][1], ["/usr/bin/open", "-n", str(bundle), "--args", "--device-access"])
+        self.assertEqual(events[2][2], {"check": True})
+
+    def test_verify_launch_keeps_background_wait_and_smoke_arguments(self):
+        bundle = Path("/fixed/project/.mygo/dev/darwin-arm64/MiMac Dev.app")
+        root = Path("/fixed/project")
+        primary_root = Path("/primary/mimac")
+        events = []
+
+        with patch.object(build_dev, "primary_repository_root", return_value=primary_root), \
+                patch.object(build_dev, "ensure_current_dev_registration") as select_registration, \
+                patch.object(build_dev.subprocess, "run", side_effect=lambda command, **kwargs: events.append((command, kwargs))):
+            build_dev.launch_development(
+                bundle,
+                root,
+                "arm64",
+                ["-g", "-n", "-W"],
+                ["--show-settings=false", "--smoke-duration", "1s", "--host-report", "/tmp/host.json"],
+                timeout=15,
+            )
+
+        select_registration.assert_called_once_with(bundle, root, "arm64", primary_root)
+        self.assertEqual(events, [(
+            ["/usr/bin/open", "-g", "-n", "-W", str(bundle), "--args",
+             "--show-settings=false", "--smoke-duration", "1s", "--host-report", "/tmp/host.json"],
+            {"check": True, "timeout": 15},
+        )])
+
 
 if __name__ == "__main__":
     unittest.main()
