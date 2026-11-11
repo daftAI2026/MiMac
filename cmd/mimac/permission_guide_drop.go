@@ -8,29 +8,39 @@ import (
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
-// This owns presentation resources for one native drag, not authorization state.
+// One guide owns its display resources. Drag phases only show or hide them.
 type permissionGuideDrop struct {
-	active bool
-	timer  *time.Timer
-	panels []*permissionGuideDropPanel
+	active   bool
+	run      uint64
+	targetID uint32
+	timer    *time.Timer
+	panels   []*permissionGuideDropPanel
 }
 
 type permissionGuideDropPanel struct {
-	window  *mygo.Window
-	bounds  mygo.Rectangle
-	hole    ui.Rect
-	ready   bool
-	closing bool
+	window         *mygo.Window
+	bounds         mygo.Rectangle
+	hole           ui.Rect
+	ready, closing bool
 }
 
 func (s *shell) startPermissionGuideDrop() {
-	s.stopPermissionGuideDrop()
 	if s.guideWindow == nil || s.guideWindow.IsDestroyed() || !s.guideWindow.IsVisible() || !permissionGuideAllowsAppDrag(s.currentID) {
 		return
 	}
-	d := &permissionGuideDrop{active: true}
-	s.dropGuide = d
-	s.iconDragging, s.hasDraggedIcon = true, true
+	d := s.dropGuide
+	if d == nil {
+		d = &permissionGuideDrop{}
+		s.dropGuide = d
+	}
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	d.active = true
+	d.run++
+	d.targetID = 0
+	s.iconDragging = true
 	s.hidePermissionGuideIllustration()
 	s.updatePermissionGuideDrop(d)
 }
@@ -40,14 +50,17 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 		return
 	}
 	if s.guideWindow == nil || s.guideWindow.IsDestroyed() || !s.guideWindow.IsVisible() || s.closing {
-		s.stopPermissionGuideDrop()
+		s.closePermissionGuideDrop()
 		return
 	}
-	target, found := permissionguide.SystemSettingsWindowSnapshot()
+	target, found := permissionguide.SystemSettingsDropTarget(d.targetID)
 	if !found {
 		s.stopPermissionGuideDrop()
 		return
 	}
+	first := d.targetID == 0
+	d.targetID = target.ID
+	s.hasDraggedIcon = true
 	displays := mygo.Screen.Displays()
 	sameScreens := len(displays) == len(d.panels)
 	if sameScreens {
@@ -60,52 +73,94 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 	}
 	if !sameScreens {
 		for _, p := range d.panels {
-			// Old and new screen veils must never overlap during a display change.
-			p.closing = true
-			if p.window != nil && !p.window.IsDestroyed() {
-				p.window.Close()
-			}
+			p.close()
 		}
 		d.panels = nil
 	}
-	if found {
-		hole := permissionGuideSettingsContent(target.Frame)
-		for i, display := range displays {
-			local := ui.Rect{X: float32(hole.X) - float32(display.Bounds.X), Y: float32(hole.Y) - float32(display.Bounds.Y), W: float32(hole.Width), H: float32(hole.Height)}
-			if i >= len(d.panels) {
-				p := &permissionGuideDropPanel{bounds: display.Bounds, hole: local}
-				d.panels = append(d.panels, p)
-				p.window = mygo.NewWindow(mygo.WindowOptions{Title: mygo.App.Name() + " 权限拖放区域", Width: display.Bounds.Width, Height: display.Bounds.Height,
-					UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true,
-					Content: ui.View(func(c *ui.Context) { drawPermissionGuideDrop(c, p.hole) })})
-				p.window.SetBounds(display.Bounds)
-				p.window.SetIgnoreMouseEvents(true)
-				p.window.OnReadyToShow(func() {
-					p.ready = true
-					if p.closing || s.dropGuide != d || !d.active {
-						p.window.Close()
-						return
-					}
-					permissionguide.ConfigureDropOverlay(p.window)
-					p.window.ShowInactive()
-					permissionguide.FadeDropOverlay(p.window, true, nil)
-				})
-			} else if p := d.panels[i]; p.hole != local {
+	hole := permissionGuideSettingsContent(target.Frame)
+	for i, display := range displays {
+		local := ui.Rect{X: float32(hole.X) - float32(display.Bounds.X), Y: float32(hole.Y) - float32(display.Bounds.Y), W: float32(hole.Width), H: float32(hole.Height)}
+		if i >= len(d.panels) {
+			p := &permissionGuideDropPanel{bounds: display.Bounds, hole: local}
+			d.panels = append(d.panels, p)
+			p.window = mygo.NewWindow(mygo.WindowOptions{Title: mygo.App.Name() + " 权限拖放区域", Width: display.Bounds.Width, Height: display.Bounds.Height,
+				UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true,
+				Content: ui.View(func(c *ui.Context) { drawPermissionGuideDrop(c, p.hole) })})
+			p.window.SetBounds(display.Bounds)
+			p.window.SetIgnoreMouseEvents(true)
+			p.window.OnReadyToShow(func() {
+				p.ready = true
+				if p.closing || s.dropGuide != d {
+					p.close()
+					return
+				}
+				if d.active {
+					p.show()
+				}
+			})
+		} else {
+			p := d.panels[i]
+			if p.hole != local {
 				p.hole = local
 				p.window.Invalidate()
 			}
+			if first && p.ready {
+				p.show()
+			}
 		}
 	}
-	d.timer = time.AfterFunc(permissionGuideFollowInterval, func() { mygo.RunOnMain(func() { s.updatePermissionGuideDrop(d) }) })
+	run := d.run
+	d.timer = time.AfterFunc(permissionGuideFollowInterval, func() {
+		mygo.RunOnMain(func() {
+			if s.dropGuide == d && d.active && d.run == run {
+				s.updatePermissionGuideDrop(d)
+			}
+		})
+	})
+}
+
+func (p *permissionGuideDropPanel) show() {
+	if p.closing || p.window.IsDestroyed() {
+		return
+	}
+	permissionguide.ConfigureDropOverlay(p.window)
+	p.window.SetBounds(p.bounds)
+	p.window.ShowInactive()
+	permissionguide.FadeDropOverlay(p.window, true, nil)
 }
 
 func (s *shell) stopPermissionGuideDrop() {
+	d := s.dropGuide
+	if d == nil || !d.active {
+		return
+	}
+	d.active = false
+	d.run++
+	d.targetID = 0
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	run := d.run
+	for _, p := range d.panels {
+		if p.ready && !p.window.IsDestroyed() {
+			permissionguide.FadeDropOverlay(p.window, false, func() {
+				if s.dropGuide == d && d.run == run && !d.active && !p.window.IsDestroyed() {
+					p.window.Hide()
+				}
+			})
+		}
+	}
+}
+
+func (s *shell) closePermissionGuideDrop() {
 	d := s.dropGuide
 	if d == nil {
 		return
 	}
 	s.dropGuide = nil
 	d.active = false
+	d.run++
 	if d.timer != nil {
 		d.timer.Stop()
 		d.timer = nil
@@ -117,22 +172,10 @@ func (s *shell) stopPermissionGuideDrop() {
 }
 
 func (p *permissionGuideDropPanel) close() {
-	if p.closing {
-		return
-	}
 	p.closing = true
-	if p.window == nil || p.window.IsDestroyed() {
-		return
-	}
-	if !p.ready {
+	if p.window != nil && !p.window.IsDestroyed() {
 		p.window.Close()
-		return
 	}
-	permissionguide.FadeDropOverlay(p.window, false, func() {
-		if !p.window.IsDestroyed() {
-			p.window.Close()
-		}
-	})
 }
 
 func drawPermissionGuideDrop(c *ui.Context, hole ui.Rect) {

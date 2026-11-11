@@ -30,9 +30,9 @@ flowchart TD
     stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
     follow --> illustration["位置稳定且鼠标松开后显示96pt来源图标槽中的半透明图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
-    drag --> spotlight["原生拖动开始：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
-    spotlight --> trackDrop["每33ms只读更新设置窗口和显示器几何，不改变权限或焦点"]
-    trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并释放遮罩窗口"]
+    drag --> spotlight["MyGo原生会话Started事件：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
+    spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
+    trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh
     missing -->|否| complete["显示已完成；可关闭，不接管设备"]
     grantAction --> nativeGrant{"首次蓝牙授权？"}

@@ -153,7 +153,7 @@ func (s *shell) showPermissionGuide() {
 		if s.guideWindow == window && s.generation == generation {
 			s.stopPermissionGuidePolling()
 			s.stopPermissionGuideFollowing()
-			s.stopPermissionGuideDrop()
+			s.closePermissionGuideDrop()
 		}
 	})
 	window.OnFocus(func() {
@@ -415,7 +415,7 @@ func (s *shell) stopPermissionGuideFollowing() {
 }
 
 func (s *shell) cancelPermissionGuideTimers() {
-	s.stopPermissionGuideDrop()
+	s.closePermissionGuideDrop()
 	s.stopPermissionGuidePolling()
 	s.stopPermissionGuideFollowing()
 }

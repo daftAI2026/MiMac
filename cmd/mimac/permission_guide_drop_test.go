@@ -4,6 +4,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/platform/permissionguide"
 	"testing"
+	"time"
 )
 
 func TestPermissionGuideDropMaskLeavesOnlyContentTransparent(t *testing.T) {
@@ -47,5 +48,26 @@ func TestPermissionGuideDropUsesSharedSettingsContent(t *testing.T) {
 	tiny := permissionguide.Rect{X: -10, Y: 50, Width: 100, Height: 70}
 	if permissionGuideSettingsContent(tiny) != tiny {
 		t.Fatal("invalid crop must preserve original frame")
+	}
+}
+
+func TestPermissionGuideDropStopReleasesTrackingButKeepsPreparedOwner(t *testing.T) {
+	timer := time.AfterFunc(time.Hour, func() {})
+	d := &permissionGuideDrop{active: true, run: 7, targetID: 42, timer: timer}
+	s := &shell{permissionGuideState: permissionGuideState{dropGuide: d}}
+	s.stopPermissionGuideDrop()
+	if s.dropGuide != d || d.active || d.timer != nil || d.targetID != 0 || d.run != 8 {
+		t.Fatalf("stopped drag owner=%+v", d)
+	}
+	if timer.Stop() {
+		t.Fatal("tracking timer was not stopped")
+	}
+	s.stopPermissionGuideDrop()
+	if d.run != 8 {
+		t.Fatal("duplicate Done changed an inactive drag generation")
+	}
+	s.closePermissionGuideDrop()
+	if s.dropGuide != nil || d.run != 9 {
+		t.Fatal("closing the panel retained the drag owner")
 	}
 }

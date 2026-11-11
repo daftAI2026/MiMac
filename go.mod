@@ -17,4 +17,4 @@ require (
 
 tool github.com/egoist/mygo/cmd/mygo
 
-replace github.com/egoist/mygo => github.com/daftAI2026/mygo v0.7.5-0.20261111121238-557512ed2c98
+replace github.com/egoist/mygo => github.com/daftAI2026/mygo v0.7.5-0.20261111125644-ea0c1279fa53
