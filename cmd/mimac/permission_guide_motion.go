@@ -109,20 +109,21 @@ func permissionGuideDragPreview() *image.RGBA {
 type permissionGuideFlightGeometry struct {
 	bounds              mygo.Rectangle
 	start, control, end ui.Point
+	iconSize            float32
 }
 
 func permissionGuideFlightBounds(icon ui.Rect, panel mygo.Rectangle, settings permissionguide.Rect, area mygo.Rectangle) permissionGuideFlightGeometry {
 	start := ui.Point{X: float32(panel.X) + icon.X + icon.W/2, Y: float32(panel.Y) + icon.Y + icon.H/2}
-	end := ui.Point{X: float32(settings.X + settings.Width/2), Y: float32(settings.Y + min(130, settings.Height/2))}
+	end := permissionGuideFlightDestination(settings)
 	lift := float32(math.Hypot(float64(end.X-start.X), float64(end.Y-start.Y))) / 4
 	top := min(start.Y, end.Y)
-	padding := permissionGuideIconSlot/2 + 16
+	padding := icon.W/2 + 16
 	control := ui.Point{X: (start.X + end.X) / 2, Y: top - min(lift, max(0, top-float32(area.Y)-padding))}
 	left, right := min(start.X, end.X, control.X)-padding, max(start.X, end.X, control.X)+padding
 	upper, lower := min(start.Y, end.Y, control.Y)-padding, max(start.Y, end.Y, control.Y)+padding
-	bounds := mygo.Rectangle{X: int(math.Floor(float64(left))), Y: int(math.Floor(float64(upper))), Width: int(math.Ceil(float64(right - left))), Height: int(math.Ceil(float64(lower - upper)))}
+	bounds := mygo.Rectangle{X: int(math.Floor(float64(left))), Y: int(math.Floor(float64(upper))), Width: int(math.Ceil(float64(right))) - int(math.Floor(float64(left))), Height: int(math.Ceil(float64(lower))) - int(math.Floor(float64(upper)))}
 	local := func(p ui.Point) ui.Point { return ui.Point{X: p.X - float32(bounds.X), Y: p.Y - float32(bounds.Y)} }
-	return permissionGuideFlightGeometry{bounds: bounds, start: local(start), control: local(control), end: local(end)}
+	return permissionGuideFlightGeometry{bounds: bounds, start: local(start), control: local(control), end: local(end), iconSize: icon.W}
 }
 
 func (g permissionGuideFlightGeometry) point(t float32) ui.Point {
@@ -132,10 +133,12 @@ func (g permissionGuideFlightGeometry) point(t float32) ui.Point {
 }
 
 type permissionGuideIllustration struct {
-	window        *mygo.Window
-	geometry      permissionGuideFlightGeometry
-	active, ready bool
-	run           uint64
+	window                    *mygo.Window
+	geometry                  permissionGuideFlightGeometry
+	active, ready             bool
+	run                       uint64
+	cursor                    *ui.Bitmap
+	cursorWidth, cursorHeight float32
 }
 
 func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, area mygo.Rectangle) {
@@ -145,9 +148,18 @@ func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, a
 		s.hidePermissionGuideIllustration()
 		return
 	}
-	geometry := permissionGuideFlightBounds(s.iconBounds, s.guideWindow.Bounds(), settings, area)
+	// Use the painted image frame, excluding the surrounding drag hit area.
+	source := s.iconBounds
+	source.X += (source.W - permissionGuideIconSize) / 2
+	source.Y += (source.H - permissionGuideIconSize) / 2
+	source.W, source.H = permissionGuideIconSize, permissionGuideIconSize
+	geometry := permissionGuideFlightBounds(source, s.guideWindow.Bounds(), settings, area)
 	if s.illustration == nil {
 		view := &permissionGuideIllustration{}
+		if graphic, err := permissionguide.ClosedHandCursorImage(); err == nil {
+			view.cursor = ui.NewBitmap(graphic.Pixels)
+			view.cursorWidth, view.cursorHeight = graphic.Width, graphic.Height
+		}
 		s.illustration = view
 		view.window = mygo.NewWindow(mygo.WindowOptions{Title: mygo.App.Name() + " 权限拖放引导", Width: geometry.bounds.Width, Height: geometry.bounds.Height,
 			UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true, Parent: s.guideWindow,
@@ -230,8 +242,26 @@ func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionG
 	progress := root.Keyframes("progress", permissionGuideFlightProgress, options)
 	scale := root.Keyframes("scale", permissionGuideFlightScale, options)
 	point := view.geometry.point(progress)
+	size := view.geometry.iconSize
+	if size <= 0 {
+		size = permissionGuideIconSize
+	}
 	root.Children(func() {
-		ui.Image(c, s.appIcon).Absolute().Left(point.X-permissionGuideIconSize/2).Top(point.Y-permissionGuideIconSize/2).
-			Width(permissionGuideIconSize).Height(permissionGuideIconSize).Fit(ui.Contain).Scale(scale, scale).Opacity(opacity)
+		ui.Box(c).Absolute().Left(point.X-size/2).Top(point.Y-size/2).Width(size).Height(size).Scale(scale, scale).Opacity(opacity).Children(func() {
+			ui.Image(c, s.appIcon).Fill().Fit(ui.FillBox).Opacity(.55)
+			if view.cursor != nil {
+				ui.Image(c, view.cursor).Absolute().Left((size - view.cursorWidth) / 2).Top((size - view.cursorHeight) / 2).Width(view.cursorWidth).Height(view.cursorHeight).Fit(ui.Contain)
+			}
+		})
 	})
+}
+
+// System Settings reserves a sidebar and toolbar before the permission list.
+// Small windows fall back to their full frame if the list area is empty.
+func permissionGuideFlightDestination(settings permissionguide.Rect) ui.Point {
+	content := settings
+	if settings.Width > 256 && settings.Height > 76 {
+		content = permissionguide.Rect{X: settings.X + 244, Y: settings.Y + 64, Width: settings.Width - 256, Height: settings.Height - 76}
+	}
+	return ui.Point{X: float32(content.X + content.Width/2), Y: float32(content.Y + min(content.Height/2, 130))}
 }

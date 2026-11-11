@@ -716,7 +716,7 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 
 func permissionGuideActionLabel(row permissionGuideRow) string {
 	if row.access == permissionGuideUnknown {
-		return "重试"
+		return "打开设置"
 	}
 	return "授权…"
 }
@@ -813,27 +813,18 @@ func permissionGuideIDString(id permissionGuideID) string {
 	}
 }
 
+// List-based permissions are managed by the system settings list. Opening it
+// does not request access; the user grants access there, including by app drag.
 func runPermissionGuideGrant(id permissionGuideID, access permissionGuideAccess, request func(permissionGuideID), refresh func() permissionGuideAccess, open func(permissionGuideID)) {
-	if access == permissionGuideUnknown {
-		refresh()
-		return
-	}
 	if access == permissionGuideGranted || access == permissionGuideRestricted {
 		return
 	}
-	if (id == permissionGuideInput && access == permissionGuideNotDetermined) ||
-		(id == permissionGuidePostEvent && access == permissionGuideNotGranted) ||
-		(id == permissionGuideBluetooth && access == permissionGuideNotDetermined) {
+	if id == permissionGuideBluetooth && access == permissionGuideNotDetermined {
 		request(id)
+		refresh()
+		return
 	}
-	fresh := refresh()
-	if fresh == permissionGuideNotDetermined || fresh == permissionGuideNotGranted || fresh == permissionGuideDenied {
-		// A first Bluetooth request is answered in its own system prompt.
-		if id == permissionGuideBluetooth && fresh == permissionGuideNotDetermined {
-			return
-		}
-		open(id)
-	}
+	open(id)
 }
 
 // The initial join is bounded and waits for two identical native observations.

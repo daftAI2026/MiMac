@@ -48,10 +48,10 @@ func TestPermissionGuideAccessProbesPreserveUnknownAndNotDetermined(t *testing.T
 	}
 }
 
-func TestPermissionGuideUnknownInputOffersRetryAndExplicitRequestForUndetermined(t *testing.T) {
+func TestPermissionGuideUnknownInputOffersSettingsAndExplicitRequestForUndetermined(t *testing.T) {
 	unknown := permissionGuideActionLabel(permissionGuideRow{id: permissionGuideInput, access: permissionGuideUnknown})
-	if unknown != "重试" {
-		t.Fatalf("unknown query action = %q, want retry", unknown)
+	if unknown != "打开设置" {
+		t.Fatalf("unknown query action = %q, want direct settings", unknown)
 	}
 	undetermined := permissionGuideActionLabel(permissionGuideRow{id: permissionGuideInput, access: permissionGuideNotDetermined})
 	if undetermined != "授权…" {
@@ -166,16 +166,16 @@ func TestPermissionGuideGrantCompletesOrOpensTheSameSettingsPath(t *testing.T) {
 		before, after permissionGuideAccess
 		want          string
 	}{
-		{"first input request", permissionGuideInput, permissionGuideNotDetermined, permissionGuideNotDetermined, "request,refresh,settings"},
-		{"denied input", permissionGuideInput, permissionGuideDenied, permissionGuideDenied, "refresh,settings"},
-		{"post event remains missing", permissionGuidePostEvent, permissionGuideNotGranted, permissionGuideNotGranted, "request,refresh,settings"},
-		{"native grant succeeds", permissionGuidePostEvent, permissionGuideNotGranted, permissionGuideGranted, "request,refresh"},
-		{"query unknown", permissionGuideInput, permissionGuideUnknown, permissionGuideNotGranted, "refresh"},
-		{"query becomes unknown", permissionGuideInput, permissionGuideNotDetermined, permissionGuideUnknown, "request,refresh"},
+		{"input settings list", permissionGuideInput, permissionGuideNotDetermined, permissionGuideNotDetermined, "settings"},
+		{"denied input", permissionGuideInput, permissionGuideDenied, permissionGuideDenied, "settings"},
+		{"post event settings list", permissionGuidePostEvent, permissionGuideNotGranted, permissionGuideNotGranted, "settings"},
+		{"native bluetooth grant succeeds", permissionGuideBluetooth, permissionGuideNotDetermined, permissionGuideGranted, "request,refresh"},
+		{"query unknown", permissionGuideInput, permissionGuideUnknown, permissionGuideNotGranted, "settings"},
+		{"native bluetooth query becomes unknown", permissionGuideBluetooth, permissionGuideNotDetermined, permissionGuideUnknown, "request,refresh"},
 		{"already granted", permissionGuideInput, permissionGuideGranted, permissionGuideGranted, ""},
 		{"restricted", permissionGuideInput, permissionGuideRestricted, permissionGuideRestricted, ""},
 		{"bluetooth prompt pending", permissionGuideBluetooth, permissionGuideNotDetermined, permissionGuideNotDetermined, "request,refresh"},
-		{"bluetooth denied", permissionGuideBluetooth, permissionGuideDenied, permissionGuideDenied, "refresh,settings"},
+		{"bluetooth denied", permissionGuideBluetooth, permissionGuideDenied, permissionGuideDenied, "settings"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,5 +243,33 @@ func TestPermissionGuideJoinRequiresAnExplicitSearchAndStableWindow(t *testing.T
 	s.permissionGuideSettingsJoinReady(permissionguide.WindowSnapshot{}, false, now)
 	if ready, _ := s.permissionGuideSettingsJoinReady(sample, true, now); ready {
 		t.Fatal("missing observation preserved a stale candidate")
+	}
+}
+
+func TestPermissionGuideUnreadableAccessOffersDirectSettings(t *testing.T) {
+	if got := permissionGuideActionLabel(permissionGuideRow{id: permissionGuideInput, access: permissionGuideUnknown}); got != "打开设置" {
+		t.Fatalf("unreadable access action=%q, want direct settings", got)
+	}
+}
+
+func TestPermissionGuideListPermissionsOpenSettingsWithoutAnExtraPrompt(t *testing.T) {
+	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
+		for _, access := range []permissionGuideAccess{permissionGuideNotDetermined, permissionGuideNotGranted, permissionGuideDenied, permissionGuideUnknown} {
+			opened := false
+			runPermissionGuideGrant(id, access, func(permissionGuideID) {
+				t.Fatalf("list permission %d unexpectedly requested a second system prompt", id)
+			}, func() permissionGuideAccess {
+				t.Fatalf("list permission %d unexpectedly used a native-request refresh", id)
+				return permissionGuideUnknown
+			}, func(got permissionGuideID) {
+				if got != id {
+					t.Fatal("wrong settings target")
+				}
+				opened = true
+			})
+			if !opened {
+				t.Fatalf("list permission %d did not open its settings target", id)
+			}
+		}
 	}
 }
