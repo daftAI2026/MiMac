@@ -9,7 +9,7 @@ func TestPermissionGuideGrantedFeedbackHasSemanticCapsule(t *testing.T) {
 	green := ui.RGB(0, 110, 20)
 	v := ui.NewTester(func(c *ui.Context) {
 		c.Root().Background(ui.Transparent)
-		drawPermissionGuideGrantedBadge(c, nil, green)
+		drawPermissionGuideGrantedBadge(c, nil, green, green.Alpha(.08))
 	}, 100, 32)
 	v.Frame()
 	pixel := v.Image().RGBAAt(2, 12)
@@ -21,5 +21,20 @@ func TestPermissionGuideGrantedFeedbackHasSemanticCapsule(t *testing.T) {
 	}
 	if v.FramePending() {
 		t.Fatal("steady granted state schedules unnecessary animation frames")
+	}
+}
+
+func TestPermissionGrantedTextKeepsReadableContrastInBothAppearances(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		a := appAppearance(dark, 0)
+		green := ui.RGB(52, 199, 89)
+		background := green.Alpha(.08).Over(a.theme.Background)
+		foreground := permissionGuideGrantedTextColor(green, background, a.theme.Text)
+		if contrast := permissionGuideColorContrast(foreground, background); contrast < 4.5 {
+			t.Fatalf("dark=%v, contrast=%v", dark, contrast)
+		}
+	}
+	if got := permissionGuideColorContrast(ui.RGB(0, 0, 0), ui.RGB(255, 255, 255)); got < 20.99 || got > 21.01 {
+		t.Fatalf("contrast scale=%v", got)
 	}
 }

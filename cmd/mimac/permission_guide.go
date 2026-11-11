@@ -871,6 +871,7 @@ func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, settingsRu
 
 type permissionGuideGrantedStyle struct {
 	color ui.Color
+	fill  ui.Color
 	icon  *ui.Bitmap
 }
 
@@ -880,8 +881,10 @@ func (s *shell) preparePermissionGuideGrantedStyles() {
 		if green, err := statuscolor.SystemGreen(dark); err == nil {
 			foreground = green
 		}
+		fill := foreground.Alpha(.08)
+		foreground = permissionGuideGrantedTextColor(foreground, fill.Over(appAppearance(dark, s.preferencesState.value.TextSize).theme.Background), appAppearance(dark, s.preferencesState.value.TextSize).theme.Text)
 		icon := s.symbolBitmap(symbolKey{name: "checkmark.circle", dark: dark, size: permissionGuideCaption, tint: foreground})
-		s.grantedStyles[i] = permissionGuideGrantedStyle{color: foreground, icon: icon}
+		s.grantedStyles[i] = permissionGuideGrantedStyle{color: foreground, fill: fill, icon: icon}
 	}
 }
 
@@ -893,12 +896,13 @@ func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
 	style := s.grantedStyles[index]
 	if style.color.A == 0 {
 		style.color = a.theme.Success
+		style.fill = style.color.Alpha(.08)
 	}
-	drawPermissionGuideGrantedBadge(c, style.icon, style.color)
+	drawPermissionGuideGrantedBadge(c, style.icon, style.color, style.fill)
 }
 
-func drawPermissionGuideGrantedBadge(c *ui.Context, icon *ui.Bitmap, foreground ui.Color) {
-	ui.Row(c).Height(24).Shrink(0).Padding(0, 9).Gap(5).AlignItems(ui.Center).Radius(12).Background(foreground.Alpha(.08)).Children(func() {
+func drawPermissionGuideGrantedBadge(c *ui.Context, icon *ui.Bitmap, foreground, fill ui.Color) {
+	ui.Row(c).Height(24).Shrink(0).Padding(0, 9).Gap(5).AlignItems(ui.Center).Radius(12).Background(fill).Children(func() {
 		if icon != nil {
 			ui.Image(c, icon).Width(permissionGuideCaption).Height(permissionGuideCaption).Fit(ui.Contain).Label("已授权")
 		} else {
