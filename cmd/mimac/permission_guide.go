@@ -539,7 +539,7 @@ func permissionGuideRowFor(id permissionGuideID) permissionGuideRow {
 	case permissionGuideInput:
 		return permissionGuideRow{id: id, icon: "keyboard", title: "输入监控", description: "读取已选设备的按键并执行您设置的映射。"}
 	case permissionGuidePostEvent:
-		return permissionGuideRow{id: id, icon: "hand.tap", title: "辅助功能", description: "允许此应用向前台应用发送您配置的按键。"}
+		return permissionGuideRow{id: id, icon: "hand.tap", title: permissionguide.AccessibilityPermissionTitle(), description: "允许此应用向前台应用发送您配置的按键。"}
 	case permissionGuideBluetooth:
 		return permissionGuideRow{id: id, icon: "wave.3.right", title: "蓝牙", description: "让已选语音工具使用遥控器音频。"}
 	default:

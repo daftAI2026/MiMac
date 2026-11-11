@@ -11,3 +11,5 @@ var errAccessibilityAccessUnsupported = errors.New("permissionguide: Accessibili
 func ReadAccessibilityAccess() (bool, error) {
 	return false, errAccessibilityAccessUnsupported
 }
+
+func AccessibilityPermissionTitle() string { return accessibilityPermissionTitle("") }

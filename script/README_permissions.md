@@ -18,7 +18,7 @@ Beta uses the daily identity so its preferences and permissions carry across upg
 3. Hardware testing is a serial handoff: finish the daily session and stop the daily app, then use `script/build_and_run.sh --dev run -- --device-access`. The launcher and app check the daily process and recovery ownership. After a test, release the remote and quit Dev before returning to daily use. Separate Bundle IDs do not isolate the same Bluetooth device, global input source or audio route.
 4. For a daily source build, use `script/build_and_run.sh`. Its identity check must pass before building and its bundle verification must pass before launch. Do not bypass a same-ID duplicate warning by resetting permissions.
 5. Use a dedicated Python environment installed from `script/requirements-packaging.txt` for DMG packaging; the selected interpreter must provide both metadata dependencies before any image is created or mounted. For a Beta artifact, freeze a clean source commit, prepare the date/build version with `release_version.py`, build through MyGo, then run `verify_release.py` for the chosen component profile. Package only that verified daily `MiMac.app` with `package_dmg.py`, keeping the JSON manifest and SHA256 alongside the DMG. The single centered app is the double-click installation entry; no Applications drag target is shown. Do not package a Dev app as Beta or replace `/Applications/MiMac.app` merely to verify an archive.
-6. Before any live test, bind the actual PID, canonical bundle path, Bundle ID, executable and native-library hashes. `live_acceptance.py prepare/finish` currently supports the daily source-build lane only: it resolves daily configuration and `dist/.../MiMac.app`, and may invoke the daily builder. Do not use it to test a Dev or installed Beta binary. Dev and Beta artifact tests must explicitly bind their own paths and avoid launching another lane; a successful source-build test is not artifact acceptance. Notify a tester only after the selected lane has verified current permissions, route, target and focus. A green System Settings toggle or a different build’s earlier result is not current capability evidence.
+6. Before any live test, bind the actual PID, canonical bundle path, Bundle ID, executable and native-library hashes. `live_acceptance.py prepare/finish` currently supports the daily source-build lane only: it resolves daily configuration and `dist/.../MiMac.app`, and may invoke the daily builder. Do not use it to test a Dev or installed Beta binary. Dev and Beta artifact tests must explicitly bind their own paths and avoid launching another lane; a successful source-build test is not artifact acceptance. Notify a tester only after the selected lane has verified current permissions, route, target and focus. A green System Settings toggle or a different build’s earlier result is not current capability evidence. Launch GUI permission checks through Launch Services (`open -a /exact/App.app --args ...`), as the builders do. Executing the bundle’s Mach-O from a terminal can attribute TCC checks to the terminal host; a successful result from that launch is not proof that the app has its own grant. When an ad-hoc build is rejected despite a checked row, compare the row’s code requirement with the frozen app before removing and re-adding only that lane’s stale entry.
 
 Before handing off a Beta, run the native first-install query gate (`MIMAC_APPINSTALL_NATIVE_FIXTURE=1 go test ./internal/platform/appinstall -run "^TestAppinstallNative(FreshTransactionQueriesMissingTarget|MissingDestinationIsNotRunning)$" -count=1 -timeout=30s`). This read-only AppKit gate exercises the real process query with a missing destination; mocked transaction tests and a mounted-package hash check do not cover first installation. Verify an actual DMG launch through copy, installed-path startup and source exit, and check update/rollback separately. Do not remove a user’s installed app to create an empty test target.
 
@@ -30,9 +30,16 @@ Opening or navigating the guide does not enable a remote or begin recording. Cho
 
 ## Refresh one exact privacy identity
 
-This refresh helper is intentionally restricted to the daily `dev.mimac.app` identity and the exact `MiMac` System Settings row; a Dev bundle is rejected before UI actions. For Dev permissions, use the Dev app’s own permission guide. Only the later hardware test requires an explicit device handoff. Never pass a daily path as a workaround for a Dev denial.
+This helper accepts only two exact app identities. It reads `CFBundleIdentifier` from the selected app’s `Info.plist` and uses that value to choose the matching Settings row:
 
-From the repository root, use the canonical daily app bundle path:
+| Lane | Bundle ID | Settings row label | AX identifiers |
+|---|---|---|---|
+| Daily / Beta | `dev.mimac.app` | `MiMac` | `MiMac_Title`, `MiMac_Toggle` |
+| Dev | `dev.mimac.app.dev` | `MiMac Dev` | `MiMac Dev_Title`, `MiMac Dev_Toggle` |
+
+Every other Bundle ID is rejected before Settings UI actions. There is no command-line override for the row identity. Only the later hardware test requires an explicit device handoff. Never pass a daily path as a workaround for a Dev denial.
+
+From the repository root, pass the canonical `.app` path for the lane being refreshed:
 
 ```sh
 script/refresh_macos_permissions.swift \
@@ -41,14 +48,16 @@ script/refresh_macos_permissions.swift \
   --apply
 ```
 
-Use `--permission input-monitoring`, `accessibility`, or `both`. `--inspect` only reads the currently visible recognized page. Applying requires MiMac to be stopped and the runner to already have Accessibility trust; its verified Return action also requires the separate Post Event preflight to pass. The helper does not terminate apps, enter credentials, request its own trust, or press system Allow.
+For Dev, use its own canonical bundle path instead (for example, `/absolute/path/to/MiMac Dev.app`). The app’s verified `CFBundleIdentifier`, rather than the path’s display name, selects the row identity.
 
-The helper discovers System Settings by bundle identity. It navigates from one ordinary Settings window to the known privacy URL, then checks the exact page title and unique MiMac row. Unknown windows or sheets stop the run before refresh actions. macOS may call the Accessibility page Device Control and Data Access.
+Use `--permission input-monitoring`, `accessibility`, or `both`. `--inspect` only reads the currently visible recognized page. Applying requires the selected target app to be stopped and the runner to already have Accessibility trust; its verified Return action also requires the separate Post Event preflight to pass. The helper does not terminate apps, enter credentials, request its own trust, or press system Allow.
+
+The helper discovers System Settings by bundle identity. It navigates from one ordinary Settings window to the known privacy URL, then checks the exact page title and unique row label and AX identifiers for the selected lane. Unknown windows or sheets stop the run before refresh actions. macOS may call the Accessibility page Device Control and Data Access.
 
 If a run is pending, inspect its journal and stage log under `~/Library/Caches/MiMac/permissions-refresh/`, then resume with `--resume /path/to/journal.json`. Resume is bound to the canonical bundle path, executable SHA256, and requested permissions. Completed pages are read again; an externally disabled or missing row stops the run instead of reporting an old grant.
 
 An existing Open panel or Go To sheet can be resumed. The helper sets and reads back the absolute path through AX, waits for the exact canonical path suggestion, then sends one unmodified Return to the verified foreground sheet. It checks that the sheet closes before pressing Open. Journaled actions are not blindly repeated.
 
-`ui_grant_requested` means the exact System Settings row read `MiMac_Toggle=1`. Verify actual input monitoring and key output using the same fixed App binary afterward; the UI result is not an independent TCC capability check.
+`ui_grant_requested` means the exact selected-lane System Settings row read its matching toggle identifier as `1` (`MiMac_Toggle` for Daily/Beta or `MiMac Dev_Toggle` for Dev). Verify actual input monitoring and key output using the same fixed App binary afterward; the UI result is not an independent TCC capability check.
 
 Keep permission refresh journals tied to the same lane, canonical bundle and executable hash. Never use a broad `tccutil reset` to switch lanes. Record actual query results and any pending system authentication in the current task evidence; do not claim a grant until the fixed target binary confirms it.

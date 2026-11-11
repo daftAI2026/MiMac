@@ -59,7 +59,7 @@ flowchart TD
     recheck --> detected
     evidence["HID / ATVV 未发现不等于未配对；配对记录由系统蓝牙界面确认"] -.-> saved
     enable["在按键映射或插件页启用遥控器"]
-    enable --> grants["按能力申请输入监控 / 辅助功能 / 蓝牙"]
+    enable --> grants["按能力申请输入监控 / 控制权限 / 蓝牙；名称跟随系统版本"]
     grants --> outputPreflight["需要键输出时沿既有显式启用路径请求与预检PostEvent服务；权限卡刷新不请求"]
     outputPreflight --> returnApp["返回后只复核已请求权限，不开始收音"]
     plugins["插件页：启用 / 停用适配器"] --> discovery["自动定位应用与配置"]

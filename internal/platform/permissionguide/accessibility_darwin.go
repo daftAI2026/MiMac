@@ -5,6 +5,7 @@ package permissionguide
 import (
 	"fmt"
 	"sync"
+	"syscall"
 
 	"github.com/ebitengine/purego"
 )
@@ -47,4 +48,10 @@ func ReadAccessibilityAccess() (bool, error) {
 		return false, fmt.Errorf("permissionguide: AXIsProcessTrusted API unavailable")
 	}
 	return accessibilityTrustAPI.isProcessTrusted() != 0, nil
+}
+
+// AccessibilityPermissionTitle follows the privacy category name on this OS.
+func AccessibilityPermissionTitle() string {
+	version, _ := syscall.Sysctl("kern.osproductversion")
+	return accessibilityPermissionTitle(version)
 }
