@@ -12,6 +12,7 @@
 ## 开始与验证
 
 - 架构或生命周期改动先写清方案；已确定的实现不被参考项目的持续调研阻塞。接手任务先读 `/Users/d/Desktop/web/project-docs-private/mimac/README.md` 和当前任务记录。复现旧问题先核 `session-lessons.md`、对应证据和修复提交；以后来的已验结果为准，不重复实施已有修复。
+- 仓外调研的准备、实验留存、证据归档与收尾清理使用 [.agents/skills/mimac-research/SKILL.md](.agents/skills/mimac-research/SKILL.md)，复用既有记录，不另建重复账本。
 - 正式 App 通过 `script/build_and_run.sh` 构建运行；构建前身份检查、构建后依赖检查通过才可启动，分别使用 `script/check_app_identity.py`、`script/verify_app_bundle.py`。现场语音验收统一使用 `script/live_acceptance.py prepare/finish`；只有本轮输出 READY 后才通知用户测试，BLOCKED 按具体阶段处理。诊断 App 使用独立 Bundle ID 和临时配置，启动后确认唯一实例；验收绑定实际 PID、路径、源码、可执行文件和原生库 SHA。独立验收优先复用产品查询、准备与释放路径；确需替换时，逐项核对事件、缺失/错误和生命周期语义，不能只凭同名接口认定等价。
 - 日用安装产物不由开发构建覆盖。用户使用期间，只并行运行不占共享资源的后台验证；会改变系统输入源、音频路由、遥控器占用或前台/Space的验收单独排时段。交付需核对普通启动时的持久配置，不用验收专用参数代替。
 - 按启用能力申请必要权限，默认不安装驱动、不提权；系统认证先核发起者与必要性。日用/Beta 与 Dev 的构建、配置和权限身份按 `script/README_permissions.md` 分开核对；Beta 沿用日用身份，Dev 授权不得代替日用授权，共享设备验收须串行交接。固定调试二进制身份，区分权限类别及实际能力，刷新使用 `script/refresh_macos_permissions.swift`；刷新前确认该精确 App 已正常退出，按脚本的具体拒绝阶段处理，不重复执行未满足前置条件的操作。诊断输出与交给被测 GUI 应用打开的临时文稿统一放在缓存或临时目录；需授权的辅助进程，其入口及全部读取文件也先复制到已核验的缓存目录，管理员身份不能代替目录访问权限。界面操作使用 AX 或脚本。
