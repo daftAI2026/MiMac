@@ -363,6 +363,9 @@ func main() {
 			s.syncGeneralControls()
 		}
 	})
+	// Refresh the visible permission projection on real activation; reopening
+	// or moving windows remains an explicit user action.
+	mygo.App.OnDidBecomeActive(s.refreshPermissionGuide)
 	mygo.App.OnActivate(func(_ bool) {
 		if s.report.Ready && !s.closing {
 			if s.guideWindow != nil {

@@ -18,3 +18,9 @@ const (
 type Rect struct {
 	X, Y, Width, Height float64
 }
+
+// WindowSnapshot binds a screen-point frame to the exact native window.
+type WindowSnapshot struct {
+	ID    uint32
+	Frame Rect
+}

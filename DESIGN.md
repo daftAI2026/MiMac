@@ -87,7 +87,7 @@ components:
 
 ## Overview
 
-为使用遥控器控制 Mac 和现有语音工具的用户提供直接、安静的桌面界面。黑白中性配色，保留原生窗口、菜单和控件体验。借鉴 System Settings、Raycast 的组织方式和 Magpie 的插件边界，具体布局与文案按本文执行。
+为使用遥控器控制 Mac 和现有语音工具的用户提供直接、安静的桌面界面。黑白中性配色，保留原生窗口、菜单和控件体验。界面沿用系统设置的组织方式，设备与语音工具通过插件隔离，具体布局与文案按本文执行。
 
 本文是产品设计契约。研究过程与验收记录另存私人文档，不作为构建依赖。执行值在 cmd/mimac/design.go；修改 UI 时同时核对本文与真实窗口。格式依据 [Google Labs DESIGN.md 规范](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md)。
 

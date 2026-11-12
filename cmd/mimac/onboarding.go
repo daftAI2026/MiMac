@@ -22,10 +22,11 @@ type onboardingRecord struct {
 	Version   int  `json:"version"`
 	Started   bool `json:"started"`
 	Completed bool `json:"completed"`
+	Step      int  `json:"step,omitempty"`
 }
 
 func validOnboardingRecord(record onboardingRecord) bool {
-	return record.Version == onboardingRecordVersion && (!record.Completed || record.Started)
+	return record.Version == onboardingRecordVersion && record.Step >= 0 && record.Step < int(onboardingStepCount) && (!record.Completed || record.Started)
 }
 
 func readOnboardingRecord(path string) (onboardingRecord, bool, error) {
@@ -122,11 +123,27 @@ func onboardingRecordForOpen(record onboardingRecord, exists, automaticFirstRun 
 	return onboardingRecord{Version: onboardingRecordVersion, Started: true}, true
 }
 
+func onboardingInitialStep(record onboardingRecord, automaticFirstRun bool) onboardingStep {
+	if automaticFirstRun && validOnboardingRecord(record) && record.Started && !record.Completed {
+		return onboardingStepAt(record.Step)
+	}
+	return onboardingStepDevice
+}
+
+func onboardingRecordForStep(record onboardingRecord, step onboardingStep, automaticFirstRun bool) (onboardingRecord, bool) {
+	if !automaticFirstRun || !validOnboardingRecord(record) || !record.Started || record.Completed || step >= onboardingStepCount || record.Step == int(step) {
+		return record, false
+	}
+	record.Step = int(step)
+	return record, true
+}
+
 type onboardingState struct {
 	window                 *mygo.Window
 	step                   onboardingStep
 	record                 onboardingRecord
 	recordPath             string
+	persistProgress        bool
 	errorText              string
 	permissionSnapshot     permissionGuideSnapshot
 	permissionGuideOpened  bool
@@ -162,6 +179,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 		return
 	}
 	s.onboarding.step = onboardingStepDevice
+	s.onboarding.persistProgress = automaticFirstRun
 	s.onboarding.errorText = ""
 	s.onboarding.permissionGuideOpened = false
 	s.onboarding.toolLocations = nil
@@ -184,6 +202,11 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 			}
 		}
 	}
+	s.onboarding.step = onboardingInitialStep(s.onboarding.record, automaticFirstRun)
+	if s.onboarding.step == onboardingStepPermissions {
+		s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
+	}
+	s.prepareOnboardingPresentation()
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 首次设置", Width: windowWidth, Height: windowHeight,
 		MinWidth: windowMinWidth, MinHeight: windowMinHeight,
@@ -192,7 +215,8 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	})
 	s.onboarding.window = window
 	window.OnFocus(func() {
-		if s.onboarding.window == window {
+		if !s.closing && s.onboarding.window == window {
+			s.prepareOnboardingPresentation()
 			s.refreshOnboardingProjection()
 		}
 	})
@@ -211,6 +235,18 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 		}
 	})
 	s.detectDevice()
+	if s.onboarding.step == onboardingStepVoice {
+		s.refreshOnboardingVoiceLocations()
+	}
+}
+
+func (s *shell) prepareOnboardingPresentation() {
+	s.preparePermissionGuideGrantedStyles()
+	for _, dark := range []bool{false, true} {
+		a := appAppearance(dark, s.preferencesState.value.TextSize)
+		s.symbolBitmap(symbolKey{name: "arrow.left", dark: dark, size: settingsIconSize, tint: a.theme.Text})
+		s.symbolBitmap(symbolKey{name: "arrow.right", dark: dark, size: settingsIconSize, tint: a.theme.Background})
+	}
 }
 
 func (s *shell) closeOnboarding() {
@@ -233,14 +269,41 @@ func (s *shell) moveOnboarding(delta int) {
 	}
 	s.onboarding.step = step
 	s.onboarding.errorText = ""
+	if next, needsWrite := onboardingRecordForStep(s.onboarding.record, step, s.onboarding.persistProgress); needsWrite {
+		if err := writeOnboardingRecord(s.onboarding.recordPath, next); err != nil {
+			s.onboarding.errorText = "无法保存设置进度；本次仍可继续。"
+		} else {
+			s.onboarding.record = next
+		}
+	}
 	s.refreshOnboardingProjection()
 	if step == onboardingStepVoice {
 		s.refreshOnboardingVoiceLocations()
 	}
-	if step == onboardingStepPermissions {
-		s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
-	}
 	s.onboarding.window.Invalidate()
+}
+
+func samePermissionGuideSnapshot(a, b permissionGuideSnapshot) bool {
+	if a.actionsEnabled != b.actionsEnabled || a.appBundlePath != b.appBundlePath || len(a.rows) != len(b.rows) {
+		return false
+	}
+	for i := range a.rows {
+		if a.rows[i] != b.rows[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *shell) updateOnboardingPermissions(next permissionGuideSnapshot) bool {
+	if samePermissionGuideSnapshot(s.onboarding.permissionSnapshot, next) {
+		return false
+	}
+	s.onboarding.permissionSnapshot = next
+	if s.onboarding.window != nil && !s.onboarding.window.IsDestroyed() && s.onboarding.step == onboardingStepPermissions {
+		s.onboarding.window.Invalidate()
+	}
+	return true
 }
 
 func (s *shell) refreshOnboardingProjection() {
@@ -272,7 +335,7 @@ func (s *shell) showOnboardingPermissionGuide() {
 	}
 	s.onboarding.permissionGuideOpened = true
 	s.showPermissionGuide()
-	s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
+	s.updateOnboardingPermissions(s.snapshot)
 	s.onboarding.window.Invalidate()
 }
 

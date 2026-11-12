@@ -1,6 +1,6 @@
 flowchart TD
     launch["普通启动"] --> resume{"首启记录未完成？"}
-    resume -->|是| onboarding["打开完整首启窗口"]
+    resume -->|是| onboarding["打开完整首启窗口，恢复未完成的当前步骤"]
     resume -->|否| known{"已有配置或已完成？"}
     known -->|是| tray["保留菜单栏启动行为"]
     known -->|否| onboarding
@@ -11,28 +11,43 @@ flowchart TD
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
     toolStep --> permissionStep["第3步：系统权限"]
-    permissionStep --> permissionGuide["显式打开可关闭的系统权限引导"]
-    permissionStep --> finish["进入按键映射：保存首启完成，不代表设备已就绪"]
+    permissionStep --> permissionGuide["点击授权打开可关闭的系统权限引导"]
+    permissionStep --> finish["开始使用：保存首启完成，不代表设备已就绪"]
     finish --> mappings
-    onboarding -->|中途关闭| pending["保留未完成标记，下次继续"]
+    onboarding -->|中途关闭| pending["保留未完成标记与当前步骤，下次继续"]
+    systemReopen["系统退出重开：固定Dev默认启动路径已核对"] --> resume
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
-    permissionGuide --> inspect["只读检查所需权限，不开始监听或录音"]
+    permissionGuide -.-> nativeWindow["宿主持久非激活浮动Panel：仅控件需要时取得键盘，不随App停用隐藏"]
+    permissionGuide --> existingSettings{"系统设置已经运行？"}
+    existingSettings -->|是且有缺失列表权限：切到对应页| settings
+    existingSettings -->|否：不启动设置，只读等待现窗| stable
+    permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
-    missing -->|是| grantAction["用户显式点击授权或打开设置"]
-    grantAction --> settings["打开对应系统设置页，面板并排跟随窗口"]
-    settings --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
-    follow --> illustration["位置稳定且鼠标松开后显示透明拖放示意，拖动及减少动态效果时隐藏"]
+    missing -->|是| grantAction["用户显式点击授权"]
+    titleLink["用户点击权限标题链接"] --> settings["打开对应系统设置页"]
+    settings --> stable["面板显示或显式设置动作开启：六秒内查找同一窗口与完整frame，两次稳定后350ms ease-in-out贴边，窗口顶对齐、横向间距16pt"]
+    stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
+    follow --> illustration["位置稳定且鼠标松开后显示96pt来源图标槽中的半透明图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
-    drag --> guideRefresh
+    drag --> spotlight["MyGo原生会话Started事件：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
+    spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
+    trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
+    endDrop --> guideRefresh
     missing -->|否| complete["显示已完成；可关闭，不接管设备"]
-    grantAction --> nativeGrant["由对应能力调用原有系统授权入口"]
-    nativeGrant --> guideRefresh["面板可见时及回到 App 查询实际授权状态，逐项推进"]
-    guideRefresh --> permissionGuide
+    grantAction --> nativeGrant{"首次蓝牙授权？"}
+    nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
+    nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]
+    bluetoothGrant --> guideRefresh["重新查询实际授权状态，不把请求返回当授权完成"]
+    activeReturn["App实际成为活动应用：沿MyGo事件立即重新查询，不重开或移动权限面板"] --> guideRefresh
+    grantedFeedback["读到真实已授权：以SF圆圈勾与已授权胶囊替换按钮，停止对应拖放示意"] --> permissionGuide
+    guideRefresh -->|实际状态为已授权| grantedFeedback
+    guideRefresh --> sharedSetup["同一授权快照推送首启权限页，变化时才重绘，不新增轮询"]
+    sharedSetup --> permissionGuide
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
-    permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意窗口，保留设置与菜单入口"]
+    permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意与拖动遮罩窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]
     connected --> mappings["前往按键映射，保留现有模型、键值与工具选择"]
     mappings --> enable
@@ -46,8 +61,9 @@ flowchart TD
     recheck --> detected
     evidence["HID / ATVV 未发现不等于未配对；配对记录由系统蓝牙界面确认"] -.-> saved
     enable["在按键映射或插件页启用遥控器"]
-    enable --> grants["按能力申请输入监控 / 辅助功能 / 蓝牙"]
-    grants --> returnApp["返回后只复核已请求权限，不开始收音"]
+    enable --> grants["按能力申请输入监控 / 控制权限 / 蓝牙；名称跟随系统版本"]
+    grants --> outputPreflight["需要键输出时沿既有显式启用路径请求与预检PostEvent服务；权限卡刷新不请求"]
+    outputPreflight --> returnApp["返回后只复核已请求权限，不开始收音"]
     plugins["插件页：启用 / 停用适配器"] --> discovery["自动定位应用与配置"]
     discovery --> available["已启用工具出现在语音工具页和映射选择中"]
     available --> choose["用户在语音工具页或按键映射中选择工具"]

@@ -225,6 +225,12 @@ func loadAppKitFramework() error {
 	return appKitFramework.err
 }
 
+// SystemSettingsRunning only queries the existing application; it never launches it.
+func SystemSettingsRunning() bool {
+	_, running := systemSettingsPID()
+	return running
+}
+
 func systemSettingsPID() (int32, bool) {
 	if loadAppKitFramework() != nil {
 		return 0, false
@@ -280,6 +286,8 @@ var windowListAPI struct {
 	ownerPIDKey   uintptr
 	layerKey      uintptr
 	boundsKey     uintptr
+	numberKey     uintptr
+	alphaKey      uintptr
 	err           error
 }
 
@@ -334,6 +342,8 @@ func loadWindowListAPI() error {
 			"kCGWindowOwnerPID": &windowListAPI.ownerPIDKey,
 			"kCGWindowLayer":    &windowListAPI.layerKey,
 			"kCGWindowBounds":   &windowListAPI.boundsKey,
+			"kCGWindowNumber":   &windowListAPI.numberKey,
+			"kCGWindowAlpha":    &windowListAPI.alphaKey,
 		} {
 			address, err := purego.Dlsym(graphics, name)
 			if err != nil {
@@ -351,48 +361,78 @@ func loadWindowListAPI() error {
 }
 
 func SystemSettingsWindowBounds() (Rect, bool) {
+	snapshot, found := SystemSettingsWindowSnapshot()
+	return snapshot.Frame, found
+}
+
+func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) {
+	return systemSettingsWindow(0, false)
+}
+
+// SystemSettingsDropTarget keeps a drag attached to one visible window.
+func SystemSettingsDropTarget(id uint32) (WindowSnapshot, bool) {
+	return systemSettingsWindow(id, true)
+}
+
+func systemSettingsWindow(id uint32, checkOcclusion bool) (WindowSnapshot, bool) {
 	pid, ok := systemSettingsPID()
 	if !ok || loadWindowListAPI() != nil {
-		return Rect{}, false
+		return WindowSnapshot{}, false
 	}
-	list := windowListAPI.windowList(1, 0) // kCGWindowListOptionOnScreenOnly, kCGNullWindowID.
+	records, ok := readWindowRecords(0x11, 0)
+	if !ok {
+		return WindowSnapshot{}, false
+	}
+	selected, ok := selectSettingsWindow(records, pid, id)
+	if !ok {
+		return WindowSnapshot{}, false
+	}
+	if checkOcclusion {
+		above, ok := readWindowRecords(0x12, selected.ID)
+		if !ok || settingsWindowOcclusion(selected.Frame, above) >= .6 {
+			return WindowSnapshot{}, false
+		}
+	}
+	return selected, true
+}
+
+func readWindowRecords(options, relative uint32) ([]windowRecord, bool) {
+	list := windowListAPI.windowList(options, relative)
 	if list == 0 {
-		return Rect{}, false
+		return nil, false
 	}
 	defer windowListAPI.release(list)
 	count := windowListAPI.arrayCount(list)
 	if count < 0 || count > 8192 {
-		return Rect{}, false
+		return nil, false
 	}
-	var match Rect
-	matches := 0
-	for index := int64(0); index < count; index++ {
-		entry := windowListAPI.arrayValue(list, index)
+	records := make([]windowRecord, 0, int(count))
+	for i := int64(0); i < count; i++ {
+		entry := windowListAPI.arrayValue(list, i)
 		if entry == 0 {
 			continue
 		}
 		pidValue := windowListAPI.dictionaryGet(entry, windowListAPI.ownerPIDKey)
-		layerValue := windowListAPI.dictionaryGet(entry, windowListAPI.layerKey)
+		numberValue := windowListAPI.dictionaryGet(entry, windowListAPI.numberKey)
 		boundsValue := windowListAPI.dictionaryGet(entry, windowListAPI.boundsKey)
-		if pidValue == 0 || layerValue == 0 || boundsValue == 0 {
-			continue
-		}
-		var ownerPID, layer int32
-		if !windowListAPI.numberGet(pidValue, 3, unsafe.Pointer(&ownerPID)) ||
-			!windowListAPI.numberGet(layerValue, 3, unsafe.Pointer(&layer)) || ownerPID != pid || layer != 0 {
-			continue
-		}
+		var pid, number, layer int32
 		var bounds cgRect
-		if !windowListAPI.rectFromDict(boundsValue, &bounds) || bounds.Width < 200 || bounds.Height < 150 {
+		if pidValue == 0 || numberValue == 0 || boundsValue == 0 ||
+			!windowListAPI.numberGet(pidValue, 3, unsafe.Pointer(&pid)) ||
+			!windowListAPI.numberGet(numberValue, 3, unsafe.Pointer(&number)) || number == 0 ||
+			!windowListAPI.rectFromDict(boundsValue, &bounds) {
 			continue
 		}
-		match = Rect(bounds)
-		matches++
+		if value := windowListAPI.dictionaryGet(entry, windowListAPI.layerKey); value != 0 && !windowListAPI.numberGet(value, 3, unsafe.Pointer(&layer)) {
+			continue
+		}
+		alpha := float64(1)
+		if value := windowListAPI.dictionaryGet(entry, windowListAPI.alphaKey); value != 0 && !windowListAPI.numberGet(value, 6, unsafe.Pointer(&alpha)) {
+			continue
+		}
+		records = append(records, windowRecord{id: uint32(number), owner: pid, layer: layer, alpha: alpha, frame: Rect(bounds)})
 	}
-	if matches != 1 {
-		return Rect{}, false
-	}
-	return match, true
+	return records, true
 }
 
 var errWindowQuery = &windowQueryError{}

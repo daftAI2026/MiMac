@@ -38,10 +38,10 @@ func TestPermissionGuideLayoutKeepsEveryRequiredRowVisible(t *testing.T) {
 				view.Advance(2 * time.Millisecond)
 				icon := s.iconBounds
 				title, ok := view.Find("管理权限")
-				if !ok || math.Abs(float64(title.Y-144)) > 1 || title.H != 30 {
+				if !ok || math.Abs(float64(title.Y-160)) > 1 || title.H != 30 {
 					t.Fatalf("title geometry: %v %t", title, ok)
 				}
-				if icon.X != 202 || icon.Y != 36 || icon.W != 96 || icon.H != 96 {
+				if icon.X != 202 || icon.Y != 52 || icon.W != 96 || icon.H != 96 {
 					t.Fatalf("icon slot: %v", icon)
 				}
 				for _, row := range s.snapshot.rows {
@@ -85,8 +85,8 @@ func TestPermissionGuideWrappedDescriptionsKeepControlsOnTheTopIconTrack(t *test
 		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
 		s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
 		s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}] = nil
-		s.navigationSymbols[symbolKey{name: "keyboard", size: 18}] = nil
 		row := permissionGuideRowFor(permissionGuideInput)
+		s.navigationSymbols[symbolKey{name: row.icon, size: 18}] = nil
 		row.description = description
 		row.access = permissionGuideGranted
 		s.snapshot.rows = []permissionGuideRow{row}

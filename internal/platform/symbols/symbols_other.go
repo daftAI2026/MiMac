@@ -16,3 +16,7 @@ func Image(_ string, _ bool, _ float64) (image.Image, error) {
 func Images(_ []string, _ bool, _, _ float64) ([]image.Image, error) {
 	return nil, errors.New("symbols: AppKit SF Symbols are available only on macOS")
 }
+
+func ImagesInColor(names []string, dark bool, pointSize, weight float64, foreground [4]uint8) ([]image.Image, error) {
+	return Images(names, dark, pointSize, weight)
+}

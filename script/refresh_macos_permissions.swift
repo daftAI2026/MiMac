@@ -6,10 +6,39 @@ import CryptoKit
 import Foundation
 import Darwin
 
-private let expectedBundleID = "dev.mimac.app"
+private struct ManagedPermissionIdentity: Equatable {
+    let bundleIdentifier: String
+    let titleIdentifier: String
+    let toggleIdentifier: String
+    let rowLabel: String
+}
+
+private let dailyPermissionIdentity = ManagedPermissionIdentity(
+    bundleIdentifier: "dev.mimac.app",
+    titleIdentifier: "MiMac_Title",
+    toggleIdentifier: "MiMac_Toggle",
+    rowLabel: "MiMac"
+)
+private let developmentPermissionIdentity = ManagedPermissionIdentity(
+    bundleIdentifier: "dev.mimac.app.dev",
+    titleIdentifier: "MiMac Dev_Title",
+    toggleIdentifier: "MiMac Dev_Toggle",
+    rowLabel: "MiMac Dev"
+)
+
+private func permissionIdentity(for bundleIdentifier: String) -> ManagedPermissionIdentity? {
+    switch bundleIdentifier {
+    case dailyPermissionIdentity.bundleIdentifier:
+        return dailyPermissionIdentity
+    case developmentPermissionIdentity.bundleIdentifier:
+        return developmentPermissionIdentity
+    default:
+        return nil
+    }
+}
+
+private var targetPermissionIdentity: ManagedPermissionIdentity?
 private let settingsBundleID = "com.apple.systempreferences"
-private let titleIdentifier = "MiMac_Title"
-private let toggleIdentifier = "MiMac_Toggle"
 private let goToIdentifier = "GoToWindow"
 private let pathFieldIdentifier = "PathTextField"
 private let openWindowTitles: Set<String> = ["Open", "打开"]
@@ -153,6 +182,10 @@ private func runOfflineStabilityTest() -> Int32 {
     require(permissionTitles(matching: "辅助功能") == [.accessibility], "known Simplified Chinese page title must map uniquely")
     require(permissionTitles(matching: "アクセシビリティ").isEmpty, "unobserved locale must remain unrecognized")
 
+    require(permissionIdentity(for: "dev.mimac.app") == dailyPermissionIdentity, "daily Bundle ID must select only the daily Settings row")
+    require(permissionIdentity(for: "dev.mimac.app.dev") == developmentPermissionIdentity, "Dev Bundle ID must select only the Dev Settings row")
+    require(permissionIdentity(for: "dev.mimac.app.other") == nil, "unknown Bundle IDs must remain unsupported")
+
     if failures.isEmpty {
         print("PASS: stable page gate sequences; no System Settings, AX, permission, or file operation was performed")
         return 0
@@ -177,6 +210,7 @@ private struct Journal: Codable {
     var schemaVersion: Int = 1
     var runID: String
     var bundlePath: String
+    var bundleIdentifier: String?
     var executableSHA256: String
     var permissionArgument: String
     var mode: String
@@ -212,6 +246,13 @@ private var logURL: URL!
 private var targetBundlePath = ""
 private var targetExecutableSHA256 = ""
 
+private func requiredPermissionIdentity() throws -> ManagedPermissionIdentity {
+    guard let targetPermissionIdentity else {
+        throw ToolFailure(status: "refused", stage: "bundle_validation", message: "The target Bundle ID has not been validated")
+    }
+    return targetPermissionIdentity
+}
+
 private func timestamp() -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -221,7 +262,7 @@ private func timestamp() -> String {
 private func usage() -> String {
     return """
     Usage:
-      script/refresh_macos_permissions.swift --bundle /absolute/path/MiMac.app \\
+      script/refresh_macos_permissions.swift --bundle /absolute/path/to/app.app \\
         --permission input-monitoring|accessibility|both --apply|--inspect [--resume /path/to/journal.json]
 
     --inspect reads the currently open, recognized System Settings page without changing it.
@@ -345,9 +386,11 @@ private func validateBundle(_ path: String) throws -> String {
           let info = rawInfo as? [String: Any] else {
         throw ToolFailure(status: "refused", stage: "bundle_validation", message: "Could not read the target app Info.plist")
     }
-    guard (info["CFBundleIdentifier"] as? String) == expectedBundleID else {
-        throw ToolFailure(status: "refused", stage: "bundle_validation", message: "Only CFBundleIdentifier dev.mimac.app can be managed")
+    guard let bundleIdentifier = info["CFBundleIdentifier"] as? String,
+          let identity = permissionIdentity(for: bundleIdentifier) else {
+        throw ToolFailure(status: "refused", stage: "bundle_validation", message: "Only CFBundleIdentifier dev.mimac.app or dev.mimac.app.dev can be managed")
     }
+    targetPermissionIdentity = identity
     guard let executableName = info["CFBundleExecutable"] as? String, !executableName.isEmpty else {
         throw ToolFailure(status: "refused", stage: "bundle_validation", message: "CFBundleExecutable is missing")
     }
@@ -363,9 +406,10 @@ private func validateBundle(_ path: String) throws -> String {
     return inputURL.path
 }
 
-private func runningMiMacDescriptions() -> [String] {
+private func runningMiMacDescriptions() throws -> [String] {
+    let identity = try requiredPermissionIdentity()
     return NSWorkspace.shared.runningApplications
-        .filter { $0.bundleIdentifier == expectedBundleID }
+        .filter { $0.bundleIdentifier == identity.bundleIdentifier }
         .map { app in
             let path = app.bundleURL?.standardizedFileURL.path ?? "(bundle path unavailable)"
             return "pid=\(app.processIdentifier), path=\(path)"
@@ -516,9 +560,10 @@ private func ensureSystemSettings(mode: Mode) throws -> (NSRunningApplication, A
         throw pending("ax_trust", "The helper's current runner lacks Accessibility trust; no trust prompt was opened")
     }
     if mode == .apply {
-        let running = runningMiMacDescriptions()
+        let running = try runningMiMacDescriptions()
         if !running.isEmpty {
-            throw refused("mimac_running", "MiMac must be stopped before a permission refresh; still running: \(running.joined(separator: "; "))")
+            let identity = try requiredPermissionIdentity()
+            throw refused("mimac_running", "\(identity.rowLabel) must be stopped before a permission refresh; still running: \(running.joined(separator: "; "))")
         }
     }
     return (app, element)
@@ -587,10 +632,11 @@ private func ensureNoAuthenticationPrompt(_ appElement: AXUIElement, permission:
 }
 
 private func rowAndToggle(in page: AXUIElement) throws -> (AXUIElement?, AXUIElement?, NSNumber?) {
-    let titles = findElements(roots: [page], identifier: titleIdentifier, stopAfter: 3)
-    if titles.count > 1 { throw refused("entry_check", "Multiple MiMac_Title entries are present; refusing to choose one") }
+    let identity = try requiredPermissionIdentity()
+    let titles = findElements(roots: [page], identifier: identity.titleIdentifier, stopAfter: 3)
+    if titles.count > 1 { throw refused("entry_check", "Multiple \(identity.titleIdentifier) entries are present; refusing to choose one") }
     guard let title = titles.first else { return (nil, nil, nil) }
-    guard axString(title, "AXValue") == "MiMac" else { throw refused("entry_check", "MiMac_Title is not the expected MiMac row label") }
+    guard axString(title, "AXValue") == identity.rowLabel else { throw refused("entry_check", "\(identity.titleIdentifier) is not the expected \(identity.rowLabel) row label") }
     var row: AXUIElement? = title
     for _ in 0..<12 {
         if let current = row, axString(current, "AXRole") == "AXRow" { break }
@@ -598,13 +644,13 @@ private func rowAndToggle(in page: AXUIElement) throws -> (AXUIElement?, AXUIEle
         row = parent
     }
     guard let matchedRow = row, axString(matchedRow, "AXRole") == "AXRow" else {
-        throw refused("entry_check", "MiMac_Title has no AXRow parent")
+        throw refused("entry_check", "\(identity.titleIdentifier) has no AXRow parent")
     }
-    let toggles = findElements(roots: [page], identifier: toggleIdentifier, stopAfter: 3)
+    let toggles = findElements(roots: [page], identifier: identity.toggleIdentifier, stopAfter: 3)
     guard toggles.count == 1, let toggle = toggles.first,
           axString(toggle, "AXRole") == "AXCheckBox",
           axString(toggle, "AXSubrole") == "AXSwitch" else {
-        throw refused("entry_check", "Expected one MiMac_Toggle AXCheckBox/AXSwitch")
+        throw refused("entry_check", "Expected one \(identity.toggleIdentifier) AXCheckBox/AXSwitch")
     }
     var toggleRow: AXUIElement? = toggle
     for _ in 0..<12 {
@@ -613,12 +659,13 @@ private func rowAndToggle(in page: AXUIElement) throws -> (AXUIElement?, AXUIEle
         toggleRow = parent
     }
     guard let toggleRow, CFEqual(toggleRow, matchedRow) else {
-        throw refused("entry_check", "MiMac_Title and MiMac_Toggle do not belong to the same AXRow")
+        throw refused("entry_check", "\(identity.titleIdentifier) and \(identity.toggleIdentifier) do not belong to the same AXRow")
     }
     return (matchedRow, toggle, axNumber(toggle, "AXValue"))
 }
 
 private func selectMiMacRow(_ row: AXUIElement, permission: Permission) throws {
+    let identity = try requiredPermissionIdentity()
     if axNumber(row, "AXSelected")?.boolValue != true {
         let result = AXUIElementSetAttributeValue(row, "AXSelected" as CFString, kCFBooleanTrue)
         if result != .success && actionNames(row).contains("AXSelect") {
@@ -626,7 +673,7 @@ private func selectMiMacRow(_ row: AXUIElement, permission: Permission) throws {
         }
     }
     guard axNumber(row, "AXSelected")?.boolValue == true else {
-        throw pending(stageKey(permission, "entry_selection"), "MiMac row could not be selected and read back", permission: permission)
+        throw pending(stageKey(permission, "entry_selection"), "\(identity.rowLabel) row could not be selected and read back", permission: permission)
     }
     checkpoint(stageKey(permission, "entry_selected"), permission: permission)
 }
@@ -1005,6 +1052,7 @@ private func navigateToPage(_ permission: Permission, app: NSRunningApplication,
 }
 
 private func processPermission(_ permission: Permission, app: NSRunningApplication, appElement: AXUIElement, resumeExistingPicker: Bool) throws {
+    let identity = try requiredPermissionIdentity()
     journal.activePermission = permission.rawValue
     let (page, pageTitle) = try pageWindow(permission, windows: appWindows(appElement))
     journal.observations[permission.rawValue + ".page_title"] = pageTitle
@@ -1031,13 +1079,13 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
                 guard let (_, _, value) = try? rowAndToggle(in: page) else { return false }
                 return value?.boolValue == true
             }
-            guard ready else { throw pending(stageKey(permission, "toggle_wait"), "The expected MiMac_Toggle=1 did not appear after the journaled Open action", permission: permission) }
+            guard ready else { throw pending(stageKey(permission, "toggle_wait"), "The expected \(identity.toggleIdentifier)=1 did not appear after the journaled Open action", permission: permission) }
             let (_, _, value) = try rowAndToggle(in: page)
-            guard value?.boolValue == true else { throw pending(stageKey(permission, "toggle_readback"), "MiMac_Toggle did not read back as 1", permission: permission) }
+            guard value?.boolValue == true else { throw pending(stageKey(permission, "toggle_readback"), "\(identity.toggleIdentifier) did not read back as 1", permission: permission) }
             journal.observations[permission.rawValue + ".toggle"] = "1"
             if !journal.completedPermissions.contains(permission.rawValue) { journal.completedPermissions.append(permission.rawValue) }
-            checkpoint(stageKey(permission, "ui_grant_requested"), status: "ui_grant_requested", note: "System Settings row reads MiMac_Toggle=1; this is a UI request result, not an independent TCC capability check", permission: permission)
-            appendLog("info", event: "permission_ui_state", detail: "MiMac_Toggle=1; labeled ui_grant_requested")
+            checkpoint(stageKey(permission, "ui_grant_requested"), status: "ui_grant_requested", note: "System Settings row reads \(identity.toggleIdentifier)=1; this is a UI request result, not an independent TCC capability check", permission: permission)
+            appendLog("info", event: "permission_ui_state", detail: "\(identity.toggleIdentifier)=1; labeled ui_grant_requested")
             return
         }
         let (row, _, _) = try rowAndToggle(in: page)
@@ -1045,18 +1093,18 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
             _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page)
             let (currentRow, _, _) = try rowAndToggle(in: page)
             guard let currentRow, CFEqual(currentRow, row) else {
-                throw pending(stageKey(permission, "entry_selection"), "The verified MiMac row changed before selection", permission: permission)
+                throw pending(stageKey(permission, "entry_selection"), "The verified \(identity.rowLabel) row changed before selection", permission: permission)
             }
             try selectMiMacRow(row, permission: permission)
             let removeButtons = findButtons(roots: [page], labels: ["Remove", "移除"])
             guard removeButtons.count == 1, let removeButton = removeButtons.first else {
-                throw refused(stageKey(permission, "remove_button"), "Expected one exact Remove button after selecting the MiMac_Title row", permission: permission)
+                throw refused(stageKey(permission, "remove_button"), "Expected one exact Remove button after selecting the \(identity.titleIdentifier) row", permission: permission)
             }
             guard axNumber(removeButton, "AXEnabled")?.boolValue == true else {
-                throw pending(stageKey(permission, "remove_button"), "Remove is disabled for the selected MiMac row", permission: permission)
+                throw pending(stageKey(permission, "remove_button"), "Remove is disabled for the selected \(identity.rowLabel) row", permission: permission)
             }
             guard markAction(permission, "remove") else {
-                throw pending(stageKey(permission, "remove_pending"), "Remove was already attempted in this journal and the MiMac row remains; inspect the page before continuing", permission: permission)
+                throw pending(stageKey(permission, "remove_pending"), "Remove was already attempted in this journal and the \(identity.rowLabel) row remains; inspect the page before continuing", permission: permission)
             }
             _ = try requireCurrentPermissionPage(permission, appElement: appElement, expectedPage: page)
             let finalRemoveButtons = findButtons(roots: [page], labels: ["Remove", "移除"])
@@ -1067,8 +1115,8 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
             guard AXUIElementPerformAction(removeButton, "AXPress" as CFString) == .success else {
                 throw pending(stageKey(permission, "remove_press"), "Remove action was not accepted", permission: permission)
             }
-            let removed = waitUntil(uiTimeout) { findElements(roots: [page], identifier: titleIdentifier, stopAfter: 1).isEmpty }
-            guard removed else { throw pending(stageKey(permission, "remove_wait"), "MiMac_Title did not disappear after one Remove action", permission: permission) }
+            let removed = waitUntil(uiTimeout) { findElements(roots: [page], identifier: identity.titleIdentifier, stopAfter: 1).isEmpty }
+            guard removed else { throw pending(stageKey(permission, "remove_wait"), "\(identity.titleIdentifier) did not disappear after one Remove action", permission: permission) }
             checkpoint(stageKey(permission, "row_removed"), permission: permission)
         }
         try pressUniqueButton(
@@ -1099,31 +1147,32 @@ private func processPermission(_ permission: Permission, app: NSRunningApplicati
         return value?.boolValue == true
     }
     guard enabled else {
-        throw pending(stageKey(permission, "toggle_wait"), "The exact MiMac row did not settle to MiMac_Toggle=1", permission: permission)
+        throw pending(stageKey(permission, "toggle_wait"), "The exact \(identity.rowLabel) row did not settle to \(identity.toggleIdentifier)=1", permission: permission)
     }
     let (_, _, finalValue) = try rowAndToggle(in: verifiedPage)
-    guard finalValue?.boolValue == true else { throw pending(stageKey(permission, "toggle_readback"), "MiMac_Toggle did not read back as 1", permission: permission) }
+    guard finalValue?.boolValue == true else { throw pending(stageKey(permission, "toggle_readback"), "\(identity.toggleIdentifier) did not read back as 1", permission: permission) }
     journal.observations[permission.rawValue + ".toggle"] = "1"
     if !journal.completedPermissions.contains(permission.rawValue) { journal.completedPermissions.append(permission.rawValue) }
-    checkpoint(stageKey(permission, "ui_grant_requested"), status: "ui_grant_requested", note: "System Settings row reads MiMac_Toggle=1; this is a UI request result, not an independent TCC capability check", permission: permission)
-    appendLog("info", event: "permission_ui_state", detail: "MiMac_Toggle=1; labeled ui_grant_requested")
+    checkpoint(stageKey(permission, "ui_grant_requested"), status: "ui_grant_requested", note: "System Settings row reads \(identity.toggleIdentifier)=1; this is a UI request result, not an independent TCC capability check", permission: permission)
+    appendLog("info", event: "permission_ui_state", detail: "\(identity.toggleIdentifier)=1; labeled ui_grant_requested")
 }
 
 private func inspectCurrentPage(_ appElement: AXUIElement) throws {
+    let identity = try requiredPermissionIdentity()
     try ensureKnownSurfaces(appElement, allowOrdinaryPage: false)
     let (_, permission, title) = try currentPagePermission(appElement)
     let (page, _) = try pageWindow(permission, windows: appWindows(appElement))
-    let titles = findElements(roots: [page], identifier: titleIdentifier, stopAfter: 3)
-    guard titles.count <= 1 else { throw refused("inspect", "Multiple MiMac_Title entries are present") }
+    let titles = findElements(roots: [page], identifier: identity.titleIdentifier, stopAfter: 3)
+    guard titles.count <= 1 else { throw refused("inspect", "Multiple \(identity.titleIdentifier) entries are present") }
     var state = "missing"
     if titles.count == 1 {
         let (_, _, value) = try rowAndToggle(in: page)
-        guard let value else { throw pending("inspect", "MiMac_Toggle has no readable AXValue", permission: permission) }
+        guard let value else { throw pending("inspect", "\(identity.toggleIdentifier) has no readable AXValue", permission: permission) }
         state = value.boolValue ? "1" : "0"
     }
     journal.observations["current_page"] = title
     journal.observations[permission.rawValue + ".toggle"] = state
-    checkpoint("inspect_complete", status: "inspected", note: "Read current page and MiMac row only; no UI action was performed", permission: permission)
+    checkpoint("inspect_complete", status: "inspected", note: "Read current page and \(identity.rowLabel) row only; no UI action was performed", permission: permission)
 }
 
 private func runApply(_ permissionArgument: String, app: NSRunningApplication, appElement: AXUIElement) throws {
@@ -1175,9 +1224,11 @@ private func runApply(_ permissionArgument: String, app: NSRunningApplication, a
             }
             let (_, _, value) = try rowAndToggle(in: page)
             guard value?.boolValue == true else {
-                throw pending(stageKey(permission, "completed_readback"), "The previously completed MiMac row no longer reads MiMac_Toggle=1; no new grant was attempted", permission: permission)
+                let identity = try requiredPermissionIdentity()
+                throw pending(stageKey(permission, "completed_readback"), "The previously completed \(identity.rowLabel) row no longer reads \(identity.toggleIdentifier)=1; no new grant was attempted", permission: permission)
             }
-            checkpoint(stageKey(permission, "completed_revalidated"), note: "Read the current unique MiMac row and MiMac_Toggle=1 again", permission: permission)
+            let identity = try requiredPermissionIdentity()
+            checkpoint(stageKey(permission, "completed_revalidated"), note: "Read the current unique \(identity.rowLabel) row and \(identity.toggleIdentifier)=1 again", permission: permission)
             firstPass = false
             continue
         }
@@ -1201,7 +1252,8 @@ private func initializeJournal(options: Options, validatedBundle: String) throws
         guard let data = try? Data(contentsOf: candidate), let restored = try? JSONDecoder().decode(Journal.self, from: data) else {
             throw ToolFailure(status: "refused", stage: "journal_resume", message: "The selected journal is missing or unreadable")
         }
-        guard restored.bundlePath == validatedBundle, restored.executableSHA256 == targetExecutableSHA256,
+        guard (restored.bundleIdentifier ?? dailyPermissionIdentity.bundleIdentifier) == (try requiredPermissionIdentity()).bundleIdentifier,
+              restored.bundlePath == validatedBundle, restored.executableSHA256 == targetExecutableSHA256,
               restored.permissionArgument == (options.permission ?? ""), restored.mode == "apply" else {
             throw ToolFailure(status: "refused", stage: "journal_resume", message: "Journal target or permission does not match this invocation")
         }
@@ -1220,7 +1272,7 @@ private func initializeJournal(options: Options, validatedBundle: String) throws
     logURL = runDir.appendingPathComponent("stages.jsonl")
     _ = FileManager.default.createFile(atPath: logURL.path, contents: Data(), attributes: [.posixPermissions: 0o600])
     let now = timestamp()
-    journal = Journal(runID: runID, bundlePath: validatedBundle, executableSHA256: targetExecutableSHA256, permissionArgument: options.permission ?? "", mode: options.mode?.rawValue ?? "", startedAt: now, updatedAt: now)
+    journal = Journal(runID: runID, bundlePath: validatedBundle, bundleIdentifier: try requiredPermissionIdentity().bundleIdentifier, executableSHA256: targetExecutableSHA256, permissionArgument: options.permission ?? "", mode: options.mode?.rawValue ?? "", startedAt: now, updatedAt: now)
     try writeJSON(journal!, to: journalURL)
     writeReport()
 }
@@ -1253,7 +1305,8 @@ do {
     try initializeJournal(options: options, validatedBundle: targetBundlePath)
     journal.permissionArgument = permission
     journal.mode = mode.rawValue
-    checkpoint("bundle_validated", note: "Validated CFBundleIdentifier dev.mimac.app and executable path")
+    let identity = try requiredPermissionIdentity()
+    checkpoint("bundle_validated", note: "Validated CFBundleIdentifier \(identity.bundleIdentifier) and executable path")
 
     let (app, appElement) = try ensureSystemSettings(mode: mode)
     _ = app
@@ -1264,7 +1317,7 @@ do {
         exit(0)
     }
     try runApply(permission, app: app, appElement: appElement)
-    printFinal("ui_grant_requested", "System Settings shows the requested MiMac toggle state; runtime TCC access was not independently verified")
+    printFinal("ui_grant_requested", "System Settings shows the requested app row toggle state; runtime TCC access was not independently verified")
     exit(0)
 } catch let failure as ToolFailure {
     if journal != nil {
