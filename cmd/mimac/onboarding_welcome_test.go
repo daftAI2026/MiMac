@@ -143,6 +143,9 @@ func TestOnboardingWelcomeLongApplicationNameFits(t *testing.T) {
 		if !found || heading.X < onboardingWelcomeInsetX || heading.X+heading.W > float32(width)-onboardingWelcomeInsetX {
 			t.Fatalf("application name overflowed at width %d: %v", width, heading)
 		}
+		if heading.W > onboardingWelcomeMaxWidth+1 {
+			t.Fatalf("application name exceeded the content width at window width %d: %v", width, heading)
+		}
 		primary, found := v.Find("继续")
 		if !found || primary.Y < heading.Y+heading.H || primary.Y+primary.H > 660-24 {
 			t.Fatalf("wrapped name displaced the primary action at width %d: %v", width, primary)

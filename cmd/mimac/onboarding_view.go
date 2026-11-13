@@ -26,7 +26,8 @@ const (
 	onboardingWelcomeLineHeight   float32 = 20
 	onboardingWelcomeMarkOffsetY  float32 = 4
 	onboardingWelcomeActionsGap   float32 = 22
-	onboardingWelcomeInsetX       float32 = 40
+	onboardingWelcomeInsetX       float32 = 20
+	onboardingWelcomeMaxWidth     float32 = 560
 )
 
 const onboardingWelcomeDescription = "用遥控器控制 Mac，按住语音键，即可开始语音输入。"
@@ -119,14 +120,14 @@ func (s *shell) onboardingView(c *ui.Context) {
 func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 	a.fonts.body = onboardingWelcomeActionSize
 	windowWidth, _ := c.Size()
-	availableWidth := windowWidth - 2*onboardingWelcomeInsetX
+	availableWidth := min(windowWidth-2*onboardingWelcomeInsetX, onboardingWelcomeMaxWidth)
 	heading := onboardingStepHeading(onboardingStepWelcome)
 	headingWidth := onboardingBalancedTextWidth(c, heading, onboardingWelcomeTitleSize, 700, availableWidth)
 	bodyWidth := onboardingBalancedTextWidth(c, onboardingWelcomeDescription, onboardingWelcomeBodySize, 400, availableWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingWelcomeInsetX, 24, onboardingWelcomeInsetX).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Width(availableWidth).AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 					// The mark occupies 224 units of its 256-unit source viewBox.
 					// Keep its visible width independent of the surrounding artwork slot.
