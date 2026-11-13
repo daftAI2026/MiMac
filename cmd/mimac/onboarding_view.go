@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/png"
+	"math"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -16,7 +17,6 @@ const (
 	onboardingBodySize            float32 = 14
 	onboardingCaptionSize         float32 = 12
 	onboardingContentWidth        float32 = 600
-	onboardingWelcomeWidth        float32 = 440
 	onboardingWelcomeIconSize     float32 = 160
 	onboardingWelcomeIconSlotSize float32 = 192
 	onboardingWelcomeTitleSize    float32 = 34
@@ -26,7 +26,32 @@ const (
 	onboardingWelcomeLineHeight   float32 = 20
 	onboardingWelcomeMarkOffsetY  float32 = 4
 	onboardingWelcomeActionsGap   float32 = 22
+	onboardingWelcomeInsetX       float32 = 40
 )
+
+const onboardingWelcomeDescription = "用遥控器控制 Mac，按住语音键，即可开始语音输入。"
+
+// Balance the paragraph using the host's own text measurements. Keep its
+// original height while finding the narrowest width, without storing a second
+// text-layout cache or inserting presentation-specific line breaks.
+func onboardingBalancedTextWidth(c *ui.Context, text string, size float32, weight int, available float32) float32 {
+	span := ui.Span{Text: text, Size: size, Weight: weight}
+	upper, height := c.MeasureText(available, span)
+	if upper <= 0 {
+		return available
+	}
+	lower := float32(0)
+	for upper-lower > 1 {
+		middle := (lower + upper) / 2
+		_, candidateHeight := c.MeasureText(middle, span)
+		if candidateHeight <= height+.5 {
+			upper = middle
+		} else {
+			lower = middle
+		}
+	}
+	return float32(math.Ceil(float64(upper)))
+}
 
 func (s *shell) onboardingView(c *ui.Context) {
 	a := appAppearance(c.Theme().Dark, s.preferencesState.value.TextSize)
@@ -93,10 +118,15 @@ func (s *shell) onboardingView(c *ui.Context) {
 // Welcome is an introduction, outside the three numbered setup steps.
 func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 	a.fonts.body = onboardingWelcomeActionSize
-	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
+	windowWidth, _ := c.Size()
+	availableWidth := windowWidth - 2*onboardingWelcomeInsetX
+	heading := onboardingStepHeading(onboardingStepWelcome)
+	headingWidth := onboardingBalancedTextWidth(c, heading, onboardingWelcomeTitleSize, 700, availableWidth)
+	bodyWidth := onboardingBalancedTextWidth(c, onboardingWelcomeDescription, onboardingWelcomeBodySize, 400, availableWidth)
+	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingWelcomeInsetX, 24, onboardingWelcomeInsetX).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Column(c).Width(onboardingWelcomeWidth).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 					// The mark occupies 224 units of its 256-unit source viewBox.
 					// Keep its visible width independent of the surrounding artwork slot.
@@ -104,9 +134,9 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 						Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingWelcomeMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
 				})
 				ui.Box(c).Height(sectionGap).Shrink(0)
-				ui.Text(c, onboardingStepHeading(onboardingStepWelcome)).FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
-				ui.Box(c).Height(16).Shrink(0)
-				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+				ui.Text(c, heading).Width(headingWidth).FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+				ui.Box(c).Height(12).Shrink(0)
+				ui.Text(c, onboardingWelcomeDescription).Width(bodyWidth).FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 				ui.Box(c).Height(24).Shrink(0)
 				if s.onboardingPrimaryButton(c, a, "继续", true).FontWeight(600).Clicked() {
 					s.moveOnboarding(1)

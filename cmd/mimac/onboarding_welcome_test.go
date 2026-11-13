@@ -89,3 +89,63 @@ func TestOnboardingWelcomeUsesApplicationName(t *testing.T) {
 		}
 	}
 }
+
+func TestOnboardingWelcomeDescriptionUsesNaturalWrapping(t *testing.T) {
+	s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
+	s.onboarding.step = onboardingStepWelcome
+	primeOnboardingTestSymbols(s, nil)
+	v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+	if _, found := v.Find("用遥控器控制 Mac，按住语音键，即可开始语音输入。"); !found {
+		t.Fatal("welcome description must wrap from its available width, without a forced line break")
+	}
+}
+
+func TestOnboardingBalancedTextPreservesHeight(t *testing.T) {
+	for _, sample := range []struct {
+		text  string
+		width float32
+	}{
+		{"简短说明。", 300},
+		{"窗口改变时，文字应自然换行，同时保持原来的行数。", 160},
+		{"Window geometry controls wrapping, while the text keeps its original number of lines.", 260},
+	} {
+		t.Run(sample.text, func(t *testing.T) {
+			ui.NewTester(func(c *ui.Context) {
+				span := ui.Span{Text: sample.text, Size: 15, Weight: 400}
+				_, initialHeight := c.MeasureText(sample.width, span)
+				width := onboardingBalancedTextWidth(c, sample.text, 15, 400, sample.width)
+				_, height := c.MeasureText(width, span)
+				if width > sample.width+1 || height > initialHeight+.5 {
+					t.Fatalf("balanced paragraph changed height or overflowed: width=%g height=%g original=%g", width, height, initialHeight)
+				}
+				if width > 2 {
+					_, narrowerHeight := c.MeasureText(width-2, span)
+					if narrowerHeight <= initialHeight+.5 {
+						t.Fatalf("paragraph retained unnecessary width: %g", width)
+					}
+				}
+				ui.Text(c, sample.text).Width(width).FontSize(15).FontWeight(400)
+			}, 400, 300)
+		})
+	}
+}
+
+func TestOnboardingWelcomeLongApplicationNameFits(t *testing.T) {
+	original := mygo.App.Name()
+	t.Cleanup(func() { mygo.App.SetName(original) })
+	mygo.App.SetName("An Application With A Descriptive Name That Changes Before Release")
+	for _, width := range []int{900, 1304} {
+		s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
+		s.onboarding.step = onboardingStepWelcome
+		primeOnboardingTestSymbols(s, nil)
+		v := ui.NewTester(s.onboardingView, width, 660)
+		heading, found := v.Find(onboardingStepHeading(onboardingStepWelcome))
+		if !found || heading.X < onboardingWelcomeInsetX || heading.X+heading.W > float32(width)-onboardingWelcomeInsetX {
+			t.Fatalf("application name overflowed at width %d: %v", width, heading)
+		}
+		primary, found := v.Find("继续")
+		if !found || primary.Y < heading.Y+heading.H || primary.Y+primary.H > 660-24 {
+			t.Fatalf("wrapped name displaced the primary action at width %d: %v", width, primary)
+		}
+	}
+}
