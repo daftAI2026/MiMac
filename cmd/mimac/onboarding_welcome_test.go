@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"image/png"
 	"math"
 	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	brand "mimac.local/mimac/Assets/Brand"
 )
 
 func TestOnboardingWelcomePreservesExistingProgressNumbers(t *testing.T) {
@@ -65,5 +68,15 @@ func TestOnboardingWelcomeLayout(t *testing.T) {
 				t.Logf("heading=%v primary=%v skip=%v", heading, primary, skip)
 			})
 		}
+	}
+}
+
+func TestOnboardingBrandSupportsRetinaWelcome(t *testing.T) {
+	image, err := png.DecodeConfig(bytes.NewReader(brand.AboutIconPNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Width < int(onboardingWelcomeIconSize*2) || image.Height < int(onboardingWelcomeIconSize*2) {
+		t.Fatalf("brand image %dx%d cannot cover the welcome at 2x", image.Width, image.Height)
 	}
 }
