@@ -50,11 +50,7 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 				if !ok || rect.Y < 48 || rect.Y+rect.H > 620 {
 					t.Fatalf("next action outside content: %v %t", rect, ok)
 				}
-				if step == onboardingStepDevice {
-					if _, found := v.Find("上一步"); found {
-						t.Fatal("first step unexpectedly offers a previous action")
-					}
-				} else if back, found := v.Find("上一步"); !found || back.W != navigationHeight || back.H != navigationHeight {
+				if back, found := v.Find("上一步"); !found || back.W != navigationHeight || back.H != navigationHeight {
 					t.Fatalf("previous action is not the compact round button: %v %t", back, found)
 				}
 				progress, ok := v.Find(onboardingStepPosition(step))

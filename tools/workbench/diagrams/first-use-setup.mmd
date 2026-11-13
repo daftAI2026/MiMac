@@ -5,7 +5,15 @@ flowchart TD
     known -->|是| tray["保留菜单栏启动行为"]
     known -->|否| onboarding
     reopenJourney["菜单：使用引导"] --> onboarding
-    onboarding --> deviceStep["第1步：连接遥控器"]
+    onboarding --> entry{"新用户或显式复看？"}
+    entry -->|是| welcome["欢迎页：品牌、简介、继续与稍后设置"]
+    entry -->|否| savedStep["沿既有0/1/2记录恢复设备、语音或权限页"]
+    savedStep --> deviceStep
+    savedStep --> toolStep
+    savedStep --> permissionStep
+    welcome -->|继续| deviceStep["第1步：连接遥控器"]
+    welcome -->|稍后设置| finish
+    deviceStep -->|上一步| welcome
     deviceStep --> device["只读检测，显示插件连接指引"]
     deviceStep --> toolStep["第2步：准备语音工具"]
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]

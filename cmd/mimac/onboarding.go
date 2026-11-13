@@ -26,7 +26,7 @@ type onboardingRecord struct {
 }
 
 func validOnboardingRecord(record onboardingRecord) bool {
-	return record.Version == onboardingRecordVersion && record.Step >= 0 && record.Step < int(onboardingStepCount) && (!record.Completed || record.Started)
+	return record.Version == onboardingRecordVersion && record.Step >= int(onboardingStepWelcome) && record.Step < int(onboardingStepCount) && (!record.Completed || record.Started)
 }
 
 func readOnboardingRecord(path string) (onboardingRecord, bool, error) {
@@ -92,7 +92,10 @@ func writeOnboardingRecord(path string, record onboardingRecord) error {
 	return os.Rename(file.Name(), path)
 }
 
-type onboardingStep uint8
+type onboardingStep int8
+
+// Saved setup steps retain their original values for existing progress records.
+const onboardingStepWelcome onboardingStep = -1
 
 const (
 	onboardingStepDevice onboardingStep = iota
@@ -102,7 +105,7 @@ const (
 )
 
 func onboardingStepAt(step int) onboardingStep {
-	return onboardingStep(max(0, min(step, int(onboardingStepCount)-1)))
+	return onboardingStep(max(int(onboardingStepWelcome), min(step, int(onboardingStepCount)-1)))
 }
 
 func onboardingAdjacentStep(step onboardingStep, delta int) onboardingStep {
@@ -120,18 +123,18 @@ func onboardingRecordForOpen(record onboardingRecord, exists, automaticFirstRun 
 	if exists || !automaticFirstRun {
 		return record, false
 	}
-	return onboardingRecord{Version: onboardingRecordVersion, Started: true}, true
+	return onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}, true
 }
 
 func onboardingInitialStep(record onboardingRecord, automaticFirstRun bool) onboardingStep {
 	if automaticFirstRun && validOnboardingRecord(record) && record.Started && !record.Completed {
 		return onboardingStepAt(record.Step)
 	}
-	return onboardingStepDevice
+	return onboardingStepWelcome
 }
 
 func onboardingRecordForStep(record onboardingRecord, step onboardingStep, automaticFirstRun bool) (onboardingRecord, bool) {
-	if !automaticFirstRun || !validOnboardingRecord(record) || !record.Started || record.Completed || step >= onboardingStepCount || record.Step == int(step) {
+	if !automaticFirstRun || !validOnboardingRecord(record) || !record.Started || record.Completed || step < onboardingStepWelcome || step >= onboardingStepCount || record.Step == int(step) {
 		return record, false
 	}
 	record.Step = int(step)
@@ -178,7 +181,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 		s.onboarding.window.Focus()
 		return
 	}
-	s.onboarding.step = onboardingStepDevice
+	s.onboarding.step = onboardingStepWelcome
 	s.onboarding.persistProgress = automaticFirstRun
 	s.onboarding.errorText = ""
 	s.onboarding.permissionGuideOpened = false
@@ -187,12 +190,12 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	s.onboarding.recordPath, _ = hostDataPath(onboardingRecordFile)
 	if s.onboarding.recordPath == "" {
 		s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续。"
-		s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true}
+		s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}
 	} else {
 		record, exists, err := readOnboardingRecord(s.onboarding.recordPath)
 		if err != nil {
 			s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续，完成时会尝试重新保存。"
-			s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true}
+			s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}
 		} else {
 			s.onboarding.record, _ = onboardingRecordForOpen(record, exists, automaticFirstRun)
 			if _, needsWrite := onboardingRecordForOpen(record, exists, automaticFirstRun); needsWrite {
@@ -234,7 +237,9 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 			s.releaseSettingsAssets()
 		}
 	})
-	s.detectDevice()
+	if s.onboarding.step != onboardingStepWelcome {
+		s.detectDevice()
+	}
 	if s.onboarding.step == onboardingStepVoice {
 		s.refreshOnboardingVoiceLocations()
 	}
@@ -277,6 +282,9 @@ func (s *shell) moveOnboarding(delta int) {
 		}
 	}
 	s.refreshOnboardingProjection()
+	if step == onboardingStepDevice && s.monitor == nil && !s.deviceReadBusy {
+		s.detectDevice()
+	}
 	if step == onboardingStepVoice {
 		s.refreshOnboardingVoiceLocations()
 	}

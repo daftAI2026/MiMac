@@ -29,7 +29,7 @@ func TestOnboardingUnfinishedStepSurvivesRecordRoundTrip(t *testing.T) {
 	if _, write := onboardingRecordForStep(restored, onboardingStepPermissions, true); write {
 		t.Fatal("unchanged step would rewrite progress")
 	}
-	if onboardingInitialStep(restored, false) != onboardingStepDevice {
+	if onboardingInitialStep(restored, false) != onboardingStepWelcome {
 		t.Fatal("explicit review did not start at its first page")
 	}
 }
@@ -49,7 +49,7 @@ func TestOnboardingReviewPreservesCompletedMarker(t *testing.T) {
 }
 
 func TestOnboardingInvalidStepIsNotPersisted(t *testing.T) {
-	for _, step := range []int{-1, int(onboardingStepCount), 99} {
+	for _, step := range []int{-2, int(onboardingStepCount), 99} {
 		if validOnboardingRecord(onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: step}) {
 			t.Fatalf("invalid step accepted: %d", step)
 		}

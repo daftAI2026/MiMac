@@ -26,7 +26,7 @@ Before handing off a Beta, run the native first-install query gate (`MIMAC_APPIN
 
 ## Inspect first-use UI
 
-Use the isolated Dev bundle with `--show-onboarding` to reopen the three-step guide. Explicit display does not reset or create the saved first-use marker; the final action records completion. An unfinished automatic first run resumes even if tool settings were saved during the guide. Existing installations without a marker keep their normal launch behavior. `--show-settings` remains the explicit settings-only diagnostic entry.
+Use the isolated Dev bundle with `--show-onboarding` to reopen the welcome page followed by the three-step guide. Explicit display does not reset or create the saved first-use marker; the final action records completion. An unfinished automatic first run resumes even if tool settings were saved during the guide. Existing installations without a marker keep their normal launch behavior. `--show-settings` remains the explicit settings-only diagnostic entry.
 
 Opening or navigating the guide does not enable a remote or begin recording. Choosing a voice tool uses the existing plugin and Current selection action; downloading its model or opening its download page is explicit. UI verification can navigate pages without choosing a tool, changing system input sources, or acquiring shared hardware.
 

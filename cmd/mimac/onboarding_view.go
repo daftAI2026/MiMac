@@ -12,10 +12,14 @@ import (
 )
 
 const (
-	onboardingTitleSize    float32 = 26
-	onboardingBodySize     float32 = 14
-	onboardingCaptionSize  float32 = 12
-	onboardingContentWidth float32 = 600
+	onboardingTitleSize        float32 = 26
+	onboardingBodySize         float32 = 14
+	onboardingCaptionSize      float32 = 12
+	onboardingContentWidth     float32 = 600
+	onboardingWelcomeWidth     float32 = 440
+	onboardingWelcomeIconSize  float32 = 160
+	onboardingWelcomeTitleSize float32 = 32
+	onboardingWelcomeBodySize  float32 = 16
 )
 
 func (s *shell) onboardingView(c *ui.Context) {
@@ -26,6 +30,10 @@ func (s *shell) onboardingView(c *ui.Context) {
 		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
 			s.appIcon = ui.NewBitmap(img)
 		}
+	}
+	if s.onboarding.step == onboardingStepWelcome {
+		s.onboardingWelcomeView(c, a)
+		return
 	}
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
@@ -50,7 +58,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
-					if s.onboarding.step > onboardingStepDevice {
+					if s.onboarding.step > onboardingStepWelcome {
 						if s.onboardingBackButton(c, a).Clicked() {
 							s.moveOnboarding(-1)
 						}
@@ -70,6 +78,37 @@ func (s *shell) onboardingView(c *ui.Context) {
 			})
 		})
 		ui.Text(c, onboardingStepPosition(s.onboarding.step)).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+	})
+}
+
+// Welcome is an introduction, outside the three numbered setup steps.
+func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
+	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
+		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
+		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			ui.Column(c).Width(onboardingWelcomeWidth).AlignItems(ui.Center).Children(func() {
+				if s.appIcon != nil {
+					ui.Image(c, s.appIcon).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).Fit(ui.Contain)
+				}
+				ui.Box(c).Height(32).Shrink(0)
+				ui.Text(c, "欢迎使用 MiMac").FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+				ui.Box(c).Height(16).Shrink(0)
+				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+				ui.Box(c).Height(24).Shrink(0)
+				if s.onboardingPrimaryButton(c, a, "继续", true).Clicked() {
+					s.moveOnboarding(1)
+				}
+				ui.Box(c).Height(20).Shrink(0)
+				if ui.ButtonBase(c).Key("onboarding-skip").Label("稍后设置").Padding(0, spaceSM).Height(24).Cursor(ui.CursorPointer).Children(func() {
+					ui.Text(c, "稍后设置").FontSize(onboardingBodySize).TextColor(a.theme.TextMuted)
+				}).Clicked() {
+					s.finishOnboarding()
+				}
+				if s.onboarding.errorText != "" {
+					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+				}
+			})
+		})
 	})
 }
 
@@ -120,6 +159,8 @@ func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label strin
 
 func onboardingStepHeading(step onboardingStep) string {
 	switch step {
+	case onboardingStepWelcome:
+		return "欢迎使用 MiMac"
 	case onboardingStepVoice:
 		return "准备语音工具"
 	case onboardingStepPermissions:
@@ -140,6 +181,8 @@ func onboardingStepSubheading(step onboardingStep) string {
 }
 func onboardingStepPosition(step onboardingStep) string {
 	switch step {
+	case onboardingStepWelcome:
+		return ""
 	case onboardingStepVoice:
 		return "2 / 3"
 	case onboardingStepPermissions:

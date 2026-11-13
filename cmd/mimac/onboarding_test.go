@@ -86,7 +86,7 @@ func TestOnboardingRecordForOpenOnlyPersistsAutomaticFirstRun(t *testing.T) {
 	if got, write := onboardingRecordForOpen(onboardingRecord{}, false, false); write || got != (onboardingRecord{}) {
 		t.Fatalf("explicit diagnostic created marker: %+v write=%t", got, write)
 	}
-	wantStarted := onboardingRecord{Version: onboardingRecordVersion, Started: true}
+	wantStarted := onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}
 	if got, write := onboardingRecordForOpen(onboardingRecord{}, false, true); !write || got != wantStarted {
 		t.Fatalf("automatic first run = %+v write=%t, want %+v and a write", got, write, wantStarted)
 	}
@@ -97,7 +97,7 @@ func TestOnboardingRecordForOpenOnlyPersistsAutomaticFirstRun(t *testing.T) {
 }
 
 func TestOnboardingAdjacentStepClampsAtEnds(t *testing.T) {
-	if got := onboardingAdjacentStep(onboardingStepDevice, -1); got != onboardingStepDevice {
+	if got := onboardingAdjacentStep(onboardingStepWelcome, -1); got != onboardingStepWelcome {
 		t.Fatalf("previous from first step = %d", got)
 	}
 	if got := onboardingAdjacentStep(onboardingStepPermissions, 1); got != onboardingStepPermissions {
