@@ -24,6 +24,8 @@ const (
 	onboardingWelcomeActionSize   float32 = 16
 	onboardingWelcomeCaptionSize  float32 = 13
 	onboardingWelcomeLineHeight   float32 = 20
+	onboardingWelcomeMarkOffsetY  float32 = 4
+	onboardingWelcomeActionsGap   float32 = 22
 )
 
 func (s *shell) onboardingView(c *ui.Context) {
@@ -99,9 +101,9 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 					// The mark occupies 224 units of its 256-unit source viewBox.
 					// Keep its visible width independent of the surrounding artwork slot.
 					ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
-						Scale(256.0/224.0, 256.0/224.0).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
+						Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingWelcomeMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
 				})
-				ui.Box(c).Height(spaceLG).Shrink(0)
+				ui.Box(c).Height(sectionGap).Shrink(0)
 				ui.Text(c, onboardingStepHeading(onboardingStepWelcome)).FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
 				ui.Box(c).Height(16).Shrink(0)
 				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
@@ -109,8 +111,8 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 				if s.onboardingPrimaryButton(c, a, "继续", true).FontWeight(600).Clicked() {
 					s.moveOnboarding(1)
 				}
-				ui.Box(c).Height(20).Shrink(0)
-				if ui.ButtonBase(c).Key("onboarding-skip").Label("稍后设置").Padding(0, spaceSM).Height(24).Cursor(ui.CursorPointer).Children(func() {
+				ui.Box(c).Height(onboardingWelcomeActionsGap).Shrink(0)
+				if ui.ButtonBase(c).Key("onboarding-skip").Label("稍后设置").Padding(0, spaceSM).Cursor(ui.CursorPointer).Children(func() {
 					ui.Text(c, "稍后设置").FontSize(onboardingWelcomeCaptionSize).FontWeight(400).LetterSpacing(0).TextColor(a.theme.TextMuted)
 				}).Clicked() {
 					s.finishOnboarding()
