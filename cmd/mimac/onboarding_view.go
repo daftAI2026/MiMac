@@ -12,28 +12,34 @@ import (
 )
 
 const (
-	onboardingTitleSize        float32 = 26
-	onboardingBodySize         float32 = 14
-	onboardingCaptionSize      float32 = 12
-	onboardingContentWidth     float32 = 600
-	onboardingWelcomeWidth     float32 = 440
-	onboardingWelcomeIconSize  float32 = 160
-	onboardingWelcomeTitleSize float32 = 32
-	onboardingWelcomeBodySize  float32 = 16
+	onboardingTitleSize          float32 = 26
+	onboardingBodySize           float32 = 14
+	onboardingCaptionSize        float32 = 12
+	onboardingContentWidth       float32 = 600
+	onboardingWelcomeWidth       float32 = 440
+	onboardingWelcomeIconSize    float32 = 160
+	onboardingWelcomeTitleSize   float32 = 34
+	onboardingWelcomeBodySize    float32 = 15
+	onboardingWelcomeActionSize  float32 = 16
+	onboardingWelcomeCaptionSize float32 = 13
+	onboardingWelcomeLineHeight  float32 = 20
 )
 
 func (s *shell) onboardingView(c *ui.Context) {
 	a := appAppearance(c.Theme().Dark, s.preferencesState.value.TextSize)
 	a.fonts = fontSizes{caption: onboardingCaptionSize, body: onboardingBodySize, title: onboardingTitleSize}
 	c.SetTheme(&a.theme)
+	if s.onboarding.step == onboardingStepWelcome {
+		if s.brandMark == nil {
+			s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
+		}
+		s.onboardingWelcomeView(c, a)
+		return
+	}
 	if s.appIcon == nil {
 		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
 			s.appIcon = ui.NewBitmap(img)
 		}
-	}
-	if s.onboarding.step == onboardingStepWelcome {
-		s.onboardingWelcomeView(c, a)
-		return
 	}
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
@@ -83,29 +89,31 @@ func (s *shell) onboardingView(c *ui.Context) {
 
 // Welcome is an introduction, outside the three numbered setup steps.
 func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
+	a.fonts.body = onboardingWelcomeActionSize
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(onboardingWelcomeWidth).AlignItems(ui.Center).Children(func() {
-				if s.appIcon != nil {
-					ui.Image(c, s.appIcon).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).Fit(ui.Contain)
-				}
+				// The mark occupies 224 units of its 256-unit source viewBox.
+				// Keep its visible width at the hero size without changing the shared artwork.
+				ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
+					Scale(256.0/224.0, 256.0/224.0).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
 				ui.Box(c).Height(32).Shrink(0)
-				ui.Text(c, "欢迎使用 MiMac").FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+				ui.Text(c, onboardingStepHeading(onboardingStepWelcome)).FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
 				ui.Box(c).Height(16).Shrink(0)
-				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 				ui.Box(c).Height(24).Shrink(0)
-				if s.onboardingPrimaryButton(c, a, "继续", true).Clicked() {
+				if s.onboardingPrimaryButton(c, a, "继续", true).FontWeight(600).Clicked() {
 					s.moveOnboarding(1)
 				}
 				ui.Box(c).Height(20).Shrink(0)
 				if ui.ButtonBase(c).Key("onboarding-skip").Label("稍后设置").Padding(0, spaceSM).Height(24).Cursor(ui.CursorPointer).Children(func() {
-					ui.Text(c, "稍后设置").FontSize(onboardingBodySize).TextColor(a.theme.TextMuted)
+					ui.Text(c, "稍后设置").FontSize(onboardingWelcomeCaptionSize).FontWeight(400).LetterSpacing(0).TextColor(a.theme.TextMuted)
 				}).Clicked() {
 					s.finishOnboarding()
 				}
 				if s.onboarding.errorText != "" {
-					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingWelcomeCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
 			})
 		})
@@ -160,7 +168,7 @@ func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label strin
 func onboardingStepHeading(step onboardingStep) string {
 	switch step {
 	case onboardingStepWelcome:
-		return "欢迎使用 MiMac"
+		return "欢迎使用 " + mygo.App.Name()
 	case onboardingStepVoice:
 		return "准备语音工具"
 	case onboardingStepPermissions:

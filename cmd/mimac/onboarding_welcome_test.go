@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"image/png"
 	"math"
 	"path/filepath"
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	brand "mimac.local/mimac/Assets/Brand"
 )
 
 func TestOnboardingWelcomePreservesExistingProgressNumbers(t *testing.T) {
@@ -48,7 +46,7 @@ func TestOnboardingWelcomeLayout(t *testing.T) {
 				primeOnboardingTestSymbols(s, nil)
 				v := ui.NewTester(s.onboardingView, int(size[0]), int(size[1]))
 				v.SetDark(dark)
-				heading, found := v.Find("欢迎使用 MiMac")
+				heading, found := v.Find(onboardingStepHeading(onboardingStepWelcome))
 				if !found || math.Abs(float64(heading.X+heading.W/2-size[0]/2)) > 1 {
 					t.Fatalf("welcome heading not centered: %v %t", heading, found)
 				}
@@ -71,12 +69,23 @@ func TestOnboardingWelcomeLayout(t *testing.T) {
 	}
 }
 
-func TestOnboardingBrandSupportsRetinaWelcome(t *testing.T) {
-	image, err := png.DecodeConfig(bytes.NewReader(brand.AboutIconPNG))
-	if err != nil {
-		t.Fatal(err)
+func TestOnboardingWelcomeUsesVectorBrand(t *testing.T) {
+	s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
+	s.onboarding.step = onboardingStepWelcome
+	primeOnboardingTestSymbols(s, nil)
+	ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+	if s.brandMark == nil || s.appIcon != nil {
+		t.Fatal("welcome must draw the original vector without decoding the application icon")
 	}
-	if image.Width < int(onboardingWelcomeIconSize*2) || image.Height < int(onboardingWelcomeIconSize*2) {
-		t.Fatalf("brand image %dx%d cannot cover the welcome at 2x", image.Width, image.Height)
+}
+
+func TestOnboardingWelcomeUsesApplicationName(t *testing.T) {
+	original := mygo.App.Name()
+	t.Cleanup(func() { mygo.App.SetName(original) })
+	for _, name := range []string{"MiMac Dev", "Example"} {
+		mygo.App.SetName(name)
+		if got := onboardingStepHeading(onboardingStepWelcome); got != "欢迎使用 "+name {
+			t.Fatalf("welcome kept a hardcoded name: %q", got)
+		}
 	}
 }
