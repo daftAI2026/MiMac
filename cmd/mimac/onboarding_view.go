@@ -12,17 +12,18 @@ import (
 )
 
 const (
-	onboardingTitleSize          float32 = 26
-	onboardingBodySize           float32 = 14
-	onboardingCaptionSize        float32 = 12
-	onboardingContentWidth       float32 = 600
-	onboardingWelcomeWidth       float32 = 440
-	onboardingWelcomeIconSize    float32 = 160
-	onboardingWelcomeTitleSize   float32 = 34
-	onboardingWelcomeBodySize    float32 = 15
-	onboardingWelcomeActionSize  float32 = 16
-	onboardingWelcomeCaptionSize float32 = 13
-	onboardingWelcomeLineHeight  float32 = 20
+	onboardingTitleSize           float32 = 26
+	onboardingBodySize            float32 = 14
+	onboardingCaptionSize         float32 = 12
+	onboardingContentWidth        float32 = 600
+	onboardingWelcomeWidth        float32 = 440
+	onboardingWelcomeIconSize     float32 = 160
+	onboardingWelcomeIconSlotSize float32 = 192
+	onboardingWelcomeTitleSize    float32 = 34
+	onboardingWelcomeBodySize     float32 = 15
+	onboardingWelcomeActionSize   float32 = 16
+	onboardingWelcomeCaptionSize  float32 = 13
+	onboardingWelcomeLineHeight   float32 = 20
 )
 
 func (s *shell) onboardingView(c *ui.Context) {
@@ -94,11 +95,13 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(onboardingWelcomeWidth).AlignItems(ui.Center).Children(func() {
-				// The mark occupies 224 units of its 256-unit source viewBox.
-				// Keep its visible width at the hero size without changing the shared artwork.
-				ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
-					Scale(256.0/224.0, 256.0/224.0).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
-				ui.Box(c).Height(32).Shrink(0)
+				ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+					// The mark occupies 224 units of its 256-unit source viewBox.
+					// Keep its visible width independent of the surrounding artwork slot.
+					ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
+						Scale(256.0/224.0, 256.0/224.0).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
+				})
+				ui.Box(c).Height(spaceLG).Shrink(0)
 				ui.Text(c, onboardingStepHeading(onboardingStepWelcome)).FillWidth().FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
 				ui.Box(c).Height(16).Shrink(0)
 				ui.Text(c, "用遥控器控制 Mac，\n按住语音键，即可开始语音输入。").FillWidth().FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
