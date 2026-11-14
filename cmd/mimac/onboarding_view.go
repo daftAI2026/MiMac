@@ -66,14 +66,17 @@ func (s *shell) onboardingView(c *ui.Context) {
 		s.onboardingWelcomeView(c, a)
 		return
 	}
+	if s.onboarding.step == onboardingStepCompletion {
+		if s.onboarding.completionIcon == nil && s.brandMark == nil {
+			s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
+		}
+		s.onboardingCompletionView(c, a)
+		return
+	}
 	if s.appIcon == nil {
 		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
 			s.appIcon = ui.NewBitmap(img)
 		}
-	}
-	if s.onboarding.step == onboardingStepCompletion {
-		s.onboardingCompletionView(c, a)
-		return
 	}
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)

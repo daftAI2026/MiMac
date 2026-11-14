@@ -7,10 +7,10 @@ import (
 )
 
 const (
-	onboardingCompletionIconSlot float32 = 128
-	onboardingCompletionIconSize float32 = 104
-	onboardingCompletionWidth    float32 = 400
-	onboardingCompletionBadge    float32 = 36
+	onboardingCompletionIconSlot    float32 = 128
+	onboardingCompletionWidth       float32 = 400
+	onboardingCompletionBadge       float32 = onboardingCompletionIconSlot * .3125
+	onboardingCompletionBadgeOffset float32 = onboardingCompletionIconSlot*.9859375 - onboardingCompletionBadge
 )
 
 type onboardingCompletionHint struct {
@@ -104,10 +104,12 @@ func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
 	entrance, badge := onboardingCompletionMotion(c, artwork)
 	artwork.Scale(1+.4*(1-entrance), 1+.4*(1-entrance)).Rotate(-12 * (1 - entrance)).Opacity(max(0, min(1, entrance)))
 	artwork.Children(func() {
-		if s.appIcon != nil {
-			inset := (onboardingCompletionIconSlot - onboardingCompletionIconSize) / 2
-			ui.Image(c, s.appIcon).Absolute().Left(inset).Top(inset).Size(onboardingCompletionIconSize, onboardingCompletionIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
-				DrawOver(func(p *ui.Painter, r ui.Rect) { p.Stroke(r, a.theme.Border, r.W/4, lineWidth) })
+		if s.onboarding.completionIcon != nil {
+			ui.Image(c, s.onboarding.completionIcon).Size(onboardingCompletionIconSlot, onboardingCompletionIconSlot).Fit(ui.Contain).Label(mygo.App.Name() + " Logo")
+		} else if s.brandMark != nil {
+			ui.Box(c).Fill().Center().Children(func() {
+				ui.Icon(c, s.brandMark).Size(104, 104).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
+			})
 		}
 		index := 0
 		if a.theme.Dark {
@@ -117,13 +119,32 @@ func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
 		if color.A == 0 {
 			color = a.theme.Success
 		}
-		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge/2).Background(color).Center().Scale(badge, badge).Opacity(max(0, min(1, badge))).Children(func() {
-			key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 24, tint: ui.RGB(255, 255, 255)}
+		ui.Box(c).Absolute().Left(onboardingCompletionBadgeOffset).Top(onboardingCompletionBadgeOffset).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge/2).Background(color).Center().Scale(badge, badge).Opacity(max(0, min(1, badge))).Children(func() {
+			key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 28, tint: ui.RGB(255, 255, 255)}
 			if icon := s.navigationSymbols[key]; icon != nil {
-				ui.Image(c, icon).Size(24, 24).Fit(ui.Contain).Role(ui.RoleNone)
+				ui.Image(c, icon).Size(28, 28).Fit(ui.Contain).Role(ui.RoleNone)
 			} else {
-				ui.Text(c, "✓").FontSize(24).TextColor(ui.RGB(255, 255, 255)).Role(ui.RoleNone)
+				ui.Text(c, "✓").FontSize(28).TextColor(ui.RGB(255, 255, 255)).Role(ui.RoleNone)
 			}
 		})
 	})
+}
+
+// Resolve the large artwork through the current verified bundle. The smaller
+// about-page bitmap is intentionally not enlarged for this surface.
+func (s *shell) prepareOnboardingCompletionArtwork() {
+	if s.onboarding.completionIcon != nil {
+		return
+	}
+	bundle := s.permissionGuideAppBundlePath()
+	if bundle == "" {
+		return
+	}
+	data, err := mygo.Shell.FileIcon(bundle, int(onboardingCompletionIconSlot*2))
+	if err != nil {
+		return
+	}
+	if bitmap, err := ui.DecodeBitmap(data); err == nil {
+		s.onboarding.completionIcon = bitmap
+	}
 }

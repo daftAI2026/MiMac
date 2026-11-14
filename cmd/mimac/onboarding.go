@@ -144,6 +144,7 @@ func onboardingRecordForStep(record onboardingRecord, step onboardingStep, autom
 
 type onboardingState struct {
 	window                 *mygo.Window
+	completionIcon         *ui.Bitmap
 	step                   onboardingStep
 	record                 onboardingRecord
 	recordPath             string
@@ -230,6 +231,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 			return
 		}
 		s.stopOnboardingVoiceLocations()
+		s.onboarding.completionIcon = nil
 		s.onboarding.window = nil
 		if s.onboarding.permissionGuideOpened {
 			s.onboarding.permissionGuideOpened = false
@@ -243,12 +245,15 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 }
 
 func (s *shell) prepareOnboardingPresentation() {
+	if s.onboarding.step == onboardingStepCompletion {
+		s.prepareOnboardingCompletionArtwork()
+	}
 	s.preparePermissionGuideGrantedStyles()
 	for _, dark := range []bool{false, true} {
 		a := appAppearance(dark, s.preferencesState.value.TextSize)
 		s.symbolBitmap(symbolKey{name: "arrow.left", dark: dark, size: settingsIconSize, tint: a.theme.Text})
 		s.symbolBitmap(symbolKey{name: "arrow.right", dark: dark, size: settingsIconSize, tint: a.theme.Background})
-		s.symbolBitmap(symbolKey{name: "checkmark", dark: dark, size: 24, tint: ui.RGB(255, 255, 255)})
+		s.symbolBitmap(symbolKey{name: "checkmark", dark: dark, size: 28, tint: ui.RGB(255, 255, 255)})
 	}
 }
 
@@ -275,6 +280,9 @@ func (s *shell) moveOnboarding(delta int) {
 		s.closePermissionGuide()
 	}
 	s.onboarding.step = step
+	if step == onboardingStepCompletion {
+		s.prepareOnboardingPresentation()
+	}
 	s.onboarding.errorText = ""
 	if next, needsWrite := onboardingRecordForStep(s.onboarding.record, step, s.onboarding.persistProgress); needsWrite {
 		if err := writeOnboardingRecord(s.onboarding.recordPath, next); err != nil {
