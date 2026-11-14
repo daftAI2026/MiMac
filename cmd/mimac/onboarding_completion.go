@@ -68,7 +68,7 @@ func (s *shell) onboardingCompletionView(c *ui.Context, a appearance) {
 				ui.Box(c).Height(onboardingContentGap).Shrink(0)
 				if hints := s.onboardingCompletionHints(); len(hints) > 0 {
 					ui.Column(c).Width(min(width, onboardingCompletionWidth)).Children(func() {
-						settingsGroup(c, a, func() {
+						onboardingGroup(c, a, func() {
 							for index, hint := range hints {
 								if index > 0 {
 									sectionLine(c, a)

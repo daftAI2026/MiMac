@@ -145,6 +145,7 @@ func onboardingRecordForStep(record onboardingRecord, step onboardingStep, autom
 type onboardingState struct {
 	window                 *mygo.Window
 	completionIcon         *ui.Bitmap
+	permissionIcon         *ui.Bitmap
 	step                   onboardingStep
 	record                 onboardingRecord
 	recordPath             string
@@ -232,6 +233,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 		}
 		s.stopOnboardingVoiceLocations()
 		s.onboarding.completionIcon = nil
+		s.onboarding.permissionIcon = nil
 		s.onboarding.window = nil
 		if s.onboarding.permissionGuideOpened {
 			s.onboarding.permissionGuideOpened = false
@@ -248,11 +250,15 @@ func (s *shell) prepareOnboardingPresentation() {
 	if s.onboarding.step == onboardingStepCompletion {
 		s.prepareOnboardingCompletionArtwork()
 	}
+	if s.onboarding.step == onboardingStepPermissions {
+		s.prepareOnboardingPermissionsArtwork()
+	}
 	s.preparePermissionGuideGrantedStyles()
 	for _, dark := range []bool{false, true} {
 		a := appAppearance(dark, s.preferencesState.value.TextSize)
 		if s.onboarding.step == onboardingStepPermissions {
 			s.symbolBitmap(symbolKey{name: "hand.raised.fill", dark: dark, size: onboardingPermissionIconSize, tint: a.theme.Background})
+			s.symbolBitmap(symbolKey{name: "checkmark", dark: dark, size: 10, tint: ui.RGB(255, 255, 255)})
 		}
 		s.symbolBitmap(symbolKey{name: "arrow.left", dark: dark, size: settingsIconSize, tint: a.theme.Text})
 		s.symbolBitmap(symbolKey{name: "arrow.right", dark: dark, size: settingsIconSize, tint: a.theme.Background})

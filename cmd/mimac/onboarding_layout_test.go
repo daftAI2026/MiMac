@@ -114,7 +114,7 @@ func TestSummarizeOnboardingPermissionsOnlyCountsGrantedRows(t *testing.T) {
 		wantLabel string
 	}{
 		{name: "empty"},
-		{name: "all granted", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideGranted}, wantCount: 2, wantTotal: 2, wantAll: true},
+		{name: "all granted", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideGranted}, wantCount: 2, wantTotal: 2, wantAll: true, wantLabel: "全部已授权"},
 		{name: "partial with unknown and denied", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideUnknown, permissionGuideDenied}, wantCount: 1, wantTotal: 3, wantLabel: "已授权 1/3"},
 		{name: "restricted is not granted", accesses: []permissionGuideAccess{permissionGuideRestricted}, wantTotal: 1, wantLabel: "尚未授权"},
 		{name: "not determined", accesses: []permissionGuideAccess{permissionGuideNotDetermined}, wantTotal: 1, wantLabel: "尚未授权"},
@@ -141,7 +141,7 @@ func TestOnboardingPermissionSummaryControlsTheExistingGuideAction(t *testing.T)
 		wantGrant      bool
 		wantEmptyState bool
 	}{
-		{name: "all granted", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideGranted}, wantGrant: false},
+		{name: "all granted", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideGranted}, wantSummary: "全部已授权", wantGrant: false},
 		{name: "partial unknown", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideUnknown}, wantSummary: "已授权 1/2", wantGrant: true},
 		{name: "empty", wantEmptyState: true},
 	}
@@ -191,6 +191,83 @@ func primeOnboardingTestSymbols(s *shell, rows []permissionGuideRow) {
 		s.navigationSymbols[symbolKey{name: "arrow.right", dark: dark, size: settingsIconSize, tint: theme.Background}] = nil
 		for _, row := range rows {
 			s.navigationSymbols[symbolKey{name: row.icon, dark: dark, size: 20}] = nil
+		}
+	}
+}
+
+func TestOnboardingPermissionProgressKeepsTheCardAndNavigationStable(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
+		s.onboarding.step = onboardingStepPermissions
+		for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
+			row := permissionGuideRowFor(id)
+			row.access = permissionGuideNotDetermined
+			s.onboarding.permissionSnapshot.rows = append(s.onboarding.permissionSnapshot.rows, row)
+		}
+		primeOnboardingTestSymbols(s, s.onboarding.permissionSnapshot.rows)
+		// Optional evidence uses a bitmap supplied by the caller. Native API
+		// calls stay outside this renderer and its missing event loop.
+		if path := os.Getenv("MIMAC_ONBOARDING_PERMISSION_ICON"); path != "" {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			icon, err := ui.DecodeBitmap(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.onboarding.permissionIcon = icon
+		}
+		foreground := ui.Hex("#008a22")
+		s.grantedStyles = [2]permissionGuideGrantedStyle{{color: foreground, fill: foreground.Alpha(.08)}, {color: foreground, fill: foreground.Alpha(.08)}}
+		v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+		v.SetDark(dark)
+		card, ok := v.Find("系统权限摘要")
+		if !ok {
+			t.Fatal("permission card missing")
+		}
+		next, ok := v.Find("继续")
+		if !ok {
+			t.Fatal("continue action missing")
+		}
+		for granted := 0; granted <= 2; granted++ {
+			if granted > 0 {
+				s.onboarding.permissionSnapshot.rows[granted-1].access = permissionGuideGranted
+			}
+			v.Frame()
+			if r, ok := v.Find("系统权限摘要"); !ok || r != card {
+				t.Fatalf("permission progress moved the card: %v -> %v", card, r)
+			}
+			if r, ok := v.Find("继续"); !ok || r != next {
+				t.Fatalf("permission progress moved navigation: %v -> %v", next, r)
+			}
+			_, grant := v.Find("授权…")
+			_, done := v.Find("已授权")
+			if grant != (granted < 2) || done != (granted == 2) {
+				t.Fatalf("grant action / completion feedback mismatch at %d: %v %v", granted, grant, done)
+			}
+			if granted == 2 {
+				if _, found := v.Find("全部已授权"); !found {
+					t.Fatal("all-granted summary missing")
+				}
+			}
+			if out := os.Getenv("MIMAC_ONBOARDING_UI_EVIDENCE"); out != "" {
+				if err := os.MkdirAll(out, 0700); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(out, fmt.Sprintf("permission-progress-dark%t-granted%d.png", dark, granted))
+				f, err := os.Create(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := png.Encode(f, v.Image()); err != nil {
+					f.Close()
+					t.Fatal(err)
+				}
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 }

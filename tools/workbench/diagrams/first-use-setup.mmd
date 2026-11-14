@@ -61,6 +61,7 @@ flowchart TD
     guideRefresh -->|实际状态为已授权| grantedFeedback
     guideRefresh --> sharedSetup["同一授权快照推送首启权限页，变化时才重绘，不新增轮询"]
     sharedSetup --> permissionGuide
+    sharedSetup -.-> permissionSummary["权限主卡：中性总状态；全部获准后显示图标完成角标与绿色已授权，替换授权入口"]
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
     permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意与拖动遮罩窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]

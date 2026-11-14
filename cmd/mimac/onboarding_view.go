@@ -273,7 +273,7 @@ func onboardingStepPosition(step onboardingStep) string {
 func (s *shell) onboardingDeviceStep(c *ui.Context, a appearance) {
 	profile := s.activeProfile()
 	ui.Column(c).FillWidth().Gap(spaceMD).Children(func() {
-		settingsGroup(c, a, func() {
+		onboardingGroup(c, a, func() {
 			ui.Row(c).FillWidth().MinHeight(64).Padding(spaceSM, spaceMD).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Gap(spaceXS).Children(func() {
 					ui.Text(c, profile.Name).FontSize(onboardingBodySize).FontWeight(600)
@@ -331,7 +331,7 @@ func (s *shell) onboardingVoiceStep(c *ui.Context, a appearance) {
 func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceTool) {
 	selected := tool.id == s.currentVoiceTool
 	status, canSelect, installState := s.onboardingVoiceToolStatus(tool)
-	settingsGroup(c, a, func() {
+	onboardingGroup(c, a, func() {
 		ui.Row(c).Key("onboarding-tool/"+tool.id).FillWidth().MinWidth(0).MinHeight(58).Padding(spaceSM, spaceMD).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
 			s.voiceToolArtwork(c, a, tool)
 			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(spaceXS).Children(func() {
@@ -461,27 +461,16 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 	}
 	ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
 		ui.Column(c).Width(onboardingPermissionTileWidth).MinWidth(0).Role(ui.RoleGroup).Label("系统权限摘要").Children(func() {
-			settingsGroup(c, a, func() {
+			onboardingGroup(c, a, func() {
 				ui.Column(c).FillWidth().Padding(24, 10).AlignItems(ui.Center).Children(func() {
-					ui.Box(c).Size(48, 48).Center().Children(func() {
-						ui.Box(c).Size(42, 42).Background(a.theme.Text).Radius(10).Center().Children(func() {
-							key := symbolKey{name: "hand.raised.fill", dark: a.theme.Dark, size: onboardingPermissionIconSize, tint: a.theme.Background}
-							if icon := s.navigationSymbols[key]; icon != nil {
-								ui.Image(c, icon).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Fit(ui.Contain)
-							}
-						})
-					})
+					s.onboardingPermissionsIcon(c, a, summary.allGranted())
 					ui.Box(c).Height(spaceSM).Shrink(0)
 					ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(2).Children(func() {
 						ui.Text(c, "系统权限").FillWidth().FontSize(onboardingBodySize).FontWeight(600).TextAlign(ui.Center)
 						ui.Box(c).FillWidth().Height(24).Center().Children(func() {
-							if summary.allGranted() {
-								s.permissionGuideGrantedBadge(c, a)
-							} else {
-								ui.Row(c).Height(18).Padding(0, 7).AlignItems(ui.Center).Radius(9).Border(lineWidth, a.theme.Border).Children(func() {
-									ui.Text(c, summary.label()).SingleLine().FontSize(12).FontWeight(600).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
-								})
-							}
+							ui.Row(c).Height(18).Padding(0, 7).AlignItems(ui.Center).Radius(9).Background(a.theme.Surface).Border(lineWidth, a.theme.Border).Children(func() {
+								ui.Text(c, summary.label()).SingleLine().FontSize(12).FontWeight(600).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+							})
 						})
 					})
 					ui.Box(c).Height(spaceSM).Shrink(0)
@@ -490,7 +479,9 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 					ui.Text(c, description).Width(width).FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 					ui.Box(c).Height(24).Shrink(0)
 					ui.Box(c).FillWidth().Height(controlHeight).Center().Children(func() {
-						if !summary.allGranted() {
+						if summary.allGranted() {
+							s.permissionGuideGrantedBadge(c, a)
+						} else {
 							button := styleAppButton(ui.ButtonBase(c).Label("授权…"), a, false).Radius(controlHeight / 2)
 							button.Children(func() { ui.Text(c, "授权…").FontSize(onboardingCaptionSize) })
 							if button.Clicked() {
@@ -524,8 +515,11 @@ func (s onboardingPermissionSummary) allGranted() bool {
 }
 
 func (s onboardingPermissionSummary) label() string {
-	if s.total == 0 || s.allGranted() {
+	if s.total == 0 {
 		return ""
+	}
+	if s.allGranted() {
+		return "全部已授权"
 	}
 	if s.granted == 0 {
 		return "尚未授权"
