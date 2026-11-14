@@ -69,13 +69,23 @@ func TestOnboardingWelcomeLayout(t *testing.T) {
 	}
 }
 
-func TestOnboardingWelcomeUsesVectorBrand(t *testing.T) {
-	s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
-	s.onboarding.step = onboardingStepWelcome
-	primeOnboardingTestSymbols(s, nil)
-	ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
-	if s.brandMark == nil || s.appIcon != nil {
-		t.Fatal("welcome must draw the original vector without decoding the application icon")
+func TestOnboardingPagesUseVectorBrand(t *testing.T) {
+	var referenceW, referenceH float32
+	for _, step := range []onboardingStep{onboardingStepWelcome, onboardingStepDevice, onboardingStepVoice, onboardingStepPermissions} {
+		s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
+		s.onboarding.step = step
+		primeOnboardingTestSymbols(s, nil)
+		v := ui.NewTester(s.onboardingView, windowMinWidth, onboardingMinHeight)
+		if s.brandMark == nil || s.appIcon != nil {
+			t.Fatalf("step %d must draw the shared vector without decoding the application icon", step)
+		}
+		mark, found := v.Find(mygo.App.Name() + " Logo")
+		if step == onboardingStepWelcome {
+			referenceW, referenceH = mark.W, mark.H
+		}
+		if !found || referenceW == 0 || math.Abs(float64(mark.W-referenceW)) > .01 || math.Abs(float64(mark.H-referenceH)) > .01 || math.Abs(float64(mark.X+mark.W/2-windowMinWidth/2)) > 1 {
+			t.Fatalf("step %d does not use the common artwork: %v", step, mark)
+		}
 	}
 }
 

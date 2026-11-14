@@ -36,7 +36,7 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 					s.onboarding.permissionSnapshot.rows = append(s.onboarding.permissionSnapshot.rows, row)
 				}
 				primeOnboardingTestSymbols(s, s.onboarding.permissionSnapshot.rows)
-				v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+				v := ui.NewTester(s.onboardingView, windowMinWidth, onboardingMinHeight)
 				v.SetDark(dark)
 				heading, ok := v.Find(onboardingStepHeading(step))
 				if !ok || math.Abs(float64(heading.X+heading.W/2-450)) > 1 {
@@ -51,14 +51,14 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 					next = "开始使用"
 				}
 				rect, ok := v.Find(next)
-				if !ok || rect.Y < 48 || rect.Y+rect.H > 620 {
+				if !ok || rect.Y < 48 || rect.Y+rect.H > onboardingMinHeight-40 {
 					t.Fatalf("next action outside content: %v %t", rect, ok)
 				}
 				if back, found := v.Find("上一步"); !found || back.W != navigationHeight || back.H != navigationHeight {
 					t.Fatalf("previous action is not the compact round button: %v %t", back, found)
 				}
 				progress, ok := v.Find(onboardingStepPosition(step))
-				if !ok || progress.Y+progress.H > 660 {
+				if !ok || progress.Y+progress.H > onboardingMinHeight {
 					t.Fatalf("progress outside window: %v %t", progress, ok)
 				}
 				if step == onboardingStepVoice {
@@ -159,7 +159,7 @@ func TestOnboardingPermissionSummaryControlsTheExistingGuideAction(t *testing.T)
 				s.onboarding.permissionSnapshot.rows = append(s.onboarding.permissionSnapshot.rows, row)
 			}
 			primeOnboardingTestSymbols(s, s.onboarding.permissionSnapshot.rows)
-			v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+			v := ui.NewTester(s.onboardingView, windowMinWidth, onboardingMinHeight)
 			v.SetDark(false)
 			if tt.wantEmptyState {
 				if _, found := v.Find("当前无需额外权限"); !found {

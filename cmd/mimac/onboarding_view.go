@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"image/png"
 	"math"
 
 	"github.com/egoist/mygo"
@@ -13,22 +11,20 @@ import (
 )
 
 const (
-	onboardingTitleSize           float32 = 26
-	onboardingBodySize            float32 = 14
-	onboardingCaptionSize         float32 = 13
-	onboardingContentWidth        float32 = 560
-	onboardingWelcomeIconSize     float32 = 160
-	onboardingWelcomeIconSlotSize float32 = 192
-	onboardingWelcomeTitleSize    float32 = 34
-	onboardingDescriptionSize     float32 = 15
-	onboardingWelcomeActionSize   float32 = 16
-	onboardingLineHeight          float32 = 20
-	onboardingWelcomeMarkOffsetY  float32 = 4
-	onboardingWelcomeActionsGap   float32 = 22
-	onboardingInsetX              float32 = 20
-	onboardingHeadingGap          float32 = 12
-	onboardingContentGap          float32 = 20
-	onboardingActionsTop          float32 = 24
+	onboardingTitleSize         float32 = 34
+	onboardingBodySize          float32 = 15
+	onboardingCaptionSize       float32 = 13
+	onboardingContentWidth      float32 = 560
+	onboardingIconSize          float32 = 160
+	onboardingIconSlotSize      float32 = 192
+	onboardingActionSize        float32 = 16
+	onboardingLineHeight        float32 = 20
+	onboardingMarkOffsetY       float32 = 4
+	onboardingWelcomeActionsGap float32 = 22
+	onboardingInsetX            float32 = 20
+	onboardingHeadingGap        float32 = 12
+	onboardingContentGap        float32 = 20
+	onboardingActionsTop        float32 = 24
 )
 
 const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
@@ -59,17 +55,12 @@ func (s *shell) onboardingView(c *ui.Context) {
 	a := appAppearance(c.Theme().Dark, s.preferencesState.value.TextSize)
 	a.fonts = fontSizes{caption: onboardingCaptionSize, body: onboardingBodySize, title: onboardingTitleSize}
 	c.SetTheme(&a.theme)
+	if s.brandMark == nil {
+		s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
+	}
 	if s.onboarding.step == onboardingStepWelcome {
-		if s.brandMark == nil {
-			s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
-		}
 		s.onboardingWelcomeView(c, a)
 		return
-	}
-	if s.appIcon == nil {
-		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
-			s.appIcon = ui.NewBitmap(img)
-		}
 	}
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
@@ -77,12 +68,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(availableWidth).MinWidth(0).Children(func() {
-				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(onboardingHeadingGap).Children(func() {
-					if s.appIcon != nil {
-						ui.Image(c, s.appIcon).Size(64, 64).Fit(ui.Contain)
-					}
-					onboardingTextHeader(c, a, availableWidth, onboardingTitleSize, onboardingStepHeading(s.onboarding.step), onboardingStepSubheading(s.onboarding.step))
-				})
+				s.onboardingPageHeader(c, a, availableWidth, onboardingStepHeading(s.onboarding.step), onboardingStepSubheading(s.onboarding.step))
 				ui.Box(c).Height(onboardingContentGap).Shrink(0)
 				switch s.onboarding.step {
 				case onboardingStepVoice:
@@ -120,34 +106,39 @@ func (s *shell) onboardingView(c *ui.Context) {
 	})
 }
 
-func onboardingTextHeader(c *ui.Context, a appearance, width, titleSize float32, heading, description string) {
-	headingWidth := onboardingBalancedTextWidth(c, heading, titleSize, 700, width)
-	bodyWidth := onboardingBalancedTextWidth(c, description, onboardingDescriptionSize, 400, width)
+func onboardingTextHeader(c *ui.Context, a appearance, width float32, heading, description string) {
+	headingWidth := onboardingBalancedTextWidth(c, heading, onboardingTitleSize, 700, width)
+	bodyWidth := onboardingBalancedTextWidth(c, description, onboardingBodySize, 400, width)
 	ui.Column(c).Width(width).AlignItems(ui.Center).Gap(onboardingHeadingGap).Children(func() {
-		ui.Text(c, heading).Width(headingWidth).FontSize(titleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
-		ui.Text(c, description).Width(bodyWidth).FontSize(onboardingDescriptionSize).FontWeight(400).FixedLineHeight(onboardingLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+		ui.Text(c, heading).Width(headingWidth).FontSize(onboardingTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+		ui.Text(c, description).Width(bodyWidth).FontSize(onboardingBodySize).FontWeight(400).FixedLineHeight(onboardingLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+	})
+}
+
+func (s *shell) onboardingPageHeader(c *ui.Context, a appearance, width float32, heading, description string) {
+	ui.Column(c).Width(width).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Size(onboardingIconSlotSize, onboardingIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			// The mark occupies 224 units of its 256-unit source viewBox.
+			// Keep its visible width independent of the surrounding artwork slot.
+			ui.Icon(c, s.brandMark).Size(onboardingIconSize, onboardingIconSize).
+				Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
+		})
+		ui.Box(c).Height(sectionGap).Shrink(0)
+		onboardingTextHeader(c, a, width, heading, description)
 	})
 }
 
 // Welcome is an introduction, outside the three numbered setup steps.
 func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
-	a.fonts.body = onboardingWelcomeActionSize
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(availableWidth).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-					// The mark occupies 224 units of its 256-unit source viewBox.
-					// Keep its visible width independent of the surrounding artwork slot.
-					ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
-						Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingWelcomeMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
-				})
-				ui.Box(c).Height(sectionGap).Shrink(0)
-				onboardingTextHeader(c, a, availableWidth, onboardingWelcomeTitleSize, onboardingStepHeading(onboardingStepWelcome), onboardingWelcomeDescription)
+				s.onboardingPageHeader(c, a, availableWidth, onboardingStepHeading(onboardingStepWelcome), onboardingWelcomeDescription)
 				ui.Box(c).Height(onboardingActionsTop).Shrink(0)
-				if s.onboardingPrimaryButton(c, a, "继续", true).FontWeight(600).Clicked() {
+				if s.onboardingPrimaryButton(c, a, "继续", true).Clicked() {
 					s.moveOnboarding(1)
 				}
 				ui.Box(c).Height(onboardingWelcomeActionsGap).Shrink(0)
@@ -179,7 +170,7 @@ func (s *shell) onboardingBackButton(c *ui.Context, a appearance) ui.Element {
 
 func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label string, showArrow bool) ui.Element {
 	button := ui.ButtonBase(c).Key("onboarding-next").Label(label).FocusRing(false).
-		Cursor(ui.CursorPointer).FontWeight(500).Height(navigationHeight).Padding(0, spaceMD).
+		Cursor(ui.CursorPointer).FontWeight(600).Height(navigationHeight).Padding(0, spaceMD).
 		Radius(navigationHeight/2).Background(a.theme.Text).
 		Border(lineWidth, a.theme.Text).TextColor(a.theme.Background)
 	if button.Pressed() {
@@ -196,7 +187,7 @@ func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label strin
 	}
 	button.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
-			ui.Text(c, label).SingleLine().FontSize(a.fonts.body).TextColor(a.theme.Background)
+			ui.Text(c, label).SingleLine().FontSize(onboardingActionSize).TextColor(a.theme.Background)
 			if showArrow {
 				if icon != nil {
 					ui.Image(c, icon).Width(settingsIconSize).Height(settingsIconSize).Fit(ui.Contain)
