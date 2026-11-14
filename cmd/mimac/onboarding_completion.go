@@ -106,8 +106,21 @@ func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
 			ui.Image(c, s.appIcon).Absolute().Left(inset).Top(inset).Size(onboardingCompletionIconSize, onboardingCompletionIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
 				DrawOver(func(p *ui.Painter, r ui.Rect) { p.Stroke(r, a.theme.Border, r.W/4, lineWidth) })
 		}
-		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Center().Children(func() {
-			ui.Text(c, "✅").FontSize(onboardingCompletionBadge).Role(ui.RoleNone)
+		index := 0
+		if a.theme.Dark {
+			index = 1
+		}
+		color := s.grantedStyles[index].color
+		if color.A == 0 {
+			color = a.theme.Success
+		}
+		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge / 2).Background(color).Center().Children(func() {
+			key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 24, tint: ui.RGB(255, 255, 255)}
+			if icon := s.navigationSymbols[key]; icon != nil {
+				ui.Image(c, icon).Size(24, 24).Fit(ui.Contain).Role(ui.RoleNone)
+			} else {
+				ui.Text(c, "✓").FontSize(24).TextColor(ui.RGB(255, 255, 255)).Role(ui.RoleNone)
+			}
 		})
 	})
 }
