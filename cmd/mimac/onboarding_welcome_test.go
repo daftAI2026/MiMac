@@ -91,6 +91,25 @@ func TestOnboardingArtworkRemainsSeparateFromTypography(t *testing.T) {
 	}
 }
 
+func TestOnboardingHeadingRoles(t *testing.T) {
+	var welcomeHeight float32
+	for _, step := range []onboardingStep{onboardingStepWelcome, onboardingStepDevice, onboardingStepVoice, onboardingStepPermissions} {
+		s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
+		s.onboarding.step = step
+		primeOnboardingTestSymbols(s, nil)
+		v := ui.NewTester(s.onboardingView, 1304, 840)
+		heading, found := v.Find(onboardingStepHeading(step))
+		if !found {
+			t.Fatalf("missing heading for step %d", step)
+		}
+		if step == onboardingStepWelcome {
+			welcomeHeight = heading.H
+		} else if heading.H >= welcomeHeight {
+			t.Fatalf("setup step %d used welcome prominence: %v", step, heading)
+		}
+	}
+}
+
 func TestOnboardingWelcomeUsesApplicationName(t *testing.T) {
 	original := mygo.App.Name()
 	t.Cleanup(func() { mygo.App.SetName(original) })

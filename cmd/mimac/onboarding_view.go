@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	onboardingTitleSize           float32 = 34
+	onboardingTitleSize           float32 = 26
+	onboardingWelcomeTitleSize    float32 = 34
 	onboardingBodySize            float32 = 15
 	onboardingCaptionSize         float32 = 13
 	onboardingContentWidth        float32 = 560
@@ -114,16 +115,20 @@ func (s *shell) onboardingView(c *ui.Context) {
 	})
 }
 
-func onboardingTextHeader(c *ui.Context, a appearance, width float32, heading, description string) {
-	headingWidth := onboardingBalancedTextWidth(c, heading, onboardingTitleSize, 700, width)
+func onboardingTextHeader(c *ui.Context, a appearance, width, titleSize float32, heading, description string) {
+	headingWidth := onboardingBalancedTextWidth(c, heading, titleSize, 700, width)
 	bodyWidth := onboardingBalancedTextWidth(c, description, onboardingBodySize, 400, width)
 	ui.Column(c).Width(width).AlignItems(ui.Center).Gap(onboardingHeadingGap).Children(func() {
-		ui.Text(c, heading).Width(headingWidth).FontSize(onboardingTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+		ui.Text(c, heading).Width(headingWidth).FontSize(titleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
 		ui.Text(c, description).Width(bodyWidth).FontSize(onboardingBodySize).FontWeight(400).FixedLineHeight(onboardingLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 	})
 }
 
 func (s *shell) onboardingPageHeader(c *ui.Context, a appearance, width float32, heading, description string) {
+	titleSize := onboardingTitleSize
+	if s.onboarding.step == onboardingStepWelcome {
+		titleSize = onboardingWelcomeTitleSize
+	}
 	ui.Column(c).Width(width).AlignItems(ui.Center).Children(func() {
 		if s.onboarding.step == onboardingStepWelcome {
 			ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -142,7 +147,7 @@ func (s *shell) onboardingPageHeader(c *ui.Context, a appearance, width float32,
 			}
 			ui.Box(c).Height(onboardingHeadingGap).Shrink(0)
 		}
-		onboardingTextHeader(c, a, width, heading, description)
+		onboardingTextHeader(c, a, width, titleSize, heading, description)
 	})
 }
 
