@@ -30,7 +30,7 @@ const (
 	onboardingContentGap          float32 = 20
 	onboardingActionsTop          float32 = 24
 	onboardingPermissionTileWidth float32 = 240
-	onboardingPermissionIconSize  float32 = 40
+	onboardingPermissionIconSize  float32 = 28
 )
 
 const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
@@ -454,8 +454,7 @@ func slicesContainsVoiceTool(tools []*voiceTool, target *voiceTool) bool {
 	return false
 }
 func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
-	snapshot := s.onboarding.permissionSnapshot
-	summary := summarizeOnboardingPermissions(snapshot.rows)
+	summary := summarizeOnboardingPermissions(s.onboarding.permissionSnapshot.rows)
 	if summary.total == 0 {
 		ui.Text(c, "当前无需额外权限").FillWidth().FontSize(onboardingBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 		return
@@ -463,28 +462,33 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 	ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
 		ui.Column(c).Width(onboardingPermissionTileWidth).MinWidth(0).Role(ui.RoleGroup).Label("系统权限摘要").Children(func() {
 			settingsGroup(c, a, func() {
-				ui.Column(c).FillWidth().Padding(spaceLG, spaceMD).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
-					ui.Box(c).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Center().Children(func() {
-						key := symbolKey{name: "hand.raised", dark: a.theme.Dark, size: onboardingPermissionIconSize, tint: a.theme.Text}
-						if icon := s.navigationSymbols[key]; icon != nil {
-							ui.Image(c, icon).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Fit(ui.Contain)
-						}
-					})
-					ui.Box(c).FillWidth().Height(24).Center().Children(func() {
-						if summary.allGranted() {
-							s.permissionGuideGrantedBadge(c, a)
-						} else {
-							ui.Row(c).Height(24).Padding(0, 9).AlignItems(ui.Center).Radius(12).Border(lineWidth, a.theme.Border).Children(func() {
-								ui.Text(c, summary.label()).SingleLine().FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
-							})
-						}
-					})
-					ui.Column(c).FillWidth().Gap(spaceXS).Children(func() {
-						for _, row := range snapshot.rows {
-							ui.Text(c, row.title).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
-						}
+				ui.Column(c).FillWidth().Padding(24, 10).AlignItems(ui.Center).Children(func() {
+					ui.Box(c).Size(48, 48).Center().Children(func() {
+						ui.Box(c).Size(42, 42).Background(a.theme.Text).Radius(10).Center().Children(func() {
+							key := symbolKey{name: "hand.raised.fill", dark: a.theme.Dark, size: onboardingPermissionIconSize, tint: a.theme.Background}
+							if icon := s.navigationSymbols[key]; icon != nil {
+								ui.Image(c, icon).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Fit(ui.Contain)
+							}
+						})
 					})
 					ui.Box(c).Height(spaceSM).Shrink(0)
+					ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(2).Children(func() {
+						ui.Text(c, "系统权限").FillWidth().FontSize(onboardingBodySize).FontWeight(600).TextAlign(ui.Center)
+						ui.Box(c).FillWidth().Height(24).Center().Children(func() {
+							if summary.allGranted() {
+								s.permissionGuideGrantedBadge(c, a)
+							} else {
+								ui.Row(c).Height(18).Padding(0, 7).AlignItems(ui.Center).Radius(9).Border(lineWidth, a.theme.Border).Children(func() {
+									ui.Text(c, summary.label()).SingleLine().FontSize(12).FontWeight(600).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+								})
+							}
+						})
+					})
+					ui.Box(c).Height(spaceSM).Shrink(0)
+					description := "授予系统权限，以便顺畅使用 " + mygo.App.Name() + "。"
+					width := onboardingBalancedTextWidth(c, description, onboardingCaptionSize, 400, onboardingPermissionTileWidth-40)
+					ui.Text(c, description).Width(width).FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+					ui.Box(c).Height(24).Shrink(0)
 					ui.Box(c).FillWidth().Height(controlHeight).Center().Children(func() {
 						if !summary.allGranted() {
 							button := styleAppButton(ui.ButtonBase(c).Label("授权…"), a, false).Radius(controlHeight / 2)
@@ -522,6 +526,9 @@ func (s onboardingPermissionSummary) allGranted() bool {
 func (s onboardingPermissionSummary) label() string {
 	if s.total == 0 || s.allGranted() {
 		return ""
+	}
+	if s.granted == 0 {
+		return "尚未授权"
 	}
 	return fmt.Sprintf("已授权 %d/%d", s.granted, s.total)
 }

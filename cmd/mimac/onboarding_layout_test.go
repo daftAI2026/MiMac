@@ -76,7 +76,7 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 					}
 				}
 				if step == onboardingStepPermissions {
-					if _, found := v.Find("已授权 0/3"); !found {
+					if _, found := v.Find("尚未授权"); !found {
 						t.Fatal("permission summary does not report the current incomplete rows")
 					}
 					if _, found := v.Find("授权…"); !found {
@@ -116,8 +116,8 @@ func TestSummarizeOnboardingPermissionsOnlyCountsGrantedRows(t *testing.T) {
 		{name: "empty"},
 		{name: "all granted", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideGranted}, wantCount: 2, wantTotal: 2, wantAll: true},
 		{name: "partial with unknown and denied", accesses: []permissionGuideAccess{permissionGuideGranted, permissionGuideUnknown, permissionGuideDenied}, wantCount: 1, wantTotal: 3, wantLabel: "已授权 1/3"},
-		{name: "restricted is not granted", accesses: []permissionGuideAccess{permissionGuideRestricted}, wantTotal: 1, wantLabel: "已授权 0/1"},
-		{name: "not determined", accesses: []permissionGuideAccess{permissionGuideNotDetermined}, wantTotal: 1, wantLabel: "已授权 0/1"},
+		{name: "restricted is not granted", accesses: []permissionGuideAccess{permissionGuideRestricted}, wantTotal: 1, wantLabel: "尚未授权"},
+		{name: "not determined", accesses: []permissionGuideAccess{permissionGuideNotDetermined}, wantTotal: 1, wantLabel: "尚未授权"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
