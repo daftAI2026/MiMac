@@ -15,19 +15,20 @@ import (
 const (
 	onboardingTitleSize           float32 = 26
 	onboardingBodySize            float32 = 14
-	onboardingCaptionSize         float32 = 12
-	onboardingContentWidth        float32 = 600
+	onboardingCaptionSize         float32 = 13
+	onboardingContentWidth        float32 = 560
 	onboardingWelcomeIconSize     float32 = 160
 	onboardingWelcomeIconSlotSize float32 = 192
 	onboardingWelcomeTitleSize    float32 = 34
-	onboardingWelcomeBodySize     float32 = 15
+	onboardingDescriptionSize     float32 = 15
 	onboardingWelcomeActionSize   float32 = 16
-	onboardingWelcomeCaptionSize  float32 = 13
-	onboardingWelcomeLineHeight   float32 = 20
+	onboardingLineHeight          float32 = 20
 	onboardingWelcomeMarkOffsetY  float32 = 4
 	onboardingWelcomeActionsGap   float32 = 22
-	onboardingWelcomeInsetX       float32 = 20
-	onboardingWelcomeMaxWidth     float32 = 560
+	onboardingInsetX              float32 = 20
+	onboardingHeadingGap          float32 = 12
+	onboardingContentGap          float32 = 20
+	onboardingActionsTop          float32 = 24
 )
 
 const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
@@ -70,17 +71,19 @@ func (s *shell) onboardingView(c *ui.Context) {
 			s.appIcon = ui.NewBitmap(img)
 		}
 	}
-	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, 40, 24, 40).Children(func() {
+	windowWidth, _ := c.Size()
+	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
+	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Column(c).Width(onboardingContentWidth).MinWidth(0).Gap(sectionGap).Children(func() {
-				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+			ui.Column(c).Width(availableWidth).MinWidth(0).Children(func() {
+				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(onboardingHeadingGap).Children(func() {
 					if s.appIcon != nil {
 						ui.Image(c, s.appIcon).Size(64, 64).Fit(ui.Contain)
 					}
-					ui.Text(c, onboardingStepHeading(s.onboarding.step)).FontSize(onboardingTitleSize).FontWeight(700).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
-					ui.Text(c, onboardingStepSubheading(s.onboarding.step)).FillWidth().FontSize(onboardingBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+					onboardingTextHeader(c, a, availableWidth, onboardingTitleSize, onboardingStepHeading(s.onboarding.step), onboardingStepSubheading(s.onboarding.step))
 				})
+				ui.Box(c).Height(onboardingContentGap).Shrink(0)
 				switch s.onboarding.step {
 				case onboardingStepVoice:
 					s.onboardingVoiceStep(c, a)
@@ -92,6 +95,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 				if s.onboarding.errorText != "" {
 					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
+				ui.Box(c).Height(onboardingActionsTop).Shrink(0)
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
 					if s.onboarding.step > onboardingStepWelcome {
 						if s.onboardingBackButton(c, a).Clicked() {
@@ -116,15 +120,21 @@ func (s *shell) onboardingView(c *ui.Context) {
 	})
 }
 
+func onboardingTextHeader(c *ui.Context, a appearance, width, titleSize float32, heading, description string) {
+	headingWidth := onboardingBalancedTextWidth(c, heading, titleSize, 700, width)
+	bodyWidth := onboardingBalancedTextWidth(c, description, onboardingDescriptionSize, 400, width)
+	ui.Column(c).Width(width).AlignItems(ui.Center).Gap(onboardingHeadingGap).Children(func() {
+		ui.Text(c, heading).Width(headingWidth).FontSize(titleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
+		ui.Text(c, description).Width(bodyWidth).FontSize(onboardingDescriptionSize).FontWeight(400).FixedLineHeight(onboardingLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+	})
+}
+
 // Welcome is an introduction, outside the three numbered setup steps.
 func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 	a.fonts.body = onboardingWelcomeActionSize
 	windowWidth, _ := c.Size()
-	availableWidth := min(windowWidth-2*onboardingWelcomeInsetX, onboardingWelcomeMaxWidth)
-	heading := onboardingStepHeading(onboardingStepWelcome)
-	headingWidth := onboardingBalancedTextWidth(c, heading, onboardingWelcomeTitleSize, 700, availableWidth)
-	bodyWidth := onboardingBalancedTextWidth(c, onboardingWelcomeDescription, onboardingWelcomeBodySize, 400, availableWidth)
-	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingWelcomeInsetX, 24, onboardingWelcomeInsetX).Children(func() {
+	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
+	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
 		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(availableWidth).AlignItems(ui.Center).Children(func() {
@@ -135,21 +145,19 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 						Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingWelcomeMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
 				})
 				ui.Box(c).Height(sectionGap).Shrink(0)
-				ui.Text(c, heading).Width(headingWidth).FontSize(onboardingWelcomeTitleSize).FontWeight(700).LetterSpacing(0).TextAlign(ui.Center).Role(ui.RoleHeading).Level(1)
-				ui.Box(c).Height(12).Shrink(0)
-				ui.Text(c, onboardingWelcomeDescription).Width(bodyWidth).FontSize(onboardingWelcomeBodySize).FontWeight(400).FixedLineHeight(onboardingWelcomeLineHeight).LetterSpacing(0).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
-				ui.Box(c).Height(24).Shrink(0)
+				onboardingTextHeader(c, a, availableWidth, onboardingWelcomeTitleSize, onboardingStepHeading(onboardingStepWelcome), onboardingWelcomeDescription)
+				ui.Box(c).Height(onboardingActionsTop).Shrink(0)
 				if s.onboardingPrimaryButton(c, a, "继续", true).FontWeight(600).Clicked() {
 					s.moveOnboarding(1)
 				}
 				ui.Box(c).Height(onboardingWelcomeActionsGap).Shrink(0)
 				if ui.ButtonBase(c).Key("onboarding-skip").Label("稍后设置").Padding(0, spaceSM).Cursor(ui.CursorPointer).Children(func() {
-					ui.Text(c, "稍后设置").FontSize(onboardingWelcomeCaptionSize).FontWeight(400).LetterSpacing(0).TextColor(a.theme.TextMuted)
+					ui.Text(c, "稍后设置").FontSize(onboardingCaptionSize).FontWeight(400).LetterSpacing(0).TextColor(a.theme.TextMuted)
 				}).Clicked() {
 					s.finishOnboarding()
 				}
 				if s.onboarding.errorText != "" {
-					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingWelcomeCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
 				}
 			})
 		})
@@ -171,7 +179,7 @@ func (s *shell) onboardingBackButton(c *ui.Context, a appearance) ui.Element {
 
 func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label string, showArrow bool) ui.Element {
 	button := ui.ButtonBase(c).Key("onboarding-next").Label(label).FocusRing(false).
-		Cursor(ui.CursorPointer).Height(navigationHeight).Padding(0, spaceMD).
+		Cursor(ui.CursorPointer).FontWeight(500).Height(navigationHeight).Padding(0, spaceMD).
 		Radius(navigationHeight/2).Background(a.theme.Text).
 		Border(lineWidth, a.theme.Text).TextColor(a.theme.Background)
 	if button.Pressed() {

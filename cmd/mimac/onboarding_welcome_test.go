@@ -140,10 +140,10 @@ func TestOnboardingWelcomeLongApplicationNameFits(t *testing.T) {
 		primeOnboardingTestSymbols(s, nil)
 		v := ui.NewTester(s.onboardingView, width, 660)
 		heading, found := v.Find(onboardingStepHeading(onboardingStepWelcome))
-		if !found || heading.X < onboardingWelcomeInsetX || heading.X+heading.W > float32(width)-onboardingWelcomeInsetX {
+		if !found || heading.X < onboardingInsetX || heading.X+heading.W > float32(width)-onboardingInsetX {
 			t.Fatalf("application name overflowed at width %d: %v", width, heading)
 		}
-		if heading.W > onboardingWelcomeMaxWidth+1 {
+		if heading.W > onboardingContentWidth+1 {
 			t.Fatalf("application name exceeded the content width at window width %d: %v", width, heading)
 		}
 		primary, found := v.Find("继续")

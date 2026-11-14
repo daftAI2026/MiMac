@@ -42,6 +42,10 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 				if !ok || math.Abs(float64(heading.X+heading.W/2-450)) > 1 {
 					t.Fatalf("heading is not centered: %v %t", heading, ok)
 				}
+				description, found := v.Find(onboardingStepSubheading(step))
+				if !found || description.Y < heading.Y+heading.H || description.X < 20 || description.X+description.W > windowMinWidth-20 {
+					t.Fatalf("description overlaps the heading or leaves the content: %v %t", description, found)
+				}
 				next := "继续"
 				if step == onboardingStepPermissions {
 					next = "开始使用"
