@@ -30,7 +30,7 @@ const (
 	onboardingWelcomeMaxWidth     float32 = 560
 )
 
-const onboardingWelcomeDescription = "接下来，连接遥控器、选择语音工具，并设置所需权限。"
+const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
 
 // Balance the paragraph using the host's own text measurements. Keep its
 // original height while finding the narrowest width, without storing a second

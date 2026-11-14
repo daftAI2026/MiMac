@@ -95,7 +95,7 @@ func TestOnboardingWelcomeDescriptionUsesNaturalWrapping(t *testing.T) {
 	s.onboarding.step = onboardingStepWelcome
 	primeOnboardingTestSymbols(s, nil)
 	v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
-	if _, found := v.Find("接下来，连接遥控器、选择语音工具，并设置所需权限。"); !found {
+	if _, found := v.Find("花一点时间，连接遥控器、选择语音工具，并设置所需权限。"); !found {
 		t.Fatal("welcome description must wrap from its available width, without a forced line break")
 	}
 }
