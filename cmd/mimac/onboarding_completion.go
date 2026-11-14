@@ -111,14 +111,7 @@ func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
 				ui.Icon(c, s.brandMark).Size(104, 104).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
 			})
 		}
-		index := 0
-		if a.theme.Dark {
-			index = 1
-		}
-		color := s.grantedStyles[index].color
-		if color.A == 0 {
-			color = a.theme.Success
-		}
+		color := s.permissionGuideCompletionBadgeColor()
 		ui.Box(c).Absolute().Left(onboardingCompletionBadgeOffset).Top(onboardingCompletionBadgeOffset).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge/2).Background(color).Center().Scale(badge, badge).Opacity(max(0, min(1, badge))).Children(func() {
 			key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 28, tint: ui.RGB(255, 255, 255)}
 			if icon := s.navigationSymbols[key]; icon != nil {

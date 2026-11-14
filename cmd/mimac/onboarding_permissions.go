@@ -45,14 +45,7 @@ func (s *shell) onboardingPermissionsIcon(c *ui.Context, a appearance, granted b
 			})
 		}
 		if granted {
-			index := 0
-			if a.theme.Dark {
-				index = 1
-			}
-			color := s.grantedStyles[index].color
-			if color.A == 0 {
-				color = a.theme.Success
-			}
+			color := s.permissionGuideCompletionBadgeColor()
 			ui.Box(c).Absolute().Left(32).Top(32).Size(16, 16).Radius(8).Background(color).Center().Children(func() {
 				key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 10, tint: ui.RGB(255, 255, 255)}
 				if icon := s.navigationSymbols[key]; icon != nil {

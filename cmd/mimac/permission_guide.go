@@ -872,12 +872,17 @@ func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, settingsRu
 }
 
 type permissionGuideGrantedStyle struct {
-	color ui.Color
-	fill  ui.Color
-	icon  *ui.Bitmap
+	badgeColor ui.Color
+	color      ui.Color
+	fill       ui.Color
+	icon       *ui.Bitmap
 }
 
 func (s *shell) preparePermissionGuideGrantedStyles() {
+	badgeColor := appAppearance(false, s.preferencesState.value.TextSize).theme.Success
+	if green, err := statuscolor.SystemGreen(false); err == nil {
+		badgeColor = green
+	}
 	for i, dark := range []bool{false, true} {
 		foreground := appAppearance(dark, s.preferencesState.value.TextSize).theme.Success
 		if green, err := statuscolor.SystemGreen(dark); err == nil {
@@ -886,8 +891,20 @@ func (s *shell) preparePermissionGuideGrantedStyles() {
 		fill := foreground.Alpha(.08)
 		foreground = permissionGuideGrantedTextColor(foreground, fill.Over(appAppearance(dark, s.preferencesState.value.TextSize).theme.Background), appAppearance(dark, s.preferencesState.value.TextSize).theme.Text)
 		icon := s.symbolBitmap(symbolKey{name: "checkmark.circle", dark: dark, size: permissionGuideCaption, tint: foreground})
-		s.grantedStyles[i] = permissionGuideGrantedStyle{color: foreground, fill: fill, icon: icon}
+		s.grantedStyles[i] = permissionGuideGrantedStyle{badgeColor: badgeColor, color: foreground, fill: fill, icon: icon}
 	}
+}
+
+// Graphical completion marks use one original system green in every
+// appearance. Readable text colors remain a separate presentation role.
+func (s *shell) permissionGuideCompletionBadgeColor() ui.Color {
+	if color := s.grantedStyles[0].badgeColor; color.A != 0 {
+		return color
+	}
+	if color := s.grantedStyles[0].color; color.A != 0 {
+		return color
+	}
+	return appAppearance(false, s.preferencesState.value.TextSize).theme.Success
 }
 
 func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
