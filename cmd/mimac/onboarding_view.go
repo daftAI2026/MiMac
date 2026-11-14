@@ -485,7 +485,7 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 						})
 					})
 					ui.Box(c).Height(spaceSM).Shrink(0)
-					description := "授予系统权限，以便顺畅使用 " + mygo.App.Name() + "。"
+					description := "授予系统权限，获得流畅的 " + mygo.App.Name() + " 使用体验。"
 					width := onboardingBalancedTextWidth(c, description, onboardingCaptionSize, 400, onboardingPermissionTileWidth-40)
 					ui.Text(c, description).Width(width).FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 					ui.Box(c).Height(24).Shrink(0)
