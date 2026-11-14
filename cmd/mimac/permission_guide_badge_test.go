@@ -9,7 +9,7 @@ func TestPermissionGuideGrantedFeedbackHasSemanticCapsule(t *testing.T) {
 	green := ui.RGB(0, 110, 20)
 	v := ui.NewTester(func(c *ui.Context) {
 		c.Root().Background(ui.Transparent)
-		drawPermissionGuideGrantedBadge(c, nil, green, green.Alpha(.08))
+		drawSuccessBadge(c, nil, green, green.Alpha(.08), "已授权")
 	}, 100, 32)
 	v.Frame()
 	pixel := v.Image().RGBAAt(2, 12)

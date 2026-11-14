@@ -369,22 +369,25 @@ func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceT
 					}
 				}
 			}
-			if !tool.active && installState == voicetools.NotFound && tool.installURL != "" {
+			if installState == voicetools.NotFound && tool.installURL != "" {
 				if appButton(c, a, "下载安装…", false).Clicked() {
 					if err := mygo.Shell.OpenExternal(tool.installURL); err != nil {
 						s.onboarding.errorText = "无法打开下载页面，请重试。"
 						s.invalidateOnboardingWindow()
 					}
 				}
+			} else if selected && tool.active {
+				if tool.active && canSelect && !tool.busy {
+					s.successBadge(c, a, "已选用")
+				} else {
+					ui.Text(c, "已选用").FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+				}
 			} else {
 				label := "启用并使用"
 				if tool.active {
 					label = "使用"
 				}
-				if selected {
-					label = "当前工具"
-				}
-				disabled := !canSelect || tool.busy || s.toolLoadFailed || selected
+				disabled := !canSelect || tool.busy || s.toolLoadFailed
 				if appButton(c, a, label, disabled).Clicked() && !disabled {
 					s.chooseOnboardingVoiceTool(tool)
 				}
@@ -400,6 +403,9 @@ func (s *shell) onboardingVoiceToolStatus(tool *voiceTool) (string, bool, voicet
 		return voiceToolStatus(tool), !tool.busy && tool.snapshot.State == voicetools.Ready, voicetools.Ready
 	}
 	if tool.active {
+		if !tool.busy && tool.snapshot.State == voicetools.NotFound {
+			return "未安装", false, tool.snapshot.State
+		}
 		return voiceToolStatus(tool), !tool.busy && tool.snapshot.State == voicetools.Ready, tool.snapshot.State
 	}
 	state, checked := s.onboarding.toolLocations[tool.id]
@@ -411,7 +417,7 @@ func (s *shell) onboardingVoiceToolStatus(tool *voiceTool) (string, bool, voicet
 	}
 	switch state {
 	case voicetools.Ready:
-		return "已安装", true, state
+		return "已安装，未启用", true, state
 	case voicetools.NotFound:
 		return "未安装", false, state
 	case voicetools.Ambiguous:
@@ -480,7 +486,7 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 					ui.Box(c).Height(24).Shrink(0)
 					ui.Box(c).FillWidth().Height(controlHeight).Center().Children(func() {
 						if summary.allGranted() {
-							s.permissionGuideGrantedBadge(c, a)
+							s.successBadge(c, a, "已授权")
 						} else {
 							button := styleAppButton(ui.ButtonBase(c).Label("授权…"), a, false).Radius(controlHeight / 2)
 							button.Children(func() { ui.Text(c, "授权…").FontSize(onboardingCaptionSize) })

@@ -20,6 +20,7 @@ flowchart TD
     toolStep --> toolReturn["进入与焦点返回自动检查应用和已有配置，不自动下载或收音"]
     toolReturn --> toolFailure["读取失败仅在对应工具行提供重试"]
     deviceStep --> toolStep["第2步：准备语音工具"]
+    toolStep -.-> toolStatus["未安装保留下载入口；已安装未启用保留启用入口；已选用且就绪显示成功反馈，其他状态不标成功"]
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
     toolStep --> permissionStep["第3步：系统权限单格摘要"]

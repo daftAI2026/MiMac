@@ -702,7 +702,7 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 
 func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row permissionGuideRow) {
 	if row.access == permissionGuideGranted {
-		s.permissionGuideGrantedBadge(c, a)
+		s.successBadge(c, a, "已授权")
 		return
 	}
 	if !s.snapshot.actionsEnabled || row.access == permissionGuideRestricted {
@@ -907,7 +907,7 @@ func (s *shell) permissionGuideCompletionBadgeColor() ui.Color {
 	return appAppearance(false, s.preferencesState.value.TextSize).theme.Success
 }
 
-func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
+func (s *shell) successBadge(c *ui.Context, a appearance, label string) {
 	index := 0
 	if a.theme.Dark {
 		index = 1
@@ -917,16 +917,16 @@ func (s *shell) permissionGuideGrantedBadge(c *ui.Context, a appearance) {
 		style.color = a.theme.Success
 		style.fill = style.color.Alpha(.08)
 	}
-	drawPermissionGuideGrantedBadge(c, style.icon, style.color, style.fill)
+	drawSuccessBadge(c, style.icon, style.color, style.fill, label)
 }
 
-func drawPermissionGuideGrantedBadge(c *ui.Context, icon *ui.Bitmap, foreground, fill ui.Color) {
+func drawSuccessBadge(c *ui.Context, icon *ui.Bitmap, foreground, fill ui.Color, label string) {
 	ui.Row(c).Height(24).Shrink(0).Padding(0, 9).Gap(5).AlignItems(ui.Center).Radius(12).Background(fill).Children(func() {
 		if icon != nil {
 			ui.Image(c, icon).Width(permissionGuideCaption).Height(permissionGuideCaption).Fit(ui.Contain)
 		} else {
 			ui.Text(c, "✓").Role(ui.RoleNone).FontSize(permissionGuideCaption).TextColor(foreground)
 		}
-		ui.Text(c, "已授权").SingleLine().FontSize(permissionGuideCaption).TextColor(foreground)
+		ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption).TextColor(foreground)
 	})
 }
