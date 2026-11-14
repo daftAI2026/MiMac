@@ -22,7 +22,7 @@ flowchart TD
     deviceStep --> toolStep["第2步：准备语音工具"]
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
-    toolStep --> permissionStep["第3步：系统权限"]
+    toolStep --> permissionStep["第3步：系统权限单格摘要"]
     permissionStep --> permissionGuide["点击授权打开可关闭的系统权限引导"]
     permissionStep -->|继续| completion["独立完成页：当前设备按键摘要，开始使用与返回权限"]
     completion -.-> completionMotion["MyGo元素单次弹簧入场与450ms角标延迟；收敛停止，减少动态效果显示最终态"]

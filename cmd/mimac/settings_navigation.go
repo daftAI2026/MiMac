@@ -53,13 +53,15 @@ func (s *shell) navigationItem(c *ui.Context, a appearance, page settingsPage) u
 	return row.LayoutBounds()
 }
 
+const deviceIconSymbol = "externaldrive"
+
 var sidebarEntries = []struct {
 	page   settingsPage
 	symbol string
 }{
 	{pageMappings, "point.topleft.down.curvedto.point.bottomright.up"},
 	{pageVoice, "mic"},
-	{pageDevice, "externaldrive"},
+	{pageDevice, deviceIconSymbol},
 	{pagePlugins, "puzzlepiece.extension"},
 	{pageGeneral, "gearshape"},
 	{pageAbout, "info.circle"},

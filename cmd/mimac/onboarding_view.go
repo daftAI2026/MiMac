@@ -29,6 +29,8 @@ const (
 	onboardingHeadingGap          float32 = 12
 	onboardingContentGap          float32 = 20
 	onboardingActionsTop          float32 = 24
+	onboardingPermissionTileWidth float32 = 240
+	onboardingPermissionIconSize  float32 = 40
 )
 
 const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
@@ -454,42 +456,47 @@ func slicesContainsVoiceTool(tools []*voiceTool, target *voiceTool) bool {
 func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 	snapshot := s.onboarding.permissionSnapshot
 	summary := summarizeOnboardingPermissions(snapshot.rows)
-	ui.Column(c).FillWidth().Gap(spaceMD).Children(func() {
-		if summary.total == 0 {
-			ui.Text(c, "当前无需额外权限").FillWidth().FontSize(onboardingBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
-		} else {
+	if summary.total == 0 {
+		ui.Text(c, "当前无需额外权限").FillWidth().FontSize(onboardingBodySize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+		return
+	}
+	ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
+		ui.Column(c).Width(onboardingPermissionTileWidth).MinWidth(0).Role(ui.RoleGroup).Label("系统权限摘要").Children(func() {
 			settingsGroup(c, a, func() {
-				ui.Column(c).FillWidth().Padding(0, spaceMD).Children(func() {
-					for index, row := range snapshot.rows {
-						if index > 0 {
-							ui.Box(c).Key("onboarding-permission-line/" + permissionGuideIDString(row.id)).FillWidth().Height(lineWidth).Background(a.separator).Shrink(0)
+				ui.Column(c).FillWidth().Padding(spaceLG, spaceMD).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
+					ui.Box(c).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Center().Children(func() {
+						key := symbolKey{name: "hand.raised", dark: a.theme.Dark, size: onboardingPermissionIconSize, tint: a.theme.Text}
+						if icon := s.navigationSymbols[key]; icon != nil {
+							ui.Image(c, icon).Size(onboardingPermissionIconSize, onboardingPermissionIconSize).Fit(ui.Contain)
 						}
-						ui.Row(c).Key("onboarding-permission/" + permissionGuideIDString(row.id)).FillWidth().MinHeight(60).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
-							ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-								if icon := s.systemSymbol(row.icon, a.theme.Dark, 20); icon != nil {
-									ui.Image(c, icon).Size(20, 20).Fit(ui.Contain)
-								}
-							})
-							ui.Text(c, row.title).FontSize(onboardingBodySize).FontWeight(600).Grow(1)
-							ui.Text(c, permissionGuideAccessLabel(row.access)).FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
-						})
-					}
-					sectionLine(c, a)
-					ui.Row(c).Key("onboarding-permission-summary").FillWidth().MinHeight(navigationHeight).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
+					})
+					ui.Box(c).FillWidth().Height(24).Center().Children(func() {
 						if summary.allGranted() {
-							ui.Box(c).Grow(1)
 							s.permissionGuideGrantedBadge(c, a)
-							return
+						} else {
+							ui.Row(c).Height(24).Padding(0, 9).AlignItems(ui.Center).Radius(12).Border(lineWidth, a.theme.Border).Children(func() {
+								ui.Text(c, summary.label()).SingleLine().FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+							})
 						}
-						ui.Text(c, summary.label()).FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
-						ui.Box(c).Grow(1)
-						if appButton(c, a, "授权…", false).Clicked() {
-							s.showOnboardingPermissionGuide()
+					})
+					ui.Column(c).FillWidth().Gap(spaceXS).Children(func() {
+						for _, row := range snapshot.rows {
+							ui.Text(c, row.title).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
+						}
+					})
+					ui.Box(c).Height(spaceSM).Shrink(0)
+					ui.Box(c).FillWidth().Height(controlHeight).Center().Children(func() {
+						if !summary.allGranted() {
+							button := styleAppButton(ui.ButtonBase(c).Label("授权…"), a, false).Radius(controlHeight / 2)
+							button.Children(func() { ui.Text(c, "授权…").FontSize(onboardingCaptionSize) })
+							if button.Clicked() {
+								s.showOnboardingPermissionGuide()
+							}
 						}
 					})
 				})
 			})
-		}
+		})
 	})
 }
 

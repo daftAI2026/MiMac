@@ -539,7 +539,7 @@ func permissionGuideRows(snapshot permissionGuideSnapshot) []permissionGuideRow 
 func permissionGuideRowFor(id permissionGuideID) permissionGuideRow {
 	switch id {
 	case permissionGuideInput:
-		return permissionGuideRow{id: id, icon: "button.programmable", title: "输入监控", description: "读取所选设备的按键。"}
+		return permissionGuideRow{id: id, icon: deviceIconSymbol, title: "输入监控", description: "读取所选设备的按键。"}
 	case permissionGuidePostEvent:
 		return permissionGuideRow{id: id, icon: "hand.tap", title: permissionguide.AccessibilityPermissionTitle(), description: "向当前应用发送设定的按键。"}
 	case permissionGuideBluetooth:

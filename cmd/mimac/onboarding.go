@@ -251,6 +251,9 @@ func (s *shell) prepareOnboardingPresentation() {
 	s.preparePermissionGuideGrantedStyles()
 	for _, dark := range []bool{false, true} {
 		a := appAppearance(dark, s.preferencesState.value.TextSize)
+		if s.onboarding.step == onboardingStepPermissions {
+			s.symbolBitmap(symbolKey{name: "hand.raised", dark: dark, size: onboardingPermissionIconSize, tint: a.theme.Text})
+		}
 		s.symbolBitmap(symbolKey{name: "arrow.left", dark: dark, size: settingsIconSize, tint: a.theme.Text})
 		s.symbolBitmap(symbolKey{name: "arrow.right", dark: dark, size: settingsIconSize, tint: a.theme.Background})
 		s.symbolBitmap(symbolKey{name: "checkmark", dark: dark, size: 28, tint: ui.RGB(255, 255, 255)})
@@ -280,7 +283,7 @@ func (s *shell) moveOnboarding(delta int) {
 		s.closePermissionGuide()
 	}
 	s.onboarding.step = step
-	if step == onboardingStepCompletion {
+	if step == onboardingStepCompletion || step == onboardingStepPermissions {
 		s.prepareOnboardingPresentation()
 	}
 	s.onboarding.errorText = ""
