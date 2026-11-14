@@ -71,6 +71,10 @@ func (s *shell) onboardingView(c *ui.Context) {
 			s.appIcon = ui.NewBitmap(img)
 		}
 	}
+	if s.onboarding.step == onboardingStepCompletion {
+		s.onboardingCompletionView(c, a)
+		return
+	}
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
@@ -98,15 +102,8 @@ func (s *shell) onboardingView(c *ui.Context) {
 						}
 					}
 					label := "继续"
-					if s.onboarding.step == onboardingStepPermissions {
-						label = "开始使用"
-					}
-					if s.onboardingPrimaryButton(c, a, label, s.onboarding.step != onboardingStepPermissions).Clicked() {
-						if s.onboarding.step == onboardingStepPermissions {
-							s.finishOnboarding()
-						} else {
-							s.moveOnboarding(1)
-						}
+					if s.onboardingPrimaryButton(c, a, label, true).Clicked() {
+						s.moveOnboarding(1)
 					}
 				})
 			})
@@ -237,6 +234,8 @@ func onboardingStepHeading(step onboardingStep) string {
 		return "准备语音工具"
 	case onboardingStepPermissions:
 		return "系统权限"
+	case onboardingStepCompletion:
+		return "设置完成"
 	default:
 		return "连接遥控器"
 	}
@@ -247,13 +246,15 @@ func onboardingStepSubheading(step onboardingStep) string {
 		return "选择已有输入法，或使用本机语音识别。"
 	case onboardingStepPermissions:
 		return "允许 MiMac 读取遥控按键并执行您的映射。"
+	case onboardingStepCompletion:
+		return "几项常用按键，来自您的当前配置。"
 	default:
 		return "在蓝牙设置中连接遥控器，已连接的设备无需重新配对。"
 	}
 }
 func onboardingStepPosition(step onboardingStep) string {
 	switch step {
-	case onboardingStepWelcome:
+	case onboardingStepWelcome, onboardingStepCompletion:
 		return ""
 	case onboardingStepVoice:
 		return "2 / 3"
@@ -317,11 +318,9 @@ func (s *shell) onboardingVoiceStep(c *ui.Context, a appearance) {
 				}
 			}
 		}
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
-			if appButton(c, a, "插件设置…", false).Clicked() {
-				s.openOnboardingSettingsPage(pagePlugins)
-			}
-		})
+		if s.toolLoadFailed {
+			s.onboardingPluginSettingsButton(c, a)
+		}
 	})
 }
 func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceTool) {
@@ -342,6 +341,10 @@ func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceT
 						s.refreshOnboardingVoiceLocations()
 					}
 				}
+				return
+			}
+			if s.onboardingVoiceToolNeedsSettings(tool) {
+				s.onboardingPluginSettingsButton(c, a)
 				return
 			}
 			if tool.prepareAssets != nil && tool.active {
@@ -424,7 +427,7 @@ func (s *shell) chooseOnboardingVoiceTool(tool *voiceTool) {
 			return
 		}
 		if err := s.setVoiceToolEnabled(tool, true); err != nil {
-			s.onboarding.errorText = "无法启用工具，请在插件中重试。"
+			s.onboarding.errorText = "无法启用工具，请重试。"
 			s.invalidateOnboardingWindow()
 			return
 		}
@@ -517,4 +520,20 @@ func (s *shell) invalidateOnboardingWindow() {
 	if s.onboarding.window != nil && !s.onboarding.window.IsDestroyed() {
 		s.onboarding.window.Invalidate()
 	}
+}
+
+func (s *shell) onboardingPluginSettingsButton(c *ui.Context, a appearance) {
+	if appButton(c, a, "插件设置…", false).Clicked() {
+		s.openOnboardingSettingsPage(pagePlugins)
+	}
+}
+
+func (s *shell) onboardingVoiceToolNeedsSettings(tool *voiceTool) bool {
+	if tool.busy {
+		return false
+	}
+	if !tool.active {
+		return s.onboarding.toolLocations[tool.id] == voicetools.Ambiguous
+	}
+	return tool.snapshot.State == voicetools.Ambiguous || (tool.snapshot.State == voicetools.ConfigMissing && tool.prepareAssets == nil)
 }

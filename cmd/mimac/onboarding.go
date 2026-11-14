@@ -101,6 +101,7 @@ const (
 	onboardingStepDevice onboardingStep = iota
 	onboardingStepVoice
 	onboardingStepPermissions
+	onboardingStepCompletion
 	onboardingStepCount
 )
 
@@ -267,6 +268,10 @@ func (s *shell) moveOnboarding(delta int) {
 	}
 	if s.onboarding.step == onboardingStepVoice {
 		s.stopOnboardingVoiceLocations()
+	}
+	if step == onboardingStepCompletion && s.onboarding.permissionGuideOpened {
+		s.onboarding.permissionGuideOpened = false
+		s.closePermissionGuide()
 	}
 	s.onboarding.step = step
 	s.onboarding.errorText = ""

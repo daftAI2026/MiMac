@@ -15,7 +15,7 @@ import (
 
 func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 	for _, dark := range []bool{false, true} {
-		for step := onboardingStepDevice; step < onboardingStepCount; step++ {
+		for step := onboardingStepDevice; step <= onboardingStepPermissions; step++ {
 			t.Run(fmt.Sprintf("step%d-dark%t", step, dark), func(t *testing.T) {
 				s := &shell{development: true, settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}, voiceToolIcons: map[string]*voiceToolIcon{}}}
 				profile, err := xiaomi.DeviceProfile()
@@ -47,9 +47,6 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 					t.Fatalf("description overlaps the heading or leaves the content: %v %t", description, found)
 				}
 				next := "继续"
-				if step == onboardingStepPermissions {
-					next = "开始使用"
-				}
 				rect, ok := v.Find(next)
 				if !ok || rect.Y < 48 || rect.Y+rect.H > windowMinHeight-40 {
 					t.Fatalf("next action outside content: %v %t", rect, ok)
@@ -174,9 +171,9 @@ func TestOnboardingPermissionSummaryControlsTheExistingGuideAction(t *testing.T)
 			if grantFound != tt.wantGrant {
 				t.Fatalf("global guide action present=%v, want %v", grantFound, tt.wantGrant)
 			}
-			_, nextFound := v.Find("开始使用")
+			_, nextFound := v.Find("继续")
 			if !nextFound {
-				t.Fatal("permission presentation changed the existing explicit completion action")
+				t.Fatal("permission presentation lost the explicit next action")
 			}
 		})
 	}

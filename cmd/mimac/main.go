@@ -239,7 +239,7 @@ func main() {
 	voiceReportPath := flag.String("voice-overlay-report", "", "write bounded I/O timing and frequency/display metadata on exit; excludes PCM and text")
 	sourceCheckPath := flag.String("source-check-report", "", "explicit diagnostic: mirror one source in memory and replay to local Apple ASR on exit; report text/statistics only, no PCM file")
 	appearance := flag.String("host-theme", "system", "app appearance for visual checks: system, light, or dark")
-	showOnboarding := flag.Bool("show-onboarding", false, "open the welcome and three-step first-use guide without changing saved setup state")
+	showOnboarding := flag.Bool("show-onboarding", false, "open the welcome, three-step setup and completion without changing saved setup state")
 	audioBackend := flag.String("audio-backend", "", "one-run override: mimac-compat or empty; never installs a component")
 	setAudioBackend := flag.String("set-audio-backend", "", "persist mimac-compat or empty, then exit before app startup")
 	flag.Parse()

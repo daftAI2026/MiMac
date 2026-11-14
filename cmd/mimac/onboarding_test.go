@@ -100,7 +100,7 @@ func TestOnboardingAdjacentStepClampsAtEnds(t *testing.T) {
 	if got := onboardingAdjacentStep(onboardingStepWelcome, -1); got != onboardingStepWelcome {
 		t.Fatalf("previous from first step = %d", got)
 	}
-	if got := onboardingAdjacentStep(onboardingStepPermissions, 1); got != onboardingStepPermissions {
+	if got := onboardingAdjacentStep(onboardingStepCompletion, 1); got != onboardingStepCompletion {
 		t.Fatalf("next from last step = %d", got)
 	}
 	if got := onboardingAdjacentStep(onboardingStepDevice, 1); got != onboardingStepVoice {

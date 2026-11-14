@@ -48,6 +48,15 @@ func TestOnboardingDiscoveryRecoveryControls(t *testing.T) {
 			check(false)
 			s.onboarding.toolLocations[tool.id] = voicetools.Ready
 			check(false)
+			if _, found := v.Find("插件设置…"); found {
+				t.Fatal("healthy setup offers an unrelated settings destination")
+			}
+			s.onboarding.toolLocations[tool.id] = voicetools.Ambiguous
+			v.Frame()
+			if _, found := v.Find("插件设置…"); !found {
+				t.Fatal("ambiguous discovery lost its configuration recovery")
+			}
+			s.onboarding.toolLocations[tool.id] = voicetools.Ready
 			tool.active = true
 			tool.snapshot.State = voicetools.ReadError
 			check(true)

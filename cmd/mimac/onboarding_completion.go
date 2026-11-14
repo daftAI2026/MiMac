@@ -1,0 +1,113 @@
+package main
+
+import (
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"mimac.local/mimac/internal/voicetools"
+)
+
+const (
+	onboardingCompletionIconSlot float32 = 128
+	onboardingCompletionIconSize float32 = 104
+	onboardingCompletionWidth    float32 = 400
+	onboardingCompletionBadge    float32 = 36
+)
+
+type onboardingCompletionHint struct {
+	label, value string
+}
+
+// These are read-only projections of the plugin's presentation metadata and
+// the existing mappings. They never create bindings or synthesize defaults.
+func (s *shell) onboardingCompletionHints() []onboardingCompletionHint {
+	profile := s.activeProfile()
+	var hints [3]onboardingCompletionHint
+	n := 0
+	for _, symbol := range [...]string{"voice", "confirm", "volume-up"} {
+		for _, button := range profile.Buttons {
+			if button.Symbol != symbol {
+				continue
+			}
+			value := s.mappingLabel(profile.ID, button.ID)
+			if value == "使用默认" {
+				value = button.DefaultLabel
+			}
+			if button.ID == s.voiceButtonID() {
+				value = "未选择语音工具"
+				for _, tool := range s.tools {
+					if tool.id == s.currentVoiceTool && tool.active {
+						value = tool.name
+						if tool.busy || tool.snapshot.State != voicetools.Ready {
+							value += "（未就绪）"
+						}
+						break
+					}
+				}
+			}
+			if s.mappingLoadFailed {
+				value = "无法读取设置"
+			}
+			hints[n] = onboardingCompletionHint{label: button.Label, value: value}
+			n++
+			break
+		}
+	}
+	return hints[:n]
+}
+
+func (s *shell) onboardingCompletionView(c *ui.Context, a appearance) {
+	windowWidth, _ := c.Size()
+	width := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
+	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
+		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
+		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			ui.Column(c).Width(width).AlignItems(ui.Center).Children(func() {
+				s.onboardingCompletionArtwork(c, a)
+				ui.Box(c).Height(onboardingHeadingGap).Shrink(0)
+				onboardingTextHeader(c, a, width, onboardingTitleSize, onboardingStepHeading(onboardingStepCompletion), onboardingStepSubheading(onboardingStepCompletion))
+				ui.Box(c).Height(onboardingContentGap).Shrink(0)
+				if hints := s.onboardingCompletionHints(); len(hints) > 0 {
+					ui.Column(c).Width(min(width, onboardingCompletionWidth)).Children(func() {
+						settingsGroup(c, a, func() {
+							for index, hint := range hints {
+								if index > 0 {
+									sectionLine(c, a)
+								}
+								ui.Row(c).FillWidth().MinWidth(0).MinHeight(44).Padding(spaceSM, spaceMD).AlignItems(ui.Center).Gap(spaceMD).Children(func() {
+									ui.Text(c, hint.label).FontSize(onboardingBodySize).Shrink(0)
+									ui.Text(c, hint.value).Grow(1).Basis(0).MinWidth(0).TextAlign(ui.End).FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted)
+								})
+							}
+						})
+					})
+				}
+				if s.onboarding.errorText != "" {
+					ui.Text(c, s.onboarding.errorText).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.Danger).Role(ui.RoleStatus)
+				}
+				ui.Box(c).Height(onboardingActionsTop).Shrink(0)
+				if s.onboardingPrimaryButton(c, a, "开始使用 "+mygo.App.Name(), false).Clicked() {
+					s.finishOnboarding()
+				}
+				ui.Box(c).Height(onboardingWelcomeActionsGap).Shrink(0)
+				if ui.ButtonBase(c).Key("onboarding-completion-back").Label("返回系统权限").Padding(0, spaceSM).Cursor(ui.CursorPointer).Children(func() {
+					ui.Text(c, "返回系统权限").FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted)
+				}).Clicked() {
+					s.moveOnboarding(-1)
+				}
+			})
+		})
+	})
+}
+
+func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
+	ui.Box(c).Size(onboardingCompletionIconSlot, onboardingCompletionIconSlot).Children(func() {
+		if s.appIcon != nil {
+			inset := (onboardingCompletionIconSlot - onboardingCompletionIconSize) / 2
+			ui.Image(c, s.appIcon).Absolute().Left(inset).Top(inset).Size(onboardingCompletionIconSize, onboardingCompletionIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
+				DrawOver(func(p *ui.Painter, r ui.Rect) { p.Stroke(r, a.theme.Border, r.W/4, lineWidth) })
+		}
+		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Center().Children(func() {
+			ui.Text(c, "✅").FontSize(onboardingCompletionBadge).Role(ui.RoleNone)
+		})
+	})
+}
