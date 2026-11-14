@@ -128,6 +128,11 @@ func (s *shell) showSettings() {
 	if !s.deviceReadBusy && s.monitor == nil && !s.deviceNeedsPermission && !s.deviceNeedsRestart {
 		s.detectDevice()
 	}
+	s.window.OnFocus(func() {
+		if !s.closing && s.page == pageDevice && s.monitor == nil && !s.deviceReadBusy {
+			s.detectDevice()
+		}
+	})
 	s.window.OnClosed(func() {
 		s.clearReadyIndicator()
 		s.closeGeneralControls()

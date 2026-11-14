@@ -209,7 +209,13 @@ func (s *shell) onboardingPrimaryButton(c *ui.Context, a appearance, label strin
 		icon = s.symbolBitmap(symbolKey{name: "arrow.right", dark: a.theme.Dark, size: settingsIconSize, tint: a.theme.Background})
 	}
 	button.Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+		// Native symbol side bearings make the painted text/arrow group slightly
+		// left-heavy despite its centered layout box. Correct only this group.
+		content := ui.Row(c).AlignItems(ui.Center).Gap(spaceSM)
+		if showArrow {
+			content.Translate(1, 0)
+		}
+		content.Children(func() {
 			ui.Text(c, label).SingleLine().FontSize(onboardingActionSize).TextColor(a.theme.Background)
 			if showArrow {
 				if icon != nil {
@@ -274,8 +280,7 @@ func (s *shell) onboardingDeviceStep(c *ui.Context, a appearance) {
 				if appButton(c, a, "蓝牙设置…", false).Clicked() {
 					s.performSetupAction(setupBluetoothConnection)
 				}
-				disabled := s.deviceReadBusy || s.monitor != nil
-				if appButton(c, a, "重新检测", disabled).Clicked() && !disabled {
+				if s.canRetryDeviceDetection() && appButton(c, a, "重试", false).Clicked() {
 					s.detectDevice()
 				}
 			})
@@ -313,9 +318,6 @@ func (s *shell) onboardingVoiceStep(c *ui.Context, a appearance) {
 			}
 		}
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(spaceSM).Children(func() {
-			if appButton(c, a, "重新检测", false).Clicked() {
-				s.retryOnboardingVoiceChecks()
-			}
 			if appButton(c, a, "插件设置…", false).Clicked() {
 				s.openOnboardingSettingsPage(pagePlugins)
 			}
@@ -332,6 +334,16 @@ func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceT
 				ui.Text(c, tool.name).FontSize(onboardingBodySize).FontWeight(600)
 				ui.Text(c, status).FillWidth().FontSize(onboardingCaptionSize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 			})
+			if s.onboardingVoiceToolNeedsRetry(tool) {
+				if appButton(c, a, "重试", false).Clicked() {
+					if tool.active {
+						s.refreshVoiceTool(tool)
+					} else {
+						s.refreshOnboardingVoiceLocations()
+					}
+				}
+				return
+			}
 			if tool.prepareAssets != nil && tool.active {
 				if tool.preparingAssets && tool.busy {
 					label := "取消准备"

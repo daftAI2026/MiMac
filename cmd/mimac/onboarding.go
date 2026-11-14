@@ -220,6 +220,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	window.OnFocus(func() {
 		if !s.closing && s.onboarding.window == window {
 			s.prepareOnboardingPresentation()
+			s.refreshOnboardingChecks()
 			s.refreshOnboardingProjection()
 		}
 	})
@@ -237,12 +238,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 			s.releaseSettingsAssets()
 		}
 	})
-	if s.onboarding.step != onboardingStepWelcome {
-		s.detectDevice()
-	}
-	if s.onboarding.step == onboardingStepVoice {
-		s.refreshOnboardingVoiceLocations()
-	}
+	s.refreshOnboardingChecks()
 }
 
 func (s *shell) prepareOnboardingPresentation() {
@@ -282,12 +278,7 @@ func (s *shell) moveOnboarding(delta int) {
 		}
 	}
 	s.refreshOnboardingProjection()
-	if step == onboardingStepDevice && s.monitor == nil && !s.deviceReadBusy {
-		s.detectDevice()
-	}
-	if step == onboardingStepVoice {
-		s.refreshOnboardingVoiceLocations()
-	}
+	s.refreshOnboardingChecks()
 	s.onboarding.window.Invalidate()
 }
 
@@ -420,7 +411,23 @@ func (s *shell) refreshOnboardingVoiceLocations() {
 	}
 }
 
-func (s *shell) retryOnboardingVoiceChecks() {
+// Refresh read-only discovery on entry or focus return. The existing plugin
+// owners still control enablement, model downloads and capture.
+func (s *shell) refreshOnboardingChecks() {
+	if s.closing || s.onboarding.window == nil || s.onboarding.window.IsDestroyed() {
+		return
+	}
+	switch s.onboarding.step {
+	case onboardingStepDevice:
+		if s.monitor == nil && !s.deviceReadBusy {
+			s.detectDevice()
+		}
+	case onboardingStepVoice:
+		s.refreshOnboardingVoiceChecks()
+	}
+}
+
+func (s *shell) refreshOnboardingVoiceChecks() {
 	if s.onboarding.window == nil || s.onboarding.window.IsDestroyed() || s.onboarding.step != onboardingStepVoice {
 		return
 	}
@@ -431,4 +438,14 @@ func (s *shell) retryOnboardingVoiceChecks() {
 		s.refreshVoiceTool(tool)
 	}
 	s.refreshOnboardingVoiceLocations()
+}
+
+func (s *shell) onboardingVoiceToolNeedsRetry(tool *voiceTool) bool {
+	if tool.busy || s.toolLoadFailed {
+		return false
+	}
+	if tool.active {
+		return tool.snapshot.State == voicetools.ReadError || tool.lastAttemptCancelled || tool.snapshot.Source == appleSpeechCleanupPendingSource
+	}
+	return s.onboarding.toolLocationErrors[tool.id]
 }

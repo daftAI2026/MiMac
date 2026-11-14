@@ -14,7 +14,11 @@ flowchart TD
     welcome -->|继续| deviceStep["第1步：连接遥控器"]
     welcome -->|稍后设置| finish
     deviceStep -->|上一步| welcome
-    deviceStep --> device["只读检测，显示插件连接指引"]
+    deviceStep --> device["进入与焦点返回自动只读检测，显示插件连接指引"]
+    device -->|检测失败| deviceRetry["该设备显示重试，不常驻检测按钮"]
+    deviceRetry --> device
+    toolStep --> toolReturn["进入与焦点返回自动检查应用和已有配置，不自动下载或收音"]
+    toolReturn --> toolFailure["读取失败仅在对应工具行提供重试"]
     deviceStep --> toolStep["第2步：准备语音工具"]
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
@@ -64,7 +68,7 @@ flowchart TD
     pair --> saved{"系统设置中已有配对记录？"}
     saved -->|无| pairing["遥控器进入配对模式，选择对应设备连接"]
     saved -->|有| reconnect["唤醒遥控器，必要时点连接"]
-    pairing --> recheck["回到 MiMac 重新检测"]
+    pairing --> recheck["回到 MiMac 自动检测"]
     reconnect --> recheck
     recheck --> detected
     evidence["HID / ATVV 未发现不等于未配对；配对记录由系统蓝牙界面确认"] -.-> saved

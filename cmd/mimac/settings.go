@@ -138,8 +138,7 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 			if appButton(c, a, "蓝牙设置", false).Clicked() {
 				s.performSetupAction(setupBluetoothConnection)
 			}
-			disabled := s.deviceReadBusy || s.monitor != nil
-			if appButton(c, a, "重新检测", disabled).Clicked() && !disabled {
+			if s.canRetryDeviceDetection() && appButton(c, a, "重试", false).Clicked() {
 				s.detectDevice()
 			}
 		})
@@ -200,6 +199,10 @@ func (s *shell) deviceConnectionLabel() string {
 	default:
 		return s.deviceStatus
 	}
+}
+
+func (s *shell) canRetryDeviceDetection() bool {
+	return s.deviceStatus == "检测失败" && !s.deviceReadBusy && s.monitor == nil
 }
 
 func (s *shell) detectDevice() {
