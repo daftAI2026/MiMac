@@ -25,6 +25,7 @@ flowchart TD
     toolStep --> permissionStep["第3步：系统权限"]
     permissionStep --> permissionGuide["点击授权打开可关闭的系统权限引导"]
     permissionStep -->|继续| completion["独立完成页：当前设备按键摘要，开始使用与返回权限"]
+    completion -.-> completionMotion["MyGo元素单次弹簧入场与450ms角标延迟；收敛停止，减少动态效果显示最终态"]
     completion -->|返回系统权限| permissionStep
     completion -->|开始使用| finish["保存首启完成并交接映射，不自动启用设备或收音"]
     finish --> mappings

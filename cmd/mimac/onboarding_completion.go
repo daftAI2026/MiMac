@@ -100,7 +100,10 @@ func (s *shell) onboardingCompletionView(c *ui.Context, a appearance) {
 }
 
 func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
-	ui.Box(c).Size(onboardingCompletionIconSlot, onboardingCompletionIconSlot).Children(func() {
+	artwork := ui.Box(c).Key("onboarding-completion-artwork").Size(onboardingCompletionIconSlot, onboardingCompletionIconSlot)
+	entrance, badge := onboardingCompletionMotion(c, artwork)
+	artwork.Scale(1+.4*(1-entrance), 1+.4*(1-entrance)).Rotate(-12 * (1 - entrance)).Opacity(max(0, min(1, entrance)))
+	artwork.Children(func() {
 		if s.appIcon != nil {
 			inset := (onboardingCompletionIconSlot - onboardingCompletionIconSize) / 2
 			ui.Image(c, s.appIcon).Absolute().Left(inset).Top(inset).Size(onboardingCompletionIconSize, onboardingCompletionIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
@@ -114,7 +117,7 @@ func (s *shell) onboardingCompletionArtwork(c *ui.Context, a appearance) {
 		if color.A == 0 {
 			color = a.theme.Success
 		}
-		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge / 2).Background(color).Center().Children(func() {
+		ui.Box(c).Absolute().Right(0).Bottom(0).Size(onboardingCompletionBadge, onboardingCompletionBadge).Radius(onboardingCompletionBadge/2).Background(color).Center().Scale(badge, badge).Opacity(max(0, min(1, badge))).Children(func() {
 			key := symbolKey{name: "checkmark", dark: a.theme.Dark, size: 24, tint: ui.RGB(255, 255, 255)}
 			if icon := s.navigationSymbols[key]; icon != nil {
 				ui.Image(c, icon).Size(24, 24).Fit(ui.Contain).Role(ui.RoleNone)
