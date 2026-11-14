@@ -69,22 +69,24 @@ func TestOnboardingWelcomeLayout(t *testing.T) {
 	}
 }
 
-func TestOnboardingPagesUseVectorBrand(t *testing.T) {
-	var referenceW, referenceH float32
+func TestOnboardingArtworkRemainsSeparateFromTypography(t *testing.T) {
 	for _, step := range []onboardingStep{onboardingStepWelcome, onboardingStepDevice, onboardingStepVoice, onboardingStepPermissions} {
 		s := &shell{settingsState: settingsState{navigationSymbols: map[symbolKey]*ui.Bitmap{}}}
 		s.onboarding.step = step
 		primeOnboardingTestSymbols(s, nil)
-		v := ui.NewTester(s.onboardingView, windowMinWidth, onboardingMinHeight)
-		if s.brandMark == nil || s.appIcon != nil {
-			t.Fatalf("step %d must draw the shared vector without decoding the application icon", step)
-		}
-		mark, found := v.Find(mygo.App.Name() + " Logo")
+		v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
 		if step == onboardingStepWelcome {
-			referenceW, referenceH = mark.W, mark.H
-		}
-		if !found || referenceW == 0 || math.Abs(float64(mark.W-referenceW)) > .01 || math.Abs(float64(mark.H-referenceH)) > .01 || math.Abs(float64(mark.X+mark.W/2-windowMinWidth/2)) > 1 {
-			t.Fatalf("step %d does not use the common artwork: %v", step, mark)
+			if s.brandMark == nil || s.appIcon != nil {
+				t.Fatal("welcome must keep its original vector artwork")
+			}
+		} else {
+			if s.appIcon == nil || s.brandMark != nil {
+				t.Fatalf("step %d must keep its own application artwork", step)
+			}
+			mark, found := v.Find(mygo.App.Name() + " Logo")
+			if !found || mark.W != onboardingStepIconSize || mark.H != onboardingStepIconSize || math.Abs(float64(mark.X+mark.W/2-windowMinWidth/2)) > 1 {
+				t.Fatalf("step %d artwork was enlarged or misplaced by shared text: %v", step, mark)
+			}
 		}
 	}
 }

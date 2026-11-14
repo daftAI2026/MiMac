@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"image/png"
 	"math"
 
 	"github.com/egoist/mygo"
@@ -11,20 +13,21 @@ import (
 )
 
 const (
-	onboardingTitleSize         float32 = 34
-	onboardingBodySize          float32 = 15
-	onboardingCaptionSize       float32 = 13
-	onboardingContentWidth      float32 = 560
-	onboardingIconSize          float32 = 160
-	onboardingIconSlotSize      float32 = 192
-	onboardingActionSize        float32 = 16
-	onboardingLineHeight        float32 = 20
-	onboardingMarkOffsetY       float32 = 4
-	onboardingWelcomeActionsGap float32 = 22
-	onboardingInsetX            float32 = 20
-	onboardingHeadingGap        float32 = 12
-	onboardingContentGap        float32 = 20
-	onboardingActionsTop        float32 = 24
+	onboardingTitleSize           float32 = 34
+	onboardingBodySize            float32 = 15
+	onboardingCaptionSize         float32 = 13
+	onboardingContentWidth        float32 = 560
+	onboardingWelcomeIconSize     float32 = 160
+	onboardingWelcomeIconSlotSize float32 = 192
+	onboardingStepIconSize        float32 = 64
+	onboardingActionSize          float32 = 16
+	onboardingLineHeight          float32 = 20
+	onboardingMarkOffsetY         float32 = 4
+	onboardingWelcomeActionsGap   float32 = 22
+	onboardingInsetX              float32 = 20
+	onboardingHeadingGap          float32 = 12
+	onboardingContentGap          float32 = 20
+	onboardingActionsTop          float32 = 24
 )
 
 const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
@@ -55,12 +58,17 @@ func (s *shell) onboardingView(c *ui.Context) {
 	a := appAppearance(c.Theme().Dark, s.preferencesState.value.TextSize)
 	a.fonts = fontSizes{caption: onboardingCaptionSize, body: onboardingBodySize, title: onboardingTitleSize}
 	c.SetTheme(&a.theme)
-	if s.brandMark == nil {
-		s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
-	}
 	if s.onboarding.step == onboardingStepWelcome {
+		if s.brandMark == nil {
+			s.brandMark = ui.MustParseSVG([]byte(brand.SVG))
+		}
 		s.onboardingWelcomeView(c, a)
 		return
+	}
+	if s.appIcon == nil {
+		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
+			s.appIcon = ui.NewBitmap(img)
+		}
 	}
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
@@ -117,13 +125,20 @@ func onboardingTextHeader(c *ui.Context, a appearance, width float32, heading, d
 
 func (s *shell) onboardingPageHeader(c *ui.Context, a appearance, width float32, heading, description string) {
 	ui.Column(c).Width(width).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Size(onboardingIconSlotSize, onboardingIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			// The mark occupies 224 units of its 256-unit source viewBox.
-			// Keep its visible width independent of the surrounding artwork slot.
-			ui.Icon(c, s.brandMark).Size(onboardingIconSize, onboardingIconSize).
-				Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
-		})
-		ui.Box(c).Height(sectionGap).Shrink(0)
+		if s.onboarding.step == onboardingStepWelcome {
+			ui.Column(c).Size(onboardingWelcomeIconSlotSize, onboardingWelcomeIconSlotSize).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				// The mark occupies 224 units of its 256-unit source viewBox.
+				// Keep its visible width independent of the surrounding artwork slot.
+				ui.Icon(c, s.brandMark).Size(onboardingWelcomeIconSize, onboardingWelcomeIconSize).
+					Scale(256.0/224.0, 256.0/224.0).Translate(0, onboardingMarkOffsetY).TextColor(a.theme.Text).Label(mygo.App.Name() + " Logo")
+			})
+			ui.Box(c).Height(sectionGap).Shrink(0)
+		} else {
+			if s.appIcon != nil {
+				ui.Image(c, s.appIcon).Size(onboardingStepIconSize, onboardingStepIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo")
+			}
+			ui.Box(c).Height(onboardingHeadingGap).Shrink(0)
+		}
 		onboardingTextHeader(c, a, width, heading, description)
 	})
 }

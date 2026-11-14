@@ -172,9 +172,6 @@ func (s *shell) showInitialOnboarding() { s.openOnboarding(true) }
 // without changing any device, plugin, mapping, or voice-tool owner.
 func (s *shell) showOnboarding() { s.openOnboarding(false) }
 
-// Keep the shared artwork and three-tool setup content visible together.
-const onboardingMinHeight = 720
-
 func (s *shell) openOnboarding(automaticFirstRun bool) {
 	if s.closing {
 		return
@@ -214,8 +211,8 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	}
 	s.prepareOnboardingPresentation()
 	window := mygo.NewWindow(mygo.WindowOptions{
-		Title: mygo.App.Name() + " 首次设置", Width: windowWidth, Height: max(windowHeight, onboardingMinHeight),
-		MinWidth: windowMinWidth, MinHeight: onboardingMinHeight,
+		Title: mygo.App.Name() + " 首次设置", Width: windowWidth, Height: windowHeight,
+		MinWidth: windowMinWidth, MinHeight: windowMinHeight,
 		TitleBarStyle: mygo.TitleBarHidden, TrafficLightPosition: &mygo.Point{X: trafficLightInset, Y: trafficLightInset},
 		Content: ui.View(s.onboardingView),
 	})
