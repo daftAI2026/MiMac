@@ -125,7 +125,7 @@ func TestPermissionGuideWindowHeightTracksRequiredRows(t *testing.T) {
 	noRows := permissionGuideWindowHeight(permissionGuideSnapshot{})
 	twoRows := permissionGuideWindowHeight(permissionGuideSnapshot{rows: make([]permissionGuideRow, 2)})
 	threeRows := permissionGuideWindowHeight(permissionGuideSnapshot{rows: make([]permissionGuideRow, 3)})
-	if noRows >= twoRows || twoRows >= 474 || threeRows != 474 {
+	if noRows >= twoRows || twoRows >= threeRows || threeRows != 459 {
 		t.Fatalf("heights no/two/three = %d/%d/%d", noRows, twoRows, threeRows)
 	}
 }

@@ -20,7 +20,8 @@ import (
 
 const (
 	permissionGuideWidth                          = 500
-	permissionGuideChromeHeight                   = 249
+	permissionGuideContentInset                   = 20
+	permissionGuideChromeHeight                   = 214 + permissionGuideContentInset
 	permissionGuideTitle                  float32 = 26
 	permissionGuideRowTitle               float32 = 14
 	permissionGuideCaption                float32 = 12
@@ -619,7 +620,7 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			s.guideWindow.SetSize(permissionGuideWidth, height)
 		}
 	}
-	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, 35, 0).Children(func() {
+	ui.Column(c).Fill().Background(a.theme.Surface).Padding(8, 0, permissionGuideContentInset, 0).Children(func() {
 		ui.Row(c).FillWidth().Height(20).Padding(0, 8).AlignItems(ui.Center).Children(func() {
 			close := ui.ButtonBase(c).Label("关闭系统权限面板").Width(20).Height(20).Padding(0).
 				Background(a.theme.Border).Radius(10).AlignItems(ui.Center).Justify(ui.Center).FocusRing(false)
@@ -637,7 +638,7 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			ui.Box(c).Grow(1).FillHeight().DragWindow()
 		})
 		ui.Box(c).FillWidth().Height(24).Shrink(0)
-		ui.Column(c).FillWidth().Padding(0, 20).Children(func() {
+		ui.Column(c).FillWidth().Padding(0, permissionGuideContentInset).Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				s.permissionGuideAppIcon(c)
 				ui.Box(c).FillWidth().Height(12).Shrink(0)
@@ -661,7 +662,7 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 }
 
 func permissionGuideMeasuredRowHeight(c *ui.Context, row permissionGuideRow) float32 {
-	width := float32(permissionGuideWidth) - 40 - 2*lineWidth - 24 - permissionGuideIconBox - 24 - permissionGuideControlWidth
+	width := float32(permissionGuideWidth-2*permissionGuideContentInset) - 2*lineWidth - 24 - permissionGuideIconBox - 24 - permissionGuideControlWidth
 	_, title := c.MeasureText(width, ui.Span{Text: row.title, Size: permissionGuideRowTitle, Weight: 600})
 	_, description := c.MeasureText(width, ui.Span{Text: row.description, Size: permissionGuideCaption})
 	return max(permissionGuideIconBox, max(18, title)+4+description) + 24
