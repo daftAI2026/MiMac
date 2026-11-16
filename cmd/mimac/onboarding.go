@@ -192,18 +192,18 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	s.onboarding.toolLocationErrors = nil
 	s.onboarding.recordPath, _ = hostDataPath(onboardingRecordFile)
 	if s.onboarding.recordPath == "" {
-		s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续。"
+		s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续"
 		s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}
 	} else {
 		record, exists, err := readOnboardingRecord(s.onboarding.recordPath)
 		if err != nil {
-			s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续，完成时会尝试重新保存。"
+			s.onboarding.errorText = "无法读取首次设置进度；本次仍可继续，完成时会尝试重新保存"
 			s.onboarding.record = onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}
 		} else {
 			s.onboarding.record, _ = onboardingRecordForOpen(record, exists, automaticFirstRun)
 			if _, needsWrite := onboardingRecordForOpen(record, exists, automaticFirstRun); needsWrite {
 				if writeErr := writeOnboardingRecord(s.onboarding.recordPath, s.onboarding.record); writeErr != nil {
-					s.onboarding.errorText = "无法保存首次设置进度；本次仍可继续。"
+					s.onboarding.errorText = "无法保存首次设置进度；本次仍可继续"
 				}
 			}
 		}
@@ -295,7 +295,7 @@ func (s *shell) moveOnboarding(delta int) {
 	s.onboarding.errorText = ""
 	if next, needsWrite := onboardingRecordForStep(s.onboarding.record, step, s.onboarding.persistProgress); needsWrite {
 		if err := writeOnboardingRecord(s.onboarding.recordPath, next); err != nil {
-			s.onboarding.errorText = "无法保存设置进度；本次仍可继续。"
+			s.onboarding.errorText = "无法保存设置进度；本次仍可继续"
 		} else {
 			s.onboarding.record = next
 		}

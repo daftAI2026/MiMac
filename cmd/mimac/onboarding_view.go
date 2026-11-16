@@ -33,7 +33,7 @@ const (
 	onboardingPermissionIconSize  float32 = 28
 )
 
-const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限。"
+const onboardingWelcomeDescription = "花一点时间，连接遥控器、选择语音工具，并设置所需权限"
 
 // Balance the paragraph using the host's own text measurements. Keep its
 // original height while finding the narrowest width, without storing a second
@@ -248,13 +248,13 @@ func onboardingStepHeading(step onboardingStep) string {
 func onboardingStepSubheading(step onboardingStep) string {
 	switch step {
 	case onboardingStepVoice:
-		return "选择已有输入法，或使用本机语音识别。"
+		return "选择已有输入法，或使用本机语音识别"
 	case onboardingStepPermissions:
-		return "授予系统权限，开始使用 " + mygo.App.Name() + "。"
+		return "授予系统权限，开始使用 " + mygo.App.Name()
 	case onboardingStepCompletion:
-		return "几项常用按键，来自您的当前配置。"
+		return "几项常用按键，来自您的当前配置"
 	default:
-		return "在蓝牙设置中连接遥控器，已连接的设备无需重新配对。"
+		return "在蓝牙设置中连接遥控器，已连接的设备无需重新配对"
 	}
 }
 func onboardingStepPosition(step onboardingStep) string {
@@ -315,7 +315,7 @@ func (s *shell) onboardingInfoCard(c *ui.Context, a appearance, title, descripti
 func (s *shell) onboardingVoiceStep(c *ui.Context, a appearance) {
 	ui.Column(c).FillWidth().MinWidth(0).Gap(spaceSM).Children(func() {
 		if s.toolLoadFailed {
-			ui.Text(c, "无法读取工具设置，请在插件中重试。").FontSize(onboardingBodySize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+			ui.Text(c, "无法读取工具设置，请在插件中重试").FontSize(onboardingBodySize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 		} else {
 			for _, tool := range s.tools {
 				if s.voicePluginVisible(tool) && tool.releaseReady {
@@ -435,7 +435,7 @@ func (s *shell) chooseOnboardingVoiceTool(tool *voiceTool) {
 			return
 		}
 		if err := s.setVoiceToolEnabled(tool, true); err != nil {
-			s.onboarding.errorText = "无法启用工具，请重试。"
+			s.onboarding.errorText = "无法启用工具，请重试"
 			s.invalidateOnboardingWindow()
 			return
 		}
@@ -443,7 +443,7 @@ func (s *shell) chooseOnboardingVoiceTool(tool *voiceTool) {
 	if err := s.selectVoiceTool(tool); err != nil {
 		s.onboarding.errorText = s.toolError
 		if s.onboarding.errorText == "" {
-			s.onboarding.errorText = "无法选择工具，请重试。"
+			s.onboarding.errorText = "无法选择工具，请重试"
 		}
 	}
 	s.invalidateOnboardingWindow()
@@ -477,7 +477,7 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 						})
 					})
 					ui.Box(c).Height(spaceSM).Shrink(0)
-					description := "授予系统权限，获得流畅的 " + mygo.App.Name() + " 使用体验。"
+					description := "授予系统权限，获得流畅的 " + mygo.App.Name() + " 使用体验"
 					width := onboardingBalancedTextWidth(c, description, onboardingCaptionSize, 400, onboardingPermissionTileWidth-40)
 					ui.Text(c, description).Width(width).FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 					ui.Box(c).Height(24).Shrink(0)

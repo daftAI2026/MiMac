@@ -540,11 +540,11 @@ func permissionGuideRows(snapshot permissionGuideSnapshot) []permissionGuideRow 
 func permissionGuideRowFor(id permissionGuideID) permissionGuideRow {
 	switch id {
 	case permissionGuideInput:
-		return permissionGuideRow{id: id, icon: deviceIconSymbol, title: "输入监控", description: "读取所选设备的按键。"}
+		return permissionGuideRow{id: id, icon: deviceIconSymbol, title: "输入监控", description: "读取所选设备的按键"}
 	case permissionGuidePostEvent:
-		return permissionGuideRow{id: id, icon: "hand.tap", title: permissionguide.AccessibilityPermissionTitle(), description: "向当前应用发送设定的按键。"}
+		return permissionGuideRow{id: id, icon: "hand.tap", title: permissionguide.AccessibilityPermissionTitle(), description: "向当前应用发送设定的按键"}
 	case permissionGuideBluetooth:
-		return permissionGuideRow{id: id, icon: "wave.3.right", title: "蓝牙", description: "让已选语音工具使用遥控器音频。"}
+		return permissionGuideRow{id: id, icon: "wave.3.right", title: "蓝牙", description: "让已选语音工具使用遥控器音频"}
 	default:
 		return permissionGuideRow{id: id, title: "系统权限"}
 	}
@@ -646,7 +646,7 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 			})
 			ui.Box(c).FillWidth().Height(24).Shrink(0)
 			if len(rows) == 0 {
-				ui.Text(c, "当前配置不需要额外系统权限。您可以关闭此面板。").FillWidth().Height(44).TextAlign(ui.Center).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
+				ui.Text(c, "当前配置不需要额外系统权限，您可以关闭此面板").FillWidth().Height(44).TextAlign(ui.Center).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 			} else {
 				ui.Column(c).Key("permission-guide-card").FillWidth().MinWidth(0).Height(rowsHeight).Border(lineWidth, a.theme.Border).Radius(12).Background(a.theme.Background).Children(func() {
 					for index, row := range rows {

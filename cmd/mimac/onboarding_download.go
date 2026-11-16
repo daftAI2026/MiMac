@@ -11,7 +11,7 @@ import (
 func (s *shell) openOnboardingVoiceDownload(tool *voiceTool, open func(string) error) {
 	s.onboarding.errorText = ""
 	if err := open(tool.installURL); err != nil {
-		s.onboarding.errorText = "无法打开下载页面，请重试。"
+		s.onboarding.errorText = "无法打开下载页面，请重试"
 	}
 	s.invalidateOnboardingWindow()
 }
