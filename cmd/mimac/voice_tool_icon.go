@@ -32,15 +32,16 @@ func (s *shell) voiceToolArtwork(c *ui.Context, a appearance, tool *voiceTool) {
 // Cache only view assets. Discovery owns application identity and location;
 // MyGo asks the system for its icon without launching the application.
 func (s *shell) voiceToolIcon(tool *voiceTool) *ui.Bitmap {
-	cached := s.voiceToolIcons[tool.id]
-	if tool.busy {
-		if cached != nil {
-			return cached.bitmap
-		}
-		return nil
-	}
 	if s.voiceToolIcons == nil {
 		s.voiceToolIcons = make(map[string]*voiceToolIcon)
+	}
+	cached := s.voiceToolIcons[tool.id]
+	if tool.busy {
+		if cached == nil {
+			cached = &voiceToolIcon{bitmap: loadVoiceToolIcon("", tool.fallbackIconPNG)}
+			s.voiceToolIcons[tool.id] = cached
+		}
+		return cached.bitmap
 	}
 	if !tool.active {
 		if cached == nil {
