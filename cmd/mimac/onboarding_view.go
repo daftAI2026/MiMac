@@ -474,8 +474,8 @@ func (s *shell) onboardingPermissionsStep(c *ui.Context, a appearance) {
 					ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(2).Children(func() {
 						ui.Text(c, "系统权限").FillWidth().FontSize(onboardingBodySize).FontWeight(600).TextAlign(ui.Center)
 						ui.Box(c).FillWidth().Height(24).Center().Children(func() {
-							ui.Row(c).Height(18).Padding(0, 7).AlignItems(ui.Center).Radius(9).Background(a.theme.Surface).Border(lineWidth, a.theme.Border).Children(func() {
-								ui.Text(c, summary.label()).SingleLine().FontSize(12).FontWeight(600).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
+							ui.Row(c).Height(18).Padding(0, 7).AlignItems(ui.Center).Radius(9).Border(lineWidth, onboardingStatusInk(a)).Children(func() {
+								ui.Text(c, summary.label()).SingleLine().FontSize(12).FontWeight(600).TextColor(onboardingStatusInk(a)).Role(ui.RoleStatus)
 							})
 						})
 					})

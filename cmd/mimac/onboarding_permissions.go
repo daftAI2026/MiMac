@@ -9,8 +9,21 @@ import (
 // Setup cards are quieter than the denser settings surfaces. Controls keep
 // their existing surface role, so they remain visible inside the card.
 func onboardingGroup(c *ui.Context, a appearance, content func()) {
-	a.theme.Surface = a.theme.Text.Alpha(.02).Over(a.theme.Background)
+	a.theme.Surface = onboardingSurfaceColor(a)
 	settingsGroup(c, a, content)
+}
+
+func onboardingSurfaceColor(a appearance) ui.Color {
+	return a.theme.Text.Alpha(.02).Over(a.theme.Background)
+}
+
+// Read-only progress has a softer ink role than descriptions or actions.
+func onboardingStatusInk(a appearance) ui.Color {
+	alpha := float32(.36)
+	if a.theme.Dark {
+		alpha = .48
+	}
+	return a.theme.Text.Alpha(alpha).Over(onboardingSurfaceColor(a))
 }
 
 // Ask the host for the installed system artwork rather than redistributing
