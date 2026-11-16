@@ -46,7 +46,9 @@ func (s *shell) voiceToolIcon(tool *voiceTool) *ui.Bitmap {
 		if cached == nil {
 			cached = &voiceToolIcon{bitmap: loadVoiceToolIcon("", tool.fallbackIconPNG)}
 			s.voiceToolIcons[tool.id] = cached
-			s.locateVoiceToolIcon(tool, cached)
+			if s.onboarding.window == nil || s.onboarding.step != onboardingStepVoice {
+				s.locateVoiceToolIcon(tool, cached)
+			}
 		}
 		return cached.bitmap
 	}

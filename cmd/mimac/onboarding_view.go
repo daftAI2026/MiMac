@@ -371,10 +371,7 @@ func (s *shell) onboardingVoiceToolRow(c *ui.Context, a appearance, tool *voiceT
 			}
 			if installState == voicetools.NotFound && tool.installURL != "" {
 				if appButton(c, a, "下载安装…", false).Clicked() {
-					if err := mygo.Shell.OpenExternal(tool.installURL); err != nil {
-						s.onboarding.errorText = "无法打开下载页面，请重试。"
-						s.invalidateOnboardingWindow()
-					}
+					s.openOnboardingVoiceDownload(tool, mygo.Shell.OpenExternal)
 				}
 			} else if selected && tool.active {
 				if tool.active && canSelect && !tool.busy {

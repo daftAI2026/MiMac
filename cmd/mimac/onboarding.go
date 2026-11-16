@@ -396,6 +396,16 @@ func (s *shell) stopOnboardingVoiceLocations() {
 		s.onboarding.toolLocationCancel()
 		s.onboarding.toolLocationCancel = nil
 	}
+	// An unfinished onboarding lookup must not leave a fallback that prevents
+	// the settings view from starting its own artwork lookup after handoff.
+	for _, tool := range s.tools {
+		if _, finished := s.onboarding.toolLocations[tool.id]; finished || tool.active {
+			continue
+		}
+		if icon := s.voiceToolIcons[tool.id]; icon != nil && icon.cancel == nil {
+			delete(s.voiceToolIcons, tool.id)
+		}
+	}
 	s.onboarding.toolLocationGeneration++
 }
 
@@ -419,15 +429,15 @@ func (s *shell) refreshOnboardingVoiceLocations() {
 		if !tool.releaseReady || tool.active || tool.id == appleSpeechToolID || tool.locateApplication == nil {
 			continue
 		}
-		locate, locator, id := tool.locateApplication, s.toolLocator, tool.id
+		locate, locator := tool.locateApplication, s.toolLocator
 		go func() {
-			_, state, err := locate(ctx, locator)
+			bundle, state, err := locate(ctx, locator)
 			mygo.RunOnMain(func() {
-				if ctx.Err() != nil || s.onboarding.window != window || s.onboarding.toolLocationGeneration != generation || s.onboarding.step != onboardingStepVoice {
+				current := !s.closing && s.onboarding.window == window && s.onboarding.step == onboardingStepVoice
+				if !onboardingLocationResultCurrent(ctx, generation, s.onboarding.toolLocationGeneration, current) {
 					return
 				}
-				s.onboarding.toolLocations[id] = state
-				s.onboarding.toolLocationErrors[id] = err != nil
+				s.applyOnboardingVoiceLocation(tool, bundle, state, err, loadVoiceToolIcon)
 				window.Invalidate()
 			})
 		}()
