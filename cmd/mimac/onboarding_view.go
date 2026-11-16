@@ -250,7 +250,7 @@ func onboardingStepSubheading(step onboardingStep) string {
 	case onboardingStepVoice:
 		return "选择已有输入法，或使用本机语音识别。"
 	case onboardingStepPermissions:
-		return "允许 MiMac 读取遥控按键并执行您的映射。"
+		return "授予系统权限，开始使用 " + mygo.App.Name() + "。"
 	case onboardingStepCompletion:
 		return "几项常用按键，来自您的当前配置。"
 	default:
