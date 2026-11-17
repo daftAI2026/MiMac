@@ -18,6 +18,7 @@ type voiceOverlayFrame struct {
 	Label    string
 	DB       float32
 	Spectrum siriglass.Spectrum
+	Input    siriglass.InputState
 }
 
 type voiceOverlayView interface {
@@ -49,6 +50,10 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 		return frame
 	}
 	frame.Visible, frame.Token, frame.Label = true, snapshot.Session.Token, phase.label
+	frame.Input = siriglass.InputState{
+		IsRecording:            snapshot.Session.Phase == bridge.PhaseCapturing,
+		HasVoiceInputOwnership: snapshot.HasSession,
+	}
 	if snapshot.Session.Phase == bridge.PhaseCapturing || snapshot.Session.Phase == bridge.PhaseDraining {
 		frame.Spectrum = s.voiceOverlay.meter.snapshot(frame.Token, now)
 	}

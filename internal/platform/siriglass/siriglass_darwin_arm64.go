@@ -42,6 +42,7 @@ type audioMetersInput struct {
 }
 
 type glassParameters struct {
+	ReferenceChatInput      *InputState       `json:"referenceChatInput,omitempty"`
 	AudioMeters             *audioMetersInput `json:"audioMeters,omitempty"`
 	SchemaVersion           int               `json:"schemaVersion"`
 	Revision                uint64            `json:"revision"`
@@ -106,6 +107,7 @@ type nativeAPI struct {
 	version     func() uint32
 	create      func(unsafe.Pointer, int32) uint64
 	attach      func(uint64, uintptr, float64, float64, float64, float64, int32) int32
+	update      func(uint64, unsafe.Pointer, int32) int32
 	updateFrame func(uint64, uint64, int32, float32, unsafe.Pointer, unsafe.Pointer, int32) int32
 	destroy     func(uint64) int32
 	lastError   func(unsafe.Pointer, int32) int32
@@ -201,6 +203,51 @@ func Open(window uintptr) (*Renderer, error) {
 // hidden renderer. Identical native inputs are deduplicated.
 func (r *Renderer) Update(visible bool, db float32) error {
 	return r.UpdateMeters(visible, db, Meters{})
+}
+
+// UpdateInput sends infrequent control changes through the existing JSON API.
+// Audio frames continue through UpdateMeters' fixed-array transfer.
+func (r *Renderer) UpdateInput(input InputState) error { return r.updateInput(&input) }
+
+// ClearInput removes the old observer baseline before a new session or hide.
+func (r *Renderer) ClearInput() error { return r.updateInput(nil) }
+
+func (r *Renderer) updateInput(input *InputState) error {
+	if r == nil {
+		return errors.New("siriglass: nil renderer")
+	}
+	var ran bool
+	var resultErr error
+	mygo.RunOnMain(func() {
+		ran = true
+		resultErr = r.updateInputOnMain(input)
+	})
+	if !ran {
+		return errors.New("siriglass: MyGo main loop is unavailable")
+	}
+	return resultErr
+}
+
+func (r *Renderer) updateInputOnMain(input *InputState) error {
+	if r.closed || r.closing || r.handle == 0 || r.api == nil {
+		return errors.New("siriglass: renderer is closed or awaiting close retry")
+	}
+	if r.revision == ^uint64(0) {
+		return errors.New("siriglass: renderer revision exhausted")
+	}
+	p := rendererMeterParameters(r.revision+1, r.visible, r.db, r.meters)
+	p.ReferenceChatInput = input
+	data, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("siriglass: encode input: %w", err)
+	}
+	result := r.api.update(r.handle, unsafe.Pointer(&data[0]), int32(len(data)))
+	runtime.KeepAlive(data)
+	if result != 1 {
+		return fmt.Errorf("siriglass: update input: %s", r.api.errorText())
+	}
+	r.revision = p.Revision
+	return nil
 }
 
 // UpdateMeters uses the native array branch when Count is nonzero. Arrays are
@@ -352,6 +399,7 @@ func loadNativeAPI() (*nativeAPI, error) {
 			{"mimac_siri_glass_abi_version", &api.version},
 			{"mimac_siri_glass_create", &api.create},
 			{"mimac_siri_glass_attach_rect_with_clip", &api.attach},
+			{"mimac_siri_glass_update", &api.update},
 			{"mimac_siri_glass_update_frame", &api.updateFrame},
 			{"mimac_siri_glass_destroy", &api.destroy},
 			{"mimac_siri_glass_last_error", &api.lastError},

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/platform/siriglass"
 	"os"
 	"path/filepath"
 	"testing"
@@ -217,4 +218,29 @@ func TestVoiceOverlayRejectsKeysAndMissingAudioOwner(t *testing.T) {
 	if err := s.coordinator.step(bridge.OrdinaryEnded(press)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestVoiceOverlayProjectsCaptureOwnershipWithoutGuessingThinking(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	s.preferencesState.value = defaultHostPreferences()
+	check := func(visible, recording, owned bool) {
+		t.Helper()
+		f := s.voiceOverlayFrameAt(time.Now())
+		want := siriglass.InputState{IsRecording: recording, HasVoiceInputOwnership: owned}
+		if f.Visible != visible || f.Input != want {
+			t.Fatalf("frame = %+v, want visible=%v input=%+v", f, visible, want)
+		}
+	}
+	check(false, false, false)
+	press := beginHostVoice(t, s)
+	check(true, false, true)
+	runHostTask(t, tasks)
+	check(true, true, true)
+	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	// Draining closes capture; it does not establish target thinking.
+	check(true, false, true)
+	runHostTask(t, tasks)
+	check(false, false, false)
 }

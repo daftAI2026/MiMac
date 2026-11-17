@@ -3,11 +3,14 @@ public struct ReferenceChatInput: Codable, Equatable, Sendable {
     public var thinking: Bool
     public var isRecording: Bool
     public var hasVoiceInputOwnership: Bool
+    public var sceneMode: String?
 
-    public init(thinking: Bool, isRecording: Bool, hasVoiceInputOwnership: Bool) {
+    public init(thinking: Bool, isRecording: Bool, hasVoiceInputOwnership: Bool,
+                sceneMode: String? = nil) {
         self.thinking = thinking
         self.isRecording = isRecording
         self.hasVoiceInputOwnership = hasVoiceInputOwnership
+        self.sceneMode = sceneMode
     }
 }
 
@@ -30,6 +33,8 @@ public struct ReferenceThinkingScale: Sendable {
     public static let response = 0.42
     public static let dampingFraction = 0.67
     public static let yDelay = 0.045
+    public static let exitResponse = 0.3
+    public static let exitDampingFraction = 0.8
     public private(set) var target = 1.0
     public private(set) var showThinkingWave = false
     // One display-observer edge, not a Core completion or a PCM end signal.

@@ -216,7 +216,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "共用 Runtime 在 Core gate 后的 PCM 消费路径提供按 token 匹配的有界只读观测。Siri 数值 profile 合成对照已过；本轮等值 Bool 通知 ABBA 无 CPU 收益，未合入。真人明显随声与完整状态仍待验。 原生显示先检查公开API下限，再用候选库的真实符号、布局和witness判定兼容；失败只关闭呈现。 显式原生呈现输入的思考边与录音/控制权退出分别处理；退出同事务复位且不重放旧思考。当前Go帧只带可见性/标签和频谱，完整目标状态接线仍待。",
+    "summary": "共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",

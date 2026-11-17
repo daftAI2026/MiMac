@@ -18,14 +18,23 @@ const voiceOverlayFrameInterval = time.Second / 30
 
 // MyGo owns the nonactivating panel and frame scheduling. The native adapter
 // owns only the material view inside it, never microphone or session state.
+type voiceOverlayNative interface {
+	UpdateInput(siriglass.InputState) error
+	ClearInput() error
+	UpdateMeters(bool, float32, siriglass.Meters) error
+	Update(bool, float32) error
+	Close() error
+}
+
 type mygoVoiceOverlay struct {
 	window          *mygo.Window
-	renderer        *siriglass.Renderer
+	renderer        voiceOverlayNative
 	read            func() voiceOverlayFrame
 	failed          func(error)
 	frame           voiceOverlayFrame
 	trace           *voiceOverlayTrace
 	visible, closed bool
+	inputAttached   bool // Native observer resource, independent of window visibility.
 }
 
 func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
@@ -38,7 +47,9 @@ func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error)) (voi
 	})
 	view.window.SetIgnoreMouseEvents(true)
 	renderer, err := siriglass.Open(view.window.NativeHandle())
-	view.renderer = renderer
+	if renderer != nil {
+		view.renderer = renderer
+	}
 	if err != nil {
 		return view, err
 	}
@@ -54,6 +65,7 @@ func newVoiceOverlayView(read func() voiceOverlayFrame, failed func(error)) (voi
 			return
 		}
 		view.closed = true
+		view.inputAttached = false
 	})
 	view.window.OnClosed(func() { view.visible = false })
 	return view, nil
@@ -81,7 +93,10 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 	if !frame.Visible {
 		return v.Hide()
 	}
-	err := v.renderer.UpdateMeters(true, frame.DB, siriglass.MetersFromSpectrum(frame.Spectrum))
+	// This panel is the floating scene. Scene policy belongs to the display
+	// adapter, while capture and ownership come from the current Core snapshot.
+	frame.Input.SceneMode = "island"
+	err := v.updateNative(frame)
 	v.trace.render(frame, err)
 	if err != nil {
 		return err
@@ -100,6 +115,36 @@ func (v *mygoVoiceOverlay) render(frame voiceOverlayFrame) error {
 	}
 	v.visible = true
 	v.frame = frame
+	return nil
+}
+
+// updateNative is separated from AppKit placement so native refusal and
+// resource ownership can be checked without creating an event loop or window.
+func (v *mygoVoiceOverlay) updateNative(frame voiceOverlayFrame) error {
+	var err error
+	if v.inputAttached && v.frame.Token != frame.Token {
+		err = v.clearNativeInput()
+	}
+	if err == nil && (!v.inputAttached || v.frame.Input != frame.Input) {
+		err = v.renderer.UpdateInput(frame.Input)
+		if err == nil {
+			v.inputAttached = true
+		}
+	}
+	if err == nil {
+		err = v.renderer.UpdateMeters(true, frame.DB, siriglass.MetersFromSpectrum(frame.Spectrum))
+	}
+	return err
+}
+
+func (v *mygoVoiceOverlay) clearNativeInput() error {
+	if !v.inputAttached {
+		return nil
+	}
+	if err := v.renderer.ClearInput(); err != nil {
+		return err
+	}
+	v.inputAttached = false
 	return nil
 }
 
@@ -129,7 +174,7 @@ func (v *mygoVoiceOverlay) Hide() error {
 		v.window.Hide()
 	}
 	if !v.closed && v.renderer != nil {
-		err := v.renderer.Update(false, -60)
+		err := errors.Join(v.clearNativeInput(), v.renderer.Update(false, -60))
 		if wasVisible {
 			v.trace.hidden(token, err)
 		}
@@ -152,6 +197,7 @@ func (v *mygoVoiceOverlay) Close() error {
 		}
 	}
 	v.closed = true
+	v.inputAttached = false
 	if v.window != nil && !v.window.IsDestroyed() {
 		v.window.Close()
 	}

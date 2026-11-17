@@ -67,6 +67,8 @@ def verify(bundle, arch, require_siri=False, development=False, require_audio_in
         exports = subprocess.check_output(["/usr/bin/nm", "-gU", str(resources / name)], text=True)
         if name == SIRI and not any(line.split()[-1:] == ["_mimac_siri_glass_update_frame"] for line in exports.splitlines()):
             raise ValueError("missing typed frame export in " + name)
+        if name == SIRI and not any(line.split()[-1:] == ["_mimac_siri_glass_update"] for line in exports.splitlines()):
+            raise ValueError("missing input update export in " + name)
         if not any(line.split()[-1:] == ["_" + symbol] for line in exports.splitlines()):
             raise ValueError(f"missing export {symbol} in {name}")
     audio_installer = verify_audio_installer(resources, arch, require_audio_installer)

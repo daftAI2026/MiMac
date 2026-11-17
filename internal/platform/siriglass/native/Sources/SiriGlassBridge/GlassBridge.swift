@@ -175,12 +175,28 @@ private let referenceThinkingWaveAnimation = Animation
         state.compositionParameters = plan.compositionParameters
         referenceThinking = plan.referenceThinking
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        state.thinkingScale.update(parameters.referenceChatInput,
-                                   reduceMotion: reduceMotion)
-        if plan.animatePersonalityChange && !reduceMotion {
-            withAnimation(referenceThinkingWaveAnimation) { state.glass = glass }
+        if plan.referenceThinking?.ownershipGateClosed == true {
+            if let animation = ChatThinkingScale.exitAnimation(for: parameters.referenceChatInput,
+                                                               reduceMotion: reduceMotion) {
+                withAnimation(animation) {
+                    state.thinkingScale.update(parameters.referenceChatInput, reduceMotion: reduceMotion)
+                    state.glass = glass
+                }
+            } else {
+                var reset = Transaction(animation: nil)
+                reset.disablesAnimations = true
+                withTransaction(reset) {
+                    state.thinkingScale.update(parameters.referenceChatInput, reduceMotion: reduceMotion)
+                    state.glass = glass
+                }
+            }
         } else {
-            state.glass = glass
+            state.thinkingScale.update(parameters.referenceChatInput, reduceMotion: reduceMotion)
+            if plan.animatePersonalityChange && !reduceMotion {
+                withAnimation(referenceThinkingWaveAnimation) { state.glass = glass }
+            } else {
+                state.glass = glass
+            }
         }
         if let window { refreshVisibility(for: window) }
     }

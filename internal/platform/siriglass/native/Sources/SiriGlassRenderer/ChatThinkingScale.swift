@@ -12,6 +12,13 @@ import SiriGlassModel
         reference = input.map(ReferenceThinkingScale.init)
     }
 
+    public static func exitAnimation(for input: ReferenceChatInput?, reduceMotion: Bool) -> Animation? {
+        guard input?.sceneMode == "island", !reduceMotion else { return nil }
+        return .spring(response: ReferenceThinkingScale.exitResponse,
+                       dampingFraction: ReferenceThinkingScale.exitDampingFraction,
+                       blendDuration: 0)
+    }
+
     public func update(_ input: ReferenceChatInput?, reduceMotion: Bool) {
         guard let input else {
             guard reference != nil else { return }
@@ -28,13 +35,14 @@ import SiriGlassModel
         }
         guard let target = reference?.update(input) else { return }
         if reference?.ownershipGateClosed == true {
-            // Ending input restores the parent together, without retaining a
-            // delayed thinking-axis transition after the owner has gone.
-            var reset = Transaction(animation: nil)
-            reset.disablesAnimations = true
-            withTransaction(reset) {
-                x = 1
-                y = 1
+            // Exit restores both axes together; it never inherits the thinking
+            // transition's delayed Y axis.
+            if let animation = Self.exitAnimation(for: input, reduceMotion: reduceMotion) {
+                withAnimation(animation) { x = 1; y = 1 }
+            } else {
+                var reset = Transaction(animation: nil)
+                reset.disablesAnimations = true
+                withTransaction(reset) { x = 1; y = 1 }
             }
             return
         }

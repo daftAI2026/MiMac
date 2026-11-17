@@ -38,6 +38,16 @@ import Foundation
     }
 
     static func main() {
+        let legacy = Data(#"{"thinking":true,"isRecording":true,"hasVoiceInputOwnership":true}"#.utf8)
+        let decoded = try? JSONDecoder().decode(ReferenceChatInput.self, from: legacy)
+        expect(decoded != nil && decoded?.sceneMode == nil, "legacy input JSON must retain a missing scene")
+        for scene in ["island", "canvasOnly", "app", "standby", "assistantMenu", "assistantField", "lightweightToolsMenu", "future-scene"] {
+            let input = ReferenceChatInput(thinking: false, isRecording: true,
+                                           hasVoiceInputOwnership: true, sceneMode: scene)
+            let data = try? JSONEncoder().encode(input)
+            let decoded = data.flatMap { try? JSONDecoder().decode(ReferenceChatInput.self, from: $0) }
+            expect(decoded?.sceneMode == scene, "scene input must round trip: \(scene)")
+        }
         let initial = ReferenceThinkingScale(input: ReferenceChatInput(
             thinking: true, isRecording: true, hasVoiceInputOwnership: true))
         expect(!initial.showThinkingWave && initial.target == 1,

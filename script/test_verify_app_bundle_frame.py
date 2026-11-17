@@ -9,7 +9,7 @@ import verify_app_bundle as bundle_check
 
 
 class FrameExportContract(unittest.TestCase):
-    def verify_fixture(self, with_frame, development=False, bundle_id="dev.mimac.app"):
+    def verify_fixture(self, with_frame, development=False, bundle_id="dev.mimac.app", with_input=True):
         with tempfile.TemporaryDirectory() as directory:
             app = Path(directory) / "MiMac.app"
             contents = app / "Contents"
@@ -28,6 +28,8 @@ class FrameExportContract(unittest.TestCase):
                 result = "00000000 T _" + symbol + "\n"
                 if name == bundle_check.SIRI and with_frame:
                     result += "00000004 T _mimac_siri_glass_update_frame\n"
+                if name == bundle_check.SIRI and with_input:
+                    result += "00000008 T _mimac_siri_glass_update\n"
                 return result
 
             def command(arguments, **_):
@@ -51,6 +53,10 @@ class FrameExportContract(unittest.TestCase):
 
     def test_matching_library_is_accepted(self):
         self.assertIsNotNone(self.verify_fixture(True))
+
+    def test_missing_input_update_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "missing input update export"):
+            self.verify_fixture(True, with_input=False)
 
 
 class AudioInstallerChecksumContract(unittest.TestCase):
