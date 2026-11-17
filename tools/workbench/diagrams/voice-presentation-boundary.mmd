@@ -21,8 +21,10 @@ flowchart TD
     frame --> enabled
     enabled -->|否| hidden["隐藏并停止频谱分析；丢弃部分窗口"]
     enabled -->|是| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
-    panel --> gate{"仅 arm64 macOS 27.0.1 build 26A434？"}
-    gate -->|是| renderer["siriglass：显示倍率×5一次 → 原生 audioMeters 数组入口"]
+    panel --> gate{"arm64 + macOS26公开API下限？"}
+    gate -->|是| capability{"原生符号、布局与witness兼容？"}
+    capability -->|是| renderer["siriglass：显示倍率×5一次 → 原生 audioMeters 数组入口"]
+    capability -->|否| unsupported
     gate -->|否| unsupported["不支持：仅关闭呈现"]
     renderer --> operation{"创建 / 更新 / 关闭成功？"}
     operation -->|是| material["显示当前会话材质"]

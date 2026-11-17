@@ -401,7 +401,7 @@ void *glass_apply_audio_meters_wave(const void *glass,
     // Allocate everything before retaining or transferring array ownership.
     // After AudioMeters.init succeeds, the remaining captured Swift calls have
     // no recoverable error return; only an ABI mismatch can trap, which the
-    // exact OS/build/symbol/metadata gates are intended to prevent.
+    // symbol/layout/witness checks are intended to prevent.
     void *meters = NULL;
     void *options = NULL;
     void *result = NULL;
@@ -432,6 +432,26 @@ void *glass_apply_audio_meters_wave(const void *glass,
                            &g_personality_byte[personality], meters, &anchorOpacity);
     // SiriWaveOptions.init(audioMeters:) consumes the 16-byte AudioMeters.
     free(meters);
+
+    // The setter accepts Optional<SiriWaveOptions>. Verify that this fully
+    // initialized value represents .some before borrowing it as an Optional.
+    void **optionsVWT = ((void **)g_options_md)[-1];
+    typedef unsigned (*GetSinglePayloadTag)(const void *, unsigned, void *);
+    if (!optionsVWT[6]) {
+        g_options_destroy(options, g_options_md);
+        free(options);
+        free(result);
+        snprintf(g_error, sizeof g_error, "SiriWaveOptions has no getEnumTagSinglePayload witness");
+        return NULL;
+    }
+    unsigned optionalTag = ((GetSinglePayloadTag)optionsVWT[6])(options, 1, g_options_md);
+    if (optionalTag != 0) {
+        g_options_destroy(options, g_options_md);
+        free(options);
+        free(result);
+        snprintf(g_error, sizeof g_error, "initialized SiriWaveOptions is not Optional.some");
+        return NULL;
+    }
 
     sw_call_x20_x0_x8(g_wave, (void *)glass, options, result);
     // Probe-confirmed g_wave borrow semantics: destroy the caller's options;

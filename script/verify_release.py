@@ -13,6 +13,7 @@ import re
 import subprocess
 
 from release_version import apply_versions, validate_build_number, validate_date
+from check_native_display import inspect_library
 from package_audio_component import PackageError
 from verify_app_bundle import SIRI, verify
 
@@ -20,8 +21,7 @@ from verify_app_bundle import SIRI, verify
 SIRI_ABI_HOST_GATE = {
     "os": "Darwin",
     "architecture": "arm64",
-    "product_version": "27.0.1",
-    "build_version": "26A434",
+    "minimum_major": 26,
 }
 COMPONENT_PROFILES = ("core-only", "siri-glass")
 
@@ -126,12 +126,15 @@ def verify_component_profile(component_profile: str, arch: str) -> tuple[bool, d
         if arch != "arm64":
             raise ValueError("siri-glass component profile is supported only for arm64 releases")
         observed = current_siri_abi_host()
-        if observed != SIRI_ABI_HOST_GATE:
+        version = str(observed.get("product_version") or "")
+        major = version.split(".", 1)[0]
+        if (observed.get("os") != "Darwin" or observed.get("architecture") != "arm64"
+                or not major.isdecimal() or int(major) < SIRI_ABI_HOST_GATE["minimum_major"]):
             raise ValueError(
-                "siri-glass component profile requires host "
-                "Darwin arm64 macOS 27.0.1 build 26A434; found " + json.dumps(observed, sort_keys=True)
+                "siri-glass component profile requires host Darwin arm64 macOS 26 or later; found "
+                + json.dumps(observed, sort_keys=True)
             )
-        gate = {"required": SIRI_ABI_HOST_GATE, "status": "satisfied", "observed": observed}
+        gate = {"required": SIRI_ABI_HOST_GATE, "status": "requires-native-check", "observed": observed}
 
     return require_siri, {
         "profile": component_profile,
@@ -175,6 +178,12 @@ def verify_release(
     if siri_included != selected_siri:
         expected = "required" if selected_siri else "forbidden"
         raise ValueError(f"{component_profile} component profile requires Siri glass to be {expected}")
+    if require_siri:
+        capability = inspect_library(contents / "Resources" / SIRI)
+        if capability["library_sha256"] != siri_library_sha256:
+            raise ValueError("native display library changed during capability validation")
+        component_contract["siri_glass"]["private_abi_check"] = capability
+        component_contract["siri_glass"]["private_abi_host_gate"]["status"] = "satisfied"
     component_contract["siri_glass"]["included"] = siri_included
     component_contract["siri_glass"]["sha256"] = siri_library_sha256
     return {

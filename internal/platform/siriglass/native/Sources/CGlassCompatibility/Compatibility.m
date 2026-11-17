@@ -46,6 +46,7 @@ static int checkValueLayout(void *framework,
                             const char *metadataSymbol,
                             const char *typeName,
                             uint64_t expectedSize,
+                            int requiresOptionalTag,
                             char *errorBuffer,
                             int32_t errorCapacity) {
     GlassMetadataAccessor accessor = (GlassMetadataAccessor)dlsym(framework, metadataSymbol);
@@ -76,6 +77,10 @@ static int checkValueLayout(void *framework,
                      (unsigned long long)stride,
                      valueWitnessTable[1] ? "present" : "missing");
         }
+        return 0;
+    }
+    if (requiresOptionalTag && !valueWitnessTable[6]) {
+        set_error(errorBuffer, errorCapacity, "%s Optional tag witness is missing", typeName);
         return 0;
     }
     return 1;
@@ -163,12 +168,14 @@ int32_t SiriGlassCheckPrivateCompatibility(uint64_t swiftSize,
                           "$s7SwiftUI6_GlassV15SiriWaveOptionsV11AudioMetersVMa",
                           "SiriWaveOptions.AudioMeters",
                           16,
+                          0,
                           errorBuffer,
                           errorCapacity)) return 0;
     if (!checkValueLayout(g_swiftUICore,
                           "$s7SwiftUI6_GlassV15SiriWaveOptionsVMa",
                           "SiriWaveOptions",
                           48,
+                          1,
                           errorBuffer,
                           errorCapacity)) return 0;
     if (errorBuffer && errorCapacity > 0) errorBuffer[0] = '\0';

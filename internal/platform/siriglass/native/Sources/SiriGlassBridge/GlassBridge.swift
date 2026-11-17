@@ -226,6 +226,22 @@ private func decodeParameters(_ data: Data) -> ParameterDecodeResult {
 @_cdecl("mimac_siri_glass_abi_version")
 public func siriGlassABIVersion() -> UInt32 { 1 }
 
+// Read-only admission check shared by packaging and the runtime adapter.
+// It resolves metadata but creates no window, renderer, audio or session.
+@_cdecl("mimac_siri_glass_check_compatibility")
+public func siriGlassCheckCompatibility() -> Int32 {
+    onMain(0) {
+        do {
+            try PrivateGlassAdapter.shared.validateCompatibility()
+            GlassRegistry.lastError = ""
+            return 1
+        } catch {
+            recordError(error.localizedDescription)
+            return 0
+        }
+    }
+}
+
 @_cdecl("mimac_siri_glass_create")
 public func siriGlassCreate(_ bytes: UnsafePointer<UInt8>?, _ count: Int32) -> UInt64 {
     guard Thread.isMainThread else { return 0 }

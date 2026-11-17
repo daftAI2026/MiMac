@@ -9,6 +9,7 @@ import (
 	"math"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -135,8 +136,9 @@ type Renderer struct {
 	closed     bool
 }
 
-// Open checks the exact supported host before loading any native image, then
-// creates and attaches the original three-layer glass renderer.
+// Open checks the public API floor before loading any native image. The native
+// adapter then validates installed symbols, value layouts and witnesses before
+// creating and attaching the three-layer renderer.
 func Open(window uintptr) (*Renderer, error) {
 	if window == 0 {
 		return nil, errors.New("siriglass: invalid MyGo window handle")
@@ -311,18 +313,21 @@ func checkSupportedSystem() error {
 			systemCheckErr = fmt.Errorf("siriglass: read macOS product version: %w", err)
 			return
 		}
-		buildVersion, err := syscall.Sysctl("kern.osversion")
-		if err != nil {
-			systemCheckErr = fmt.Errorf("siriglass: read macOS build version: %w", err)
-			return
-		}
-		productVersion = strings.TrimSpace(productVersion)
-		buildVersion = strings.TrimSpace(buildVersion)
-		if productVersion != "27.0.1" || buildVersion != "26A434" {
-			systemCheckErr = fmt.Errorf("siriglass: private renderer requires macOS 27.0.1 build 26A434 (running %s build %s)", productVersion, buildVersion)
-		}
+		systemCheckErr = checkPublicDisplayVersion(productVersion)
 	})
 	return systemCheckErr
+}
+
+// This is only the public Glass API floor. It does not assert that a private
+// renderer is compatible; that check belongs to the installed native adapter.
+func checkPublicDisplayVersion(version string) error {
+	version = strings.TrimSpace(version)
+	majorText, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil || major < 26 {
+		return fmt.Errorf("siriglass: native display requires macOS 26 or later (running %s)", version)
+	}
+	return nil
 }
 
 func loadNativeAPI() (*nativeAPI, error) {

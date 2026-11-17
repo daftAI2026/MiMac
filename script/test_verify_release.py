@@ -18,6 +18,7 @@ from verify_release import SIRI_ABI_HOST_GATE, verify_build_info, verify_release
 RELEASE_DATE = "2026.11.01"
 BUILD_NUMBER = "42"
 REVISION = "0123456789abcdef0123456789abcdef01234567"
+SUPPORTED_HOST = {"os": "Darwin", "architecture": "arm64", "product_version": "27.2.1", "build_version": "fixture-build"}
 
 
 def git(repo: Path, *args: str) -> str:
@@ -127,7 +128,7 @@ def make_bundle(root: Path, include_siri: bool, arch: str = "arm64") -> Path:
     return bundle
 
 
-def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = None) -> dict:
+def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = None, *, native_compatible: bool = True) -> dict:
     def fake_check_output(command, text=None):
         if command[:3] == ["go", "version", "-m"]:
             return json.dumps(build_info(arch))
@@ -168,8 +169,15 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
             "notarized": False,
         }
 
+    def fake_inspect_library(library):
+        if not native_compatible:
+            raise ValueError("installed native display capabilities are unavailable")
+        return {"abi_version": 1, "compatible": True,
+                "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest()}
+
     with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
          patch("verify_release.current_siri_abi_host", return_value=host), \
+         patch("verify_release.inspect_library", side_effect=fake_inspect_library), \
          patch("verify_app_bundle.verify_product_package", side_effect=fake_verify_product_package), \
          patch("verify_release.subprocess.check_output", side_effect=fake_check_output), \
          patch("verify_release.subprocess.run", side_effect=fake_run):
@@ -181,7 +189,7 @@ class VerifyReleaseTests(unittest.TestCase):
         cases = (
             ("core-only", "arm64", False, None),
             ("core-only", "amd64", False, None),
-            ("siri-glass", "arm64", True, SIRI_ABI_HOST_GATE),
+            ("siri-glass", "arm64", True, SUPPORTED_HOST),
         )
         for profile, arch, included, host in cases:
             with self.subTest(profile=profile, arch=arch), tempfile.TemporaryDirectory() as directory:
@@ -217,14 +225,23 @@ class VerifyReleaseTests(unittest.TestCase):
 
             missing_siri_bundle = make_bundle(root / "without-siri", False)
             with self.assertRaisesRegex(ValueError, "missing native libraries: libSiriGlassBridge.dylib"):
-                verify_fixture(missing_siri_bundle, "arm64", "siri-glass", SIRI_ABI_HOST_GATE)
+                verify_fixture(missing_siri_bundle, "arm64", "siri-glass", SUPPORTED_HOST)
 
             with self.assertRaisesRegex(ValueError, "only for arm64"):
-                verify_fixture(siri_bundle, "amd64", "siri-glass", SIRI_ABI_HOST_GATE)
+                verify_fixture(siri_bundle, "amd64", "siri-glass", SUPPORTED_HOST)
 
-            unsupported_host = {**SIRI_ABI_HOST_GATE, "build_version": "unsupported-build"}
+            unsupported_host = {**SUPPORTED_HOST, "product_version": "25.9"}
             with self.assertRaisesRegex(ValueError, "requires host"):
                 verify_fixture(siri_bundle, "arm64", "siri-glass", unsupported_host)
+
+    def test_newer_host_still_requires_actual_native_capabilities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = make_bundle(Path(directory), True)
+            host = {**SUPPORTED_HOST, "product_version": "30.1", "build_version": "new-fixture-build"}
+            result = verify_fixture(bundle, "arm64", "siri-glass", host)
+            self.assertTrue(result["component_contract"]["siri_glass"]["private_abi_check"]["compatible"])
+            with self.assertRaisesRegex(ValueError, "capabilities are unavailable"):
+                verify_fixture(bundle, "arm64", "siri-glass", host, native_compatible=False)
 
     def test_release_requires_installer_for_target_architecture(self):
         with tempfile.TemporaryDirectory() as directory:

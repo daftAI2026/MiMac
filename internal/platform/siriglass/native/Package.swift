@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "SiriGlassComponent",
     // Keep the host launchable on the public Glass API floor so the adapter
-    // can show a readable refusal outside its exact private ABI gate.
+    // can show a readable refusal when installed private capabilities are unavailable.
     platforms: [.macOS(.v26)],
     products: [
         .library(name: "SiriGlassBridge", type: .dynamic, targets: ["SiriGlassBridge"])

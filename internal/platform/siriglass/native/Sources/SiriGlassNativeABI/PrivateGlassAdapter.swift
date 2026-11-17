@@ -35,11 +35,15 @@ public enum PrivateGlassAdapterError: Error, LocalizedError {
         compatibilityError = Self.checkCompatibility()
     }
 
+    public func validateCompatibility() throws {
+        if let compatibilityError { throw PrivateGlassAdapterError.incompatible(compatibilityError) }
+    }
+
     public func compose(_ parameters: GlassParameters) throws -> Glass {
         if let validationError = parameters.validationError() {
             throw PrivateGlassAdapterError.compose(validationError)
         }
-        if let compatibilityError { throw PrivateGlassAdapterError.incompatible(compatibilityError) }
+        try validateCompatibility()
 
         // The comparison uses the public type directly. Never feed a public
         // Glass.regular value into private _Glass modifiers or its destructor.
@@ -138,18 +142,25 @@ public enum PrivateGlassAdapterError: Error, LocalizedError {
         return "the captured private ABI is supported only on arm64"
         #endif
 
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        let version = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
-        guard version == "27.0.1" else { return "tested macOS version is 27.0.1; running \(version)" }
-
-        var buildBuffer = [CChar](repeating: 0, count: 128)
-        var buildLength = buildBuffer.count
-        let buildResult = buildBuffer.withUnsafeMutableBufferPointer { buffer in
-            sysctlbyname("kern.osversion", buffer.baseAddress, &buildLength, nil, 0)
+        // Validate the installed ABI itself. An OS version string neither
+        // proves compatibility nor describes which capability is missing.
+        // Check the native Array<Float> storage consumed by the C adapter,
+        // using owned values with spare capacity before any private call.
+        var probe: [Float] = []
+        probe.reserveCapacity(16)
+        probe.append(contentsOf: [0.125, 0.25, 0.5])
+        guard MemoryLayout<[Float]>.size == MemoryLayout<UnsafeRawPointer?>.size,
+              let storage = arrayStorage(probe) else {
+            return "Swift Array<Float> storage representation is unavailable"
         }
-        guard buildResult == 0 else { return "cannot read kern.osversion for private ABI compatibility" }
-        let build = String(cString: buildBuffer)
-        guard build == "26A434" else { return "tested macOS build is 26A434; running \(build)" }
+        let arrayLayoutMatches = withExtendedLifetime(probe) {
+            storage.load(fromByteOffset: 16, as: UInt.self) == probe.count
+                && probe.indices.allSatisfy {
+                    storage.load(fromByteOffset: 32 + $0 * MemoryLayout<Float>.stride,
+                                 as: Float.self) == probe[$0]
+                }
+        }
+        guard arrayLayoutMatches else { return "Swift Array<Float> storage layout is incompatible" }
 
         var systemSize: UInt64 = 0
         var systemStride: UInt64 = 0
