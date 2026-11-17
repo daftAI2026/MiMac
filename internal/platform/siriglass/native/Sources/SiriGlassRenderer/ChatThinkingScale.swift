@@ -27,6 +27,17 @@ import SiriGlassModel
             return
         }
         guard let target = reference?.update(input) else { return }
+        if reference?.ownershipGateClosed == true {
+            // Ending input restores the parent together, without retaining a
+            // delayed thinking-axis transition after the owner has gone.
+            var reset = Transaction(animation: nil)
+            reset.disablesAnimations = true
+            withTransaction(reset) {
+                x = 1
+                y = 1
+            }
+            return
+        }
         let spring = Animation.spring(
             response: ReferenceThinkingScale.response,
             dampingFraction: ReferenceThinkingScale.dampingFraction,

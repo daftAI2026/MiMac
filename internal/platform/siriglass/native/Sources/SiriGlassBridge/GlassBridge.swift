@@ -14,7 +14,7 @@ private enum ParameterDecodeResult {
 private struct ReferenceRenderPlan {
     var compositionParameters: GlassParameters
     var referenceThinking: ReferenceThinkingScale?
-    var personalityChanged: Bool
+    var animatePersonalityChange: Bool
 }
 
 private let referenceThinkingWaveAnimation = Animation
@@ -108,7 +108,7 @@ private let referenceThinkingWaveAnimation = Animation
             return ReferenceRenderPlan(
                 compositionParameters: parameters.resolvingReferencePersonality(nil),
                 referenceThinking: nil,
-                personalityChanged: false
+                animatePersonalityChange: false
             )
         }
 
@@ -117,7 +117,7 @@ private let referenceThinkingWaveAnimation = Animation
             return ReferenceRenderPlan(
                 compositionParameters: parameters.resolvingReferencePersonality(initial.personality),
                 referenceThinking: initial,
-                personalityChanged: false
+                animatePersonalityChange: false
             )
         }
 
@@ -126,7 +126,7 @@ private let referenceThinkingWaveAnimation = Animation
         return ReferenceRenderPlan(
             compositionParameters: parameters.resolvingReferencePersonality(next.personality),
             referenceThinking: next,
-            personalityChanged: oldPersonality != next.personality
+            animatePersonalityChange: oldPersonality != next.personality && !next.ownershipGateClosed
         )
     }
 
@@ -177,7 +177,7 @@ private let referenceThinkingWaveAnimation = Animation
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         state.thinkingScale.update(parameters.referenceChatInput,
                                    reduceMotion: reduceMotion)
-        if plan.personalityChanged && !reduceMotion {
+        if plan.animatePersonalityChange && !reduceMotion {
             withAnimation(referenceThinkingWaveAnimation) { state.glass = glass }
         } else {
             state.glass = glass

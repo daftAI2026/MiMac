@@ -13,7 +13,7 @@ flowchart TD
     snapshot --> match["完整 SessionToken 匹配；仅取新鲜频带（≤100 ms），读取时平滑"]
     meter --> match
     spectrum --> match
-    phase --> frame["voiceOverlayFrame：phase + 当前频谱快照"]
+    phase --> frame["voiceOverlayFrame：可见性/标签 + 当前频谱快照"]
     match --> frame
     idle --> frame
 
@@ -35,3 +35,10 @@ flowchart TD
 
     vendor["厂商语音条接管"] -.-> future["未来：逐工具接入业务语义与前景状态"]
     siri["完整 Siri 前景、personality / thinking 与频带语义"] -.-> future
+
+    explicit["显式原生呈现输入；非Core状态来源"] --> nativeEdges["思考边与录音/控制权合取门分别观察；初始值不重放"]
+    nativeEdges --> exitGate{"录音/控制权门刚关闭？"}
+    exitGate -->|是| reset["清思考人格；X/Y同事务复位；不延迟Y"]
+    exitGate -->|否| thinkEdge["只在新思考边采样门控；恢复控制权不补播"]
+    reset -.-> future
+    thinkEdge -.-> future

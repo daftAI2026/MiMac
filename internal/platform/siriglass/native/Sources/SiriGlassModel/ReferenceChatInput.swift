@@ -22,8 +22,8 @@ public enum ReferenceWavePersonality: Int32, Sendable {
     case unresolved = 3
 }
 
-/// Mirrors initial=false and the callback's gate. Recording/ownership changes
-/// alone do not rerun it. Scale belongs to the parent content, not each disk.
+/// The two parent observers have initial=false. A thinking edge samples input
+/// ownership; its independent ending edge resets the parent scale/personality.
 /// The initial showThinkingWave value is false even when input starts thinking,
 /// matching onChange(initial: false); a later thinking edge samples both gates.
 public struct ReferenceThinkingScale: Sendable {
@@ -32,7 +32,10 @@ public struct ReferenceThinkingScale: Sendable {
     public static let yDelay = 0.045
     public private(set) var target = 1.0
     public private(set) var showThinkingWave = false
+    // One display-observer edge, not a Core completion or a PCM end signal.
+    public private(set) var ownershipGateClosed = false
     private var observedThinking: Bool
+    private var observedOwnedRecording: Bool
 
     public var personality: ReferenceWavePersonality {
         showThinkingWave ? .thinking : .attending
@@ -40,11 +43,21 @@ public struct ReferenceThinkingScale: Sendable {
 
     public init(input: ReferenceChatInput) {
         observedThinking = input.thinking
+        observedOwnedRecording = input.isRecording && input.hasVoiceInputOwnership
     }
 
     public mutating func update(_ input: ReferenceChatInput) -> Double? {
-        guard input.thinking != observedThinking else { return nil }
+        let thinkingChanged = input.thinking != observedThinking
+        let ownedRecording = input.isRecording && input.hasVoiceInputOwnership
+        ownershipGateClosed = observedOwnedRecording && !ownedRecording
         observedThinking = input.thinking
+        observedOwnedRecording = ownedRecording
+        if ownershipGateClosed {
+            showThinkingWave = false
+            target = 1
+            return target
+        }
+        guard thinkingChanged else { return nil }
         let effectiveThinking = input.thinking && input.isRecording && input.hasVoiceInputOwnership
         showThinkingWave = effectiveThinking
         target = effectiveThinking ? 0.73 : 1
