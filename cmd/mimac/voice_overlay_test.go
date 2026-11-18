@@ -26,6 +26,7 @@ func (v *fakeVoiceOverlay) Close() error { v.closes++; return v.closeErr }
 func TestVoiceOverlayTracksRealSessionWithoutOwningAudio(t *testing.T) {
 	s, tasks, source, sink := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	view := &fakeVoiceOverlay{}
 	opened := 0
 	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) { opened++; return view, nil }
@@ -73,6 +74,7 @@ func TestVoiceOverlayTracksRealSessionWithoutOwningAudio(t *testing.T) {
 func TestVoiceOverlayFailureDoesNotFailAudioOrRetry(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	opened := 0
 	failed := errors.New("display unavailable")
 	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) { opened++; return nil, failed }
@@ -95,6 +97,7 @@ func TestVoiceOverlayFailureDoesNotFailAudioOrRetry(t *testing.T) {
 func TestVoiceOverlayCancelHidesAndCloseFailureRetainsOwner(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	view := &fakeVoiceOverlay{}
 	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) { return view, nil }
 	beginHostVoice(t, s)
@@ -123,6 +126,7 @@ func TestVoiceOverlayCancelHidesAndCloseFailureRetainsOwner(t *testing.T) {
 func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	s, tasks, source, sink := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	s.preferencesState.path = filepath.Join(t.TempDir(), "preferences.json")
 	opens := 0
 	views := []*fakeVoiceOverlay{}
@@ -139,7 +143,8 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	if err := s.applyVoiceOverlayPreference(false); err != nil {
 		t.Fatal(err)
 	}
-	if views[0].closes != 1 || s.voiceOverlayFrameAt(time.Now()).Visible {
+	if s.voicePresentationActive() || !s.plugins.Active(audioSessionPlugin) ||
+		views[0].closes != 1 || s.voiceOverlayFrameAt(time.Now()).Visible {
 		t.Fatal("off preference did not retire the visible resources")
 	}
 	source.samples <- []int16{16000, 0}
@@ -154,7 +159,7 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	if err := s.applyVoiceOverlayPreference(true); err != nil {
 		t.Fatal(err)
 	}
-	if opens != 2 || len(views[1].frames) != 1 || views[1].frames[0].Token != token {
+	if !s.voicePresentationActive() || opens != 2 || len(views[1].frames) != 1 || views[1].frames[0].Token != token {
 		t.Fatal("re-enable did not render the same live session")
 	}
 	badPath := filepath.Join(t.TempDir(), "directory")
@@ -178,6 +183,7 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 func TestVoiceOverlayRenderErrorHidesWithoutEndingCapture(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	v := &fakeVoiceOverlay{updateErr: errors.New("native update rejected")}
 	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) { return v, nil }
 	press := beginHostVoice(t, s)
@@ -198,6 +204,7 @@ func TestVoiceOverlayRenderErrorHidesWithoutEndingCapture(t *testing.T) {
 func TestVoiceOverlayRejectsKeysAndMissingAudioOwner(t *testing.T) {
 	s := &shell{coordinator: newDeviceCoordinator()}
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	device, _ := bridge.NewDevice("ordinary", 1)
 	s.coordinator.sink = &routedEffectsKeySink{}
 	for _, event := range []bridge.Event{bridge.DeviceConnected(device), bridge.ScopeAvailable(true), bridge.Configure(bridge.NewAudioBinding())} {
@@ -223,6 +230,7 @@ func TestVoiceOverlayRejectsKeysAndMissingAudioOwner(t *testing.T) {
 func TestVoiceOverlayProjectsCaptureOwnershipWithoutGuessingThinking(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
+	s.applyVoicePresentationSelection()
 	check := func(visible, recording, owned bool) {
 		t.Helper()
 		f := s.voiceOverlayFrameAt(time.Now())

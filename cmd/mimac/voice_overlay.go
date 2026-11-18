@@ -8,6 +8,7 @@ import (
 
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/siriglass"
+	"mimac.local/mimac/internal/pluginrt"
 )
 
 // This is a render snapshot. Core and the existing PCM owner remain the only
@@ -34,9 +35,45 @@ type voiceOverlayState struct {
 	meter voiceSpectrumState
 }
 
+const voicePresentationPlugin = "voice-presentation"
+
+func (s *shell) voicePresentationManifest() pluginrt.Manifest {
+	return pluginrt.Manifest{ID: voicePresentationPlugin, Start: func() (pluginrt.StopFunc, error) {
+		s.voiceOverlay.meter.setEnabled(s.voiceOverlay.err == nil)
+		return func() error {
+			s.voiceOverlay.meter.setEnabled(false)
+			return s.releaseVoiceOverlay()
+		}, nil
+	}}
+}
+
+func (s *shell) voicePresentationActive() bool {
+	return s.plugins != nil && s.plugins.Active(voicePresentationPlugin)
+}
+
+func (s *shell) applyVoicePresentationSelection() {
+	if s.plugins == nil {
+		return
+	}
+	if s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed && !s.closing {
+		if !s.voicePresentationActive() {
+			s.recordVoiceOverlayError(s.plugins.Enable(voicePresentationPlugin))
+		}
+	} else {
+		s.stopVoicePresentation()
+	}
+	s.syncVoiceOverlay()
+}
+
+func (s *shell) stopVoicePresentation() {
+	if s.voicePresentationActive() {
+		s.recordVoiceOverlayError(s.plugins.Disable(voicePresentationPlugin))
+	}
+}
+
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 	frame := voiceOverlayFrame{DB: -60}
-	if !s.preferencesState.value.ShowVoiceOverlay || s.preferencesState.loadFailed || s.closing ||
+	if !s.voicePresentationActive() || s.voiceOverlay.err != nil || s.closing ||
 		s.powerInputBlocked() || s.remoteState.stopPending || s.liveAudio.retiring || s.coordinator == nil ||
 		s.audioSession == nil || s.audioSession.runtime == nil {
 		return frame
@@ -68,12 +105,7 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 
 func (s *shell) syncVoiceOverlay() {
 	state := &s.voiceOverlay
-	state.meter.setEnabled(!s.closing && s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed && state.err == nil)
-	if s.closing || !s.preferencesState.value.ShowVoiceOverlay {
-		s.closeVoiceOverlay()
-		return
-	}
-	if state.err != nil || state.open == nil {
+	if s.closing || !s.voicePresentationActive() || state.err != nil || state.open == nil {
 		return
 	}
 	frame := s.voiceOverlayFrameAt(time.Now())

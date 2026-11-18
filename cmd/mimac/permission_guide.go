@@ -44,6 +44,10 @@ type permissionGuideState struct {
 	phase               permissionGuidePhase
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
+	repairOffered       [permissionGuideIDCount]bool
+	repairAttempted     [permissionGuideIDCount]bool
+	repairing           bool
+	repairFailedFor     permissionGuideID
 	generation          uint64
 	pollTimer           *time.Timer
 	followTimer         *time.Timer
@@ -83,6 +87,7 @@ const (
 	permissionGuideInput permissionGuideID = iota + 1
 	permissionGuidePostEvent
 	permissionGuideBluetooth
+	permissionGuideIDCount
 )
 
 type permissionGuideAccess uint8
@@ -137,6 +142,9 @@ func (s *shell) showPermissionGuide() {
 	s.phase = permissionGuideWaiting
 	s.currentID = 0
 	s.settingsOpenedFor = 0
+	s.repairOffered = [permissionGuideIDCount]bool{}
+	s.repairAttempted = [permissionGuideIDCount]bool{}
+	s.repairFailedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 系统权限",
 		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot), Panel: true,
@@ -189,6 +197,9 @@ func (s *shell) showPermissionGuide() {
 	})
 	window.OnReadyToShow(func() {
 		if s.guideWindow == window && s.generation == generation {
+			if !permissionguide.SystemSettingsRunning() {
+				window.Center()
+			}
 			s.showPermissionGuideWindow(window, generation)
 		}
 	})
@@ -227,26 +238,8 @@ func (s *shell) advancePermissionGuide() {
 	if s.closing || s.guideWindow == nil || s.guideWindow.IsDestroyed() || !s.guideWindow.IsVisible() {
 		return
 	}
-	var nextID permissionGuideID
-	s.phase = permissionGuideComplete
-	for _, row := range s.snapshot.rows {
-		if row.access != permissionGuideGranted {
-			s.phase = permissionGuideWaiting
-			break
-		}
-	}
-	if _, exists := permissionGuideAccessForID(s.snapshot, s.settingsOpenedFor); exists {
-		nextID = s.settingsOpenedFor
-	} else if access, exists := permissionGuideAccessForID(s.snapshot, s.currentID); exists && access != permissionGuideGranted {
-		nextID = s.currentID
-	} else {
-		for _, row := range s.snapshot.rows {
-			if row.access != permissionGuideGranted {
-				nextID = row.id
-				break
-			}
-		}
-	}
+	nextID := nextPermissionGuideTarget(s.snapshot, s.settingsOpenedFor, s.currentID)
+	s.phase = permissionGuideWaiting
 	if nextID == 0 {
 		s.phase = permissionGuideComplete
 		s.currentID = 0
@@ -261,6 +254,22 @@ func (s *shell) advancePermissionGuide() {
 		s.followManual = false
 		s.stopPermissionGuideFollowing()
 	}
+}
+
+// Prefer the explicitly opened page only while the corresponding capability
+// is still missing. A granted row must not hold the sidecar's target.
+func nextPermissionGuideTarget(snapshot permissionGuideSnapshot, opened, current permissionGuideID) permissionGuideID {
+	for _, id := range []permissionGuideID{opened, current} {
+		if access, exists := permissionGuideAccessForID(snapshot, id); exists && access != permissionGuideGranted {
+			return id
+		}
+	}
+	for _, row := range snapshot.rows {
+		if row.access != permissionGuideGranted {
+			return row.id
+		}
+	}
+	return 0
 }
 
 func permissionGuideAccessForID(snapshot permissionGuideSnapshot, id permissionGuideID) (permissionGuideAccess, bool) {
@@ -435,6 +444,14 @@ func (s *shell) refreshPermissionGuide() {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
+	for _, row := range nextSnapshot.rows {
+		if row.access == permissionGuideGranted {
+			s.repairOffered[row.id] = false
+			if s.repairFailedFor == row.id {
+				s.repairFailedFor = 0
+			}
+		}
+	}
 	s.updateOnboardingPermissions(nextSnapshot)
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
@@ -679,7 +696,14 @@ func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGu
 		})
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(4).Children(func() {
 			s.permissionGuideOpenSettingsButton(c, a, row)
-			ui.Text(c, row.description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
+			description := row.description
+			if s.canOfferPermissionRepair(row) {
+				description = "仍未授权，可移除旧记录后重新添加"
+			}
+			if s.repairFailedFor == row.id {
+				description = "请在系统设置移除旧记录后重新添加"
+			}
+			ui.Text(c, description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 		})
 		ui.Row(c).Width(permissionGuideControlWidth).Height(permissionGuideIconBox).Shrink(0).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 			s.permissionGuideAccessControl(c, a, row)
@@ -712,11 +736,18 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 		return
 	}
 	label := permissionGuideActionLabel(row)
-	button := styleAppButton(ui.ButtonBase(c).Label(label), a, !s.snapshot.actionsEnabled).
+	if s.canOfferPermissionRepair(row) {
+		label = "重置授权…"
+	}
+	button := styleAppButton(ui.ButtonBase(c).Label(label), a, s.repairing).
 		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
-	if button.Clicked() && s.snapshot.actionsEnabled {
-		s.performPermissionGuideAction(row.id)
+	if button.Clicked() && s.snapshot.actionsEnabled && !s.repairing {
+		if s.canOfferPermissionRepair(row) {
+			s.repairPermissionGuideAccess(row.id)
+		} else {
+			s.performPermissionGuideAction(row.id)
+		}
 	}
 }
 
@@ -759,6 +790,9 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 	if !exists {
 		return
 	}
+	if _, allowed := permissionGuideResetService(id, access); allowed {
+		s.repairOffered[id] = true
+	}
 	runPermissionGuideGrant(id, access, func(id permissionGuideID) {
 		switch id {
 		case permissionGuideInput:
@@ -785,12 +819,8 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	if _, exists := permissionGuideAccessForID(s.snapshot, id); !exists {
 		return
 	}
-	// A click can make this nonactivating panel key. Order it out to release
-	// that key claim, then keep the guide visible without taking it again.
-	if s.guideWindow.IsFocused() {
-		s.guideWindow.Hide()
-		s.guideWindow.ShowInactive()
-	}
+	// Release the panel’s key-window claim before handing off to Settings.
+	s.yieldPermissionGuideKeyboard()
 	s.currentID = id
 	s.phase = permissionGuideWaiting
 	s.settingsOpenedFor = id

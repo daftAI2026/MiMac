@@ -5,3 +5,5 @@ package permissionguide
 import "github.com/egoist/mygo"
 
 func ConfigurePermissionPanel(window *mygo.Window) {}
+
+func YieldToSystemSettings() {}

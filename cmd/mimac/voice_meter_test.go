@@ -22,7 +22,7 @@ func testTone(n int, frequency, amplitude float64) []int16 {
 func TestVoiceSpectrumUsesRuntimePCMWithoutChangingDelivery(t *testing.T) {
 	s, tasks, source, sink := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()
-	s.voiceOverlay.meter.setEnabled(true)
+	s.applyVoicePresentationSelection()
 	press := beginHostVoice(t, s)
 	runHostTask(t, tasks)
 	pcm := testTone(siriglass.SpectrumWindowSize, 375, .25)

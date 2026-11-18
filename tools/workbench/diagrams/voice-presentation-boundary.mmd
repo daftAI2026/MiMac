@@ -17,7 +17,8 @@ flowchart TD
     match --> frame
     idle --> frame
 
-    preference["通用设置：MiMac 语音球 / 跟随语音工具"] --> enabled{"选择 MiMac 语音球？"}
+    preference["通用设置：MiMac 语音球 / 跟随语音工具"] --> enabled{"语音提示插件已启用？"}
+    enabled -.-> status["插件页显示状态，设置入口共用通用设置"]
     frame --> enabled
     enabled -->|否| hidden["关闭 MiMac 面板和频谱分析"]
     hidden --> toolDisplay["语音工具自行决定是否显示原生提示"]

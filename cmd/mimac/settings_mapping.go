@@ -337,10 +337,23 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 	if s.plugins != nil && s.plugins.Active(corePlugin) {
 		coreStatus = "运行中"
 	}
+	displayStatus := "跟随语音工具"
+	if s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed {
+		if s.voicePresentationActive() && s.voiceOverlay.err == nil {
+			displayStatus = "MiMac 语音球"
+		} else {
+			displayStatus = "暂不可用"
+		}
+	}
 	pluginSection("系统插件",
 		pluginCard("按键核心", coreStatus, nil, func() {
 			if appButton(c, a, "按键映射", false).Clicked() {
 				s.navigate(pageMappings)
+			}
+		}),
+		pluginCard("语音提示", displayStatus, nil, func() {
+			if appButton(c, a, "通用设置", false).Clicked() {
+				s.navigate(pageGeneral)
 			}
 		}),
 	)

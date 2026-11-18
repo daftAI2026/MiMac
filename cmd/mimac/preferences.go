@@ -249,7 +249,7 @@ func (s *shell) applyVoiceOverlayPreference(enabled bool) error {
 	if err := s.savePreferences(next); err != nil {
 		return err
 	}
-	s.syncVoiceOverlay()
+	s.applyVoicePresentationSelection()
 	return nil
 }
 

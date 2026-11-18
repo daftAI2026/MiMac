@@ -162,6 +162,7 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 		}
 		return view, err
 	}
+	s.applyVoicePresentationSelection()
 	s.watchPower()
 	s.loadMappings()
 	s.loadVoiceTools()
@@ -395,7 +396,7 @@ func main() {
 		if s.deferInstallQuit(event.PreventDefault) {
 			return
 		}
-		s.closeVoiceOverlay()
+		s.stopVoicePresentation()
 		s.cancelPowerResume()
 		s.cancelRemoteReservationRetry()
 		if s.deferAudioQuit(event.PreventDefault, mygo.RunOnMain, func() {

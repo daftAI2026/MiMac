@@ -51,13 +51,18 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				if s.guideWindow == window && s.generation == generation {
 					s.startPermissionGuideDrop()
 				}
-			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(transfer.Result) {
+			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(result transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
 					return
 				}
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
 				s.hidePermissionGuideIllustration()
+				if result.Err == nil && !result.Canceled && result.Operation != transfer.None {
+					if s.yieldPermissionGuideKeyboard() && !s.followManual {
+						s.schedulePermissionGuideFollowing(window, generation)
+					}
+				}
 				s.refreshPermissionGuide()
 			}})
 		}

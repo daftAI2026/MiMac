@@ -307,3 +307,62 @@ func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T
 		})
 	}
 }
+
+func TestPermissionGuideAdvancesOnlyAfterObservedGrant(t *testing.T) {
+	snapshot := permissionGuideSnapshot{rows: []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideDenied},
+		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
+	}}
+
+	check := func(want permissionGuideID) {
+		t.Helper()
+		if got := nextPermissionGuideTarget(snapshot, permissionGuideInput, permissionGuideInput); got != want {
+			t.Fatalf("target = %d, want %d", got, want)
+		}
+	}
+	check(permissionGuideInput)
+	snapshot.rows[0].access = permissionGuideGranted
+	check(permissionGuidePostEvent)
+	snapshot.rows[1].access = permissionGuideGranted
+	check(0)
+
+	snapshot.rows[0].access = permissionGuideNotDetermined
+	check(permissionGuideInput)
+	snapshot.rows[0].access = permissionGuideRestricted
+	check(permissionGuideInput)
+}
+
+func TestPermissionGuideRecoveryIsExplicitScopedAndSingleAttempt(t *testing.T) {
+	var s shell
+	for _, tc := range []struct {
+		id      permissionGuideID
+		access  permissionGuideAccess
+		service string
+	}{
+		{permissionGuideInput, permissionGuideDenied, "ListenEvent"},
+		{permissionGuidePostEvent, permissionGuideNotGranted, "Accessibility"},
+		{permissionGuideInput, permissionGuideNotDetermined, ""},
+		{permissionGuideInput, permissionGuideGranted, ""},
+		{permissionGuidePostEvent, permissionGuideRestricted, ""},
+		{permissionGuidePostEvent, permissionGuideUnknown, ""},
+		{permissionGuideBluetooth, permissionGuideDenied, ""},
+	} {
+		row := permissionGuideRow{id: tc.id, access: tc.access}
+		service, eligible := permissionGuideResetService(tc.id, tc.access)
+		if service != tc.service || eligible != (tc.service != "") {
+			t.Fatalf("row %d access %d mapped to %q, want %q", tc.id, tc.access, service, tc.service)
+		}
+		if s.canOfferPermissionRepair(row) {
+			t.Fatal("recovery was offered before an explicit grant action")
+		}
+		s.repairOffered[tc.id] = true
+		if s.canOfferPermissionRepair(row) != eligible {
+			t.Fatal("recovery eligibility after grant action differs from service eligibility")
+		}
+		s.repairAttempted[tc.id] = true
+		if s.canOfferPermissionRepair(row) {
+			t.Fatal("recovery was offered a second time")
+		}
+		s.repairOffered[tc.id], s.repairAttempted[tc.id] = false, false
+	}
+}

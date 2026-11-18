@@ -122,7 +122,7 @@ func (s *shell) setupPluginsWith(start startHIDMonitor) error {
 			return s.audioOutput.disable, err
 		}},
 	}
-	manifests = append(manifests, s.audioSessionManifest())
+	manifests = append(manifests, s.audioSessionManifest(), s.voicePresentationManifest())
 	manifests = append(manifests, s.voiceToolManifests()...)
 	runtime, err := pluginrt.New(manifests...)
 	if err != nil {
