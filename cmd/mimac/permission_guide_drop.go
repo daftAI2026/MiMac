@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -10,18 +11,25 @@ import (
 
 // One guide owns its display resources. Drag phases only show or hide them.
 type permissionGuideDrop struct {
-	active   bool
-	run      uint64
-	targetID uint32
-	timer    *time.Timer
-	panels   []*permissionGuideDropPanel
+	active        bool
+	run           uint64
+	targetID      uint32
+	targetContent permissionguide.Rect
+	timer         *time.Timer
+	panels        []*permissionGuideDropPanel
+}
+
+func (d *permissionGuideDrop) acceptsRelease(point image.Point) bool {
+	r := d.targetContent
+	x, y := float64(point.X), float64(point.Y)
+	return d.active && d.targetID != 0 && x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
 }
 
 type permissionGuideDropPanel struct {
-	window         *mygo.Window
-	bounds         mygo.Rectangle
-	hole           ui.Rect
-	ready, closing bool
+	window  *mygo.Window
+	bounds  mygo.Rectangle
+	hole    ui.Rect
+	closing bool
 }
 
 func (s *shell) startPermissionGuideDrop() {
@@ -78,6 +86,7 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 		d.panels = nil
 	}
 	hole := permissionGuideSettingsContent(target.Frame)
+	d.targetContent = hole
 	for i, display := range displays {
 		local := ui.Rect{X: float32(hole.X) - float32(display.Bounds.X), Y: float32(hole.Y) - float32(display.Bounds.Y), W: float32(hole.Width), H: float32(hole.Height)}
 		if i >= len(d.panels) {
@@ -88,23 +97,14 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 				Content: ui.View(func(c *ui.Context) { drawPermissionGuideDrop(c, p.hole) })})
 			p.window.SetBounds(display.Bounds)
 			p.window.SetIgnoreMouseEvents(true)
-			p.window.OnReadyToShow(func() {
-				p.ready = true
-				if p.closing || s.dropGuide != d {
-					p.close()
-					return
-				}
-				if d.active {
-					p.show()
-				}
-			})
+			p.show()
 		} else {
 			p := d.panels[i]
 			if p.hole != local {
 				p.hole = local
 				p.window.Invalidate()
 			}
-			if first && p.ready {
+			if first {
 				p.show()
 			}
 		}
@@ -143,7 +143,7 @@ func (s *shell) stopPermissionGuideDrop() {
 	}
 	run := d.run
 	for _, p := range d.panels {
-		if p.ready && !p.window.IsDestroyed() {
+		if !p.window.IsDestroyed() {
 			permissionguide.FadeDropOverlay(p.window, false, func() {
 				if s.dropGuide == d && d.run == run && !d.active && !p.window.IsDestroyed() {
 					p.window.Hide()

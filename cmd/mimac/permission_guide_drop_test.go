@@ -1,11 +1,27 @@
 package main
 
 import (
-	"github.com/egoist/mygo/ui"
-	"mimac.local/mimac/internal/platform/permissionguide"
+	"image"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
+	"mimac.local/mimac/internal/platform/permissionguide"
 )
+
+func TestPermissionGuideDropReleaseRequiresTrackedSettingsContent(t *testing.T) {
+	drop := permissionGuideDrop{
+		active: true, targetID: 12,
+		targetContent: permissionguide.Rect{X: 400, Y: 200, Width: 200, Height: 100},
+	}
+	if !drop.acceptsRelease(image.Pt(450, 250)) || drop.acceptsRelease(image.Pt(600, 250)) {
+		t.Fatal("release must be inside the tracked content")
+	}
+	drop.active = false
+	if drop.acceptsRelease(image.Pt(450, 250)) {
+		t.Fatal("release must not reuse a completed drag target")
+	}
+}
 
 func TestPermissionGuideDropMaskLeavesOnlyContentTransparent(t *testing.T) {
 	for _, hole := range []ui.Rect{{X: 80, Y: 60, W: 140, H: 120}, {X: -60, Y: 60, W: 200, H: 120}, {X: 400, Y: 60, W: 140, H: 120}} {

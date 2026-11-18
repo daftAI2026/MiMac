@@ -45,9 +45,7 @@ type permissionGuideState struct {
 	phase               permissionGuidePhase
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
-	repairAttempted     [permissionGuideIDCount]bool
-	repairing           bool
-	repairFailedFor     permissionGuideID
+	resumeID            permissionGuideID
 	generation          uint64
 	pollTimer           *time.Timer
 	followTimer         *time.Timer
@@ -87,7 +85,6 @@ const (
 	permissionGuideInput permissionGuideID = iota + 1
 	permissionGuidePostEvent
 	permissionGuideBluetooth
-	permissionGuideIDCount
 )
 
 type permissionGuideAccess uint8
@@ -142,8 +139,6 @@ func (s *shell) showPermissionGuide() {
 	s.phase = permissionGuideWaiting
 	s.currentID = 0
 	s.settingsOpenedFor = 0
-	s.repairAttempted = [permissionGuideIDCount]bool{}
-	s.repairFailedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 系统权限",
 		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot), Panel: true,
@@ -190,18 +185,17 @@ func (s *shell) showPermissionGuide() {
 			s.phase = permissionGuideIdle
 			s.currentID = 0
 			s.settingsOpenedFor = 0
+			s.resumeID = 0
 			s.generation++
 		}
 	})
-	window.OnReadyToShow(func() {
-		if s.guideWindow == window && s.generation == generation {
-			if err := permissionguide.ConfigurePermissionPanel(window); err != nil {
-				log.Printf("permission guide: %v", err)
-			}
-			window.Center()
-			s.showPermissionGuideWindow(window, generation)
-		}
-	})
+	// MyGo already created the native window. OnReadyToShow is for web
+	// content and will not present this hidden native panel.
+	if err := permissionguide.ConfigurePermissionPanel(window); err != nil {
+		log.Printf("permission guide: %v", err)
+	}
+	window.Center()
+	s.showPermissionGuideWindow(window, generation)
 }
 
 // closePermissionGuide releases the panel through MyGo's normal window close
@@ -443,10 +437,8 @@ func (s *shell) refreshPermissionGuide() {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
-	for _, row := range nextSnapshot.rows {
-		if row.access == permissionGuideGranted && s.repairFailedFor == row.id {
-			s.repairFailedFor = 0
-		}
+	if shouldResumePermissionGuide(s.resumeID, nextSnapshot) {
+		s.resumeID = 0
 	}
 	s.updateOnboardingPermissions(nextSnapshot)
 	s.advancePermissionGuide()
@@ -692,11 +684,7 @@ func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGu
 		})
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(4).Children(func() {
 			s.permissionGuideOpenSettingsButton(c, a, row)
-			description := row.description
-			if s.repairFailedFor == row.id {
-				description = "请在系统设置移除旧记录后重新添加"
-			}
-			ui.Text(c, description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
+			ui.Text(c, row.description).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 		})
 		ui.Row(c).Width(permissionGuideControlWidth).Height(permissionGuideIconBox).Shrink(0).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 			s.permissionGuideAccessControl(c, a, row)
@@ -714,7 +702,7 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 			}
 		})
 	})
-	if button.Clicked() && s.snapshot.actionsEnabled && !s.repairing {
+	if button.Clicked() && s.snapshot.actionsEnabled {
 		s.openPermissionGuideSettings(row.id, true)
 	}
 }
@@ -729,13 +717,10 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 		return
 	}
 	label := permissionGuideActionLabel(row)
-	if s.repairing && s.currentID == row.id {
-		label = "正在准备"
-	}
-	button := styleAppButton(ui.ButtonBase(c).Label(label), a, s.repairing).
+	button := styleAppButton(ui.ButtonBase(c).Label(label), a, false).
 		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
-	if button.Clicked() && s.snapshot.actionsEnabled && !s.repairing {
+	if button.Clicked() && s.snapshot.actionsEnabled {
 		s.performPermissionGuideAction(row.id)
 	}
 }
@@ -779,8 +764,8 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 	if !exists {
 		return
 	}
-	if s.preparePermissionGuideGrant(id) {
-		return
+	if permissionGuideAllowsAppDrag(id) && (access == permissionGuideNotDetermined || access == permissionGuideNotGranted || access == permissionGuideDenied) {
+		s.resumeID = id
 	}
 	runPermissionGuideGrant(id, access, func(id permissionGuideID) {
 		switch id {

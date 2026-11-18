@@ -2,7 +2,7 @@ flowchart TD
     launch["普通启动"] --> resume{"首启记录未完成？"}
     resume -->|是| onboarding["打开完整首启窗口，恢复未完成的当前步骤"]
     resume -->|否| known{"已有配置或已完成？"}
-    known -->|是| tray["保留菜单栏启动行为"]
+    known -->|是| once["仅普通启动读取消费一次"]
     known -->|否| onboarding
     reopenJourney["菜单：使用引导"] --> onboarding
     onboarding --> entry{"新用户或显式复看？"}
@@ -35,12 +35,18 @@ flowchart TD
     completion -->|开始使用| finish["保存首启完成并交接映射，不自动启用设备或收音"]
     finish --> mappings
     onboarding -->|中途关闭| pending["保留未完成标记与当前步骤，下次继续"]
-    systemReopen["系统退出重开：固定Dev默认启动路径已核对"] --> resume
+    systemReopen["系统要求退出并重开：普通启动入口"] --> resume
+    grantAction -.-> pendingSettings["普通设置记住待完成的一项列表权限"]
+    nativeRebind -.-> pendingSettings
+    pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接"]
+    oneShot -.-> once
+    once -->|对应权限实际已授权| recoverSettings["回设备页及权限小卡，显示实际状态"]
+    once -->|未授权或无记录| tray["保留菜单栏启动行为"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
-    permissionGuide -.-> nativeWindow["新小卡先居中，鼠标和拖放有效，键盘留给系统设置"]
+    permissionGuide -.-> nativeWindow["原生小卡创建后配置焦点、居中并主动显示，键盘留给系统设置"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
     existingSettings -->|否：新小卡已居中，等待用户打开设置| stable
@@ -57,10 +63,8 @@ flowchart TD
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh["刷新实际授权，保留系统认证窗口的键盘焦点"]
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
-    grantAction -.-> retry["明确点击授权后，复核并按需清理当前 App 对应的旧记录"]
-    retry --> recheckGrant["确认当前 Bundle 身份与实时权限；仅重置仍缺失的对应权限"]
-    recheckGrant -->|重置成功且仍缺权限| settings
-    recheckGrant -->|查询已获准| guideRefresh
+    drag -.-> nativeRebind["原生文件 URL 交给系统列表；授权状态以系统复查为准"]
+    nativeRebind --> guideRefresh
     grantAction --> nativeGrant{"首次蓝牙授权？"}
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
     nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]

@@ -47,13 +47,18 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 		icon.Tooltip("拖入系统设置的权限列表")
 		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
 			window, generation := s.guideWindow, s.generation
+			var draggedPermission permissionGuideID
 			icon.DragData(data, transfer.DragOptions{Started: func(image.Point) {
 				if s.guideWindow == window && s.generation == generation {
+					draggedPermission = s.currentID
 					s.startPermissionGuideDrop()
 				}
-			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(transfer.Result) {
+			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(result transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
 					return
+				}
+				if d := s.dropGuide; d != nil && permissionGuideAllowsAppDrag(draggedPermission) && result.Operation == transfer.Copy && d.acceptsRelease(result.Point) {
+					s.resumeID = draggedPermission
 				}
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
@@ -139,7 +144,7 @@ func (g permissionGuideFlightGeometry) point(t float32) ui.Point {
 type permissionGuideIllustration struct {
 	window                    *mygo.Window
 	geometry                  permissionGuideFlightGeometry
-	active, ready             bool
+	active                    bool
 	run                       uint64
 	cursor                    *ui.Bitmap
 	cursorWidth, cursorHeight float32
@@ -166,12 +171,6 @@ func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, a
 			UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true, Parent: s.guideWindow,
 			Content: ui.View(func(c *ui.Context) { s.drawPermissionGuideIllustration(c, view) })})
 		view.window.SetIgnoreMouseEvents(true)
-		view.window.OnReadyToShow(func() {
-			view.ready = true
-			if view.active {
-				view.window.ShowInactive()
-			}
-		})
 	}
 	view := s.illustration
 	if view.active && view.geometry == geometry {
@@ -180,9 +179,7 @@ func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, a
 	view.geometry, view.active = geometry, true
 	view.run++
 	view.window.SetBounds(geometry.bounds)
-	if view.ready {
-		view.window.ShowInactive()
-	}
+	view.window.ShowInactive()
 	view.window.Invalidate()
 }
 

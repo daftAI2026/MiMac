@@ -13,6 +13,8 @@ python3 script/live_acceptance.py finish /absolute/path/to/run
 
 Apple 本机识别不用 `--audio-backend` 或 `--target-pid`。已核验的固定包使用原有 `--reuse-build --previous-run`；这些参数不会跳过当前权限、连接、输入法和焦点检查。
 
+安装包专项验收用 `prepare --installed-beta-manifest /path/to/release.json`，外部输入法仍传 `--target-pid`，整句验收传 `--expected-text`。该入口启动已安装且已退出的 `/Applications/MiMac.app`，沿用正常配置。绑定日用进程之前先结束日用会话，按准备阶段结果推进；Beta 安装、系统要求重开及球体实窗变化另行核对。
+
 同一轮分别收集以下证据，不能用其中一项替代其他项：
 
 | 验收范围 | 同轮证据 | 判定边界 |

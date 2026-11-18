@@ -331,33 +331,3 @@ func TestPermissionGuideAdvancesOnlyAfterObservedGrant(t *testing.T) {
 	snapshot.rows[0].access = permissionGuideRestricted
 	check(permissionGuideInput)
 }
-
-func TestPermissionGuideRecoveryIsScopedAndSingleAttempt(t *testing.T) {
-	var s shell
-	for _, tc := range []struct {
-		id      permissionGuideID
-		access  permissionGuideAccess
-		service string
-	}{
-		{permissionGuideInput, permissionGuideDenied, "ListenEvent"},
-		{permissionGuidePostEvent, permissionGuideNotGranted, "Accessibility"},
-		{permissionGuideInput, permissionGuideNotDetermined, ""},
-		{permissionGuideInput, permissionGuideGranted, ""},
-		{permissionGuidePostEvent, permissionGuideRestricted, ""},
-		{permissionGuidePostEvent, permissionGuideUnknown, ""},
-		{permissionGuideBluetooth, permissionGuideDenied, ""},
-	} {
-		service, eligible := permissionGuideResetService(tc.id, tc.access)
-		if service != tc.service || eligible != (tc.service != "") {
-			t.Fatalf("row %d access %d mapped to %q, want %q", tc.id, tc.access, service, tc.service)
-		}
-		if s.permissionGuideGrantNeedsRepair(tc.id, tc.access) != eligible {
-			t.Fatal("explicit grant recovery differs from service eligibility")
-		}
-		s.repairAttempted[tc.id] = true
-		if s.permissionGuideGrantNeedsRepair(tc.id, tc.access) {
-			t.Fatal("explicit grant attempted a second recovery")
-		}
-		s.repairAttempted[tc.id] = false
-	}
-}

@@ -4,12 +4,44 @@ from unittest.mock import patch
 from pathlib import Path
 import contextlib
 import io
+import json
+import plistlib
 import signal
 import tempfile
 import live_acceptance
 
 from live_acceptance import assess, check_fixture, route_ready, validate_audio_target, finish, assess_source_diagnostic
 from test_inspect_voice_report import report
+
+
+class InstalledBetaTests(unittest.TestCase):
+    def test_release_manifest_binds_installed_files_and_native_libraries(self):
+        with tempfile.TemporaryDirectory() as root:
+            bundle = Path(root) / "MiMac.app"
+            contents = bundle / "Contents"
+            for directory in ["MacOS", "Resources"]:
+                (contents / directory).mkdir(parents=True)
+            (contents / "MacOS/MiMac").write_bytes(b"frozen executable")
+            (contents / "Resources/libMiMacSettings.dylib").write_bytes(b"frozen library")
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "dev.mimac.app", "CFBundleExecutable": "MiMac",
+                "CFBundleShortVersionString": "2026.11.18", "CFBundleVersion": "47",
+            }))
+            path = Path(root) / "release.json"
+            manifest = {"source": {"revision": "test"}, "binary": {"revision": "test"},
+                        "version": "2026.11.18", "build_number": "47", "native_libraries": 1,
+                        "sha256": {str(p.relative_to(contents)): live_acceptance.digest(p)
+                                   for p in contents.rglob("*") if p.is_file()}}
+            path.write_text(json.dumps(manifest))
+            with patch.object(live_acceptance, "run") as run:
+                self.assertEqual(live_acceptance.verify_installed_beta(path, bundle), manifest)
+                run.assert_called_once_with("/usr/bin/codesign", "--verify", "--deep", "--strict", bundle, stderr=live_acceptance.subprocess.STDOUT)
+                (contents / "MacOS/MiMac").write_bytes(b"another build")
+                with self.assertRaisesRegex(RuntimeError, "MacOS/MiMac"):
+                    live_acceptance.verify_installed_beta(path, bundle)
+                (contents / "Resources/extra.dylib").touch()
+                with self.assertRaisesRegex(RuntimeError, "native libraries differ"):
+                    live_acceptance.verify_installed_beta(path, bundle)
 
 
 class AcceptanceTests(unittest.TestCase):

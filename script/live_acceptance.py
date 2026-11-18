@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare and close a recorded live speech acceptance run; never opens a mic.
 
-prepare uses build_and_run.sh, checks this connection, opens a task-owned text
+prepare builds the source lane or verifies an installed Beta, opens a task-owned text
 fixture and starts passive observations. Only READY permits asking for a remote
 test. On BLOCKED follow its stage; do not keep asking the user to press again.
 finish stops the owned run, checks full reports and reports each boundary.
@@ -27,6 +27,7 @@ from acceptance_observer import run_observer
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path.home() / "Library/Caches/MiMac/live-acceptance"
 SOURCES = ROOT / "script/fixtures"
+INSTALLED_BETA = Path("/Applications/MiMac.app")
 TOOL_INPUT_SOURCES = {
     "voice-doubao": "com.bytedance.inputmethod.doubaoime.pinyin",
     "voice-wetype": "com.tencent.inputmethod.wetype.pinyin",
@@ -50,6 +51,34 @@ def run(*args, **kwargs):
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def verify_installed_beta(manifest_path, bundle):
+    manifest = read(manifest_path)
+    contents = bundle / "Contents"
+    hashes = manifest["sha256"]
+    expected = {str(p.relative_to(contents)) for p in (contents / "Resources").glob("*.dylib")}
+    if not expected or manifest["native_libraries"] != len(expected) or expected != {p for p in hashes if p.endswith(".dylib")}:
+        raise RuntimeError("installed Beta native libraries differ from the release manifest")
+    if not {"Info.plist", "MacOS/MiMac"} <= hashes.keys():
+        raise RuntimeError("release manifest is missing the installed Beta identity files")
+    for name, sha in hashes.items():
+        payload = contents / name
+        if not payload.resolve().is_relative_to(contents.resolve()) or digest(payload) != sha:
+            raise RuntimeError(f"installed Beta differs from the release manifest: {name}")
+    info = plistlib.loads((contents / "Info.plist").read_bytes())
+    for field, expected_value in {
+        "CFBundleIdentifier": "dev.mimac.app",
+        "CFBundleExecutable": "MiMac",
+        "CFBundleShortVersionString": manifest["version"],
+        "CFBundleVersion": manifest["build_number"],
+    }.items():
+        if info.get(field) != expected_value:
+            raise RuntimeError(f"installed Beta has a different {field}")
+    if manifest["source"]["revision"] != manifest["binary"]["revision"]:
+        raise RuntimeError("release manifest has mismatched source and executable revisions")
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", bundle, stderr=subprocess.STDOUT)
+    return manifest
 
 
 def exact_pids(executable):
@@ -160,15 +189,26 @@ def prepare(args):
             raise RuntimeError("--target-pid is required for input-method receiver evidence")
         if args.target_pid is not None and args.target_pid <= 0:
             raise RuntimeError("target PID must be positive")
+        beta_manifest_path = getattr(args, "installed_beta_manifest", None)
         backend = args.audio_backend
-        if tool in TOOL_INPUT_SOURCES and backend != "mimac-compat":
+        if beta_manifest_path and (backend is not None or args.reuse_build or args.previous_run):
+            raise RuntimeError("installed Beta cannot use a backend override or source-build reuse")
+        if not beta_manifest_path and tool in TOOL_INPUT_SOURCES and backend != "mimac-compat":
             raise RuntimeError("input-method route requires explicit --audio-backend mimac-compat")
         recovery = Path.home() / "Library/Application Support/MiMac/voice-mapping-recovery.plist"
         if recovery.exists():
             raise RuntimeError("disable the remote and finish its cleanup before building")
-        go = args.go or os.environ.get("MIMAC_GO", "go")
-        arch = run(go, "env", "GOARCH").strip()
-        bundle = ROOT / f"dist/darwin-{arch}/MiMac.app"
+        if beta_manifest_path:
+            stage = "installed_beta_identity"
+            bundle = INSTALLED_BETA
+            if bundle != bundle.resolve():
+                raise RuntimeError("installed Beta path is not canonical")
+            beta_manifest = verify_installed_beta(beta_manifest_path, bundle)
+            write(directory / "release-manifest.json", beta_manifest)
+        else:
+            go = args.go or os.environ.get("MIMAC_GO", "go")
+            arch = run(go, "env", "GOARCH").strip()
+            bundle = ROOT / f"dist/darwin-{arch}/MiMac.app"
         executable = bundle / "Contents/MacOS/MiMac"
         if args.reuse_build:
             if not args.previous_run:
@@ -177,16 +217,21 @@ def prepare(args):
             for name, expected in previous["bundle"].items():
                 if digest(bundle / name) != expected:
                     raise RuntimeError(f"fixed bundle changed since previous run: {name}")
-        if bundle.exists() and not args.reuse_build:
+        if bundle.exists() and not args.reuse_build and not beta_manifest_path:
             stage = "backup"
             run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, directory / "previous-app.zip")
-        stage = "build"
-        environment = dict(os.environ, MIMAC_GO=go, MIMAC_RUN_STDOUT=str(directory / "stdout.log"), MIMAC_RUN_STDERR=str(directory / "stderr.log"))
+        stage = "installed_beta_launch" if beta_manifest_path else "build"
         with (directory / "build.log").open("w") as log:
-            app_arguments = ["--show-settings", "--audio-backend", backend, "--host-report", str(directory / "host.json"), "--voice-overlay-report", str(directory / "voice.json")]
+            app_arguments = ["--show-settings", "--host-report", str(directory / "host.json"), "--voice-overlay-report", str(directory / "voice.json")]
+            if not beta_manifest_path:
+                app_arguments += ["--audio-backend", backend or ""]
             if args.source_check:
                 app_arguments += ["--source-check-report", str(directory / "source-check.json")]
-            if args.reuse_build:
+            if beta_manifest_path:
+                if exact_pids(executable):
+                    raise RuntimeError("quit the installed Beta before starting its acceptance run")
+                run("open", "-n", "--stdout", directory / "stdout.log", "--stderr", directory / "stderr.log", bundle, "--args", *app_arguments)
+            elif args.reuse_build:
                 if exact_pids(executable):
                     raise RuntimeError("finish the previous App run before reusing its fixed binary")
                 stage = "fixed_bundle_verification"
@@ -194,9 +239,12 @@ def prepare(args):
                 subprocess.run([sys.executable, str(ROOT / "script/verify_app_bundle.py"), str(bundle), "--arch", arch], stdout=log, stderr=subprocess.STDOUT, check=True)
                 run("open", "-n", "--stdout", directory / "stdout.log", "--stderr", directory / "stderr.log", bundle, "--args", *app_arguments)
             else:
+                environment = dict(os.environ, MIMAC_GO=go, MIMAC_RUN_STDOUT=str(directory / "stdout.log"), MIMAC_RUN_STDERR=str(directory / "stderr.log"))
                 subprocess.run([str(ROOT / "script/build_and_run.sh"), "run", "--", *app_arguments], env=environment, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
         app_pid = wait_for(lambda: one_pid(executable))
         state.update(app_pid=app_pid, app_executable=str(executable), app_bundle=str(bundle), tool=tool, input_source=expected_source, target_pid=args.target_pid, audio_backend=backend)
+        if beta_manifest_path:
+            state.update(lane="installed-beta", release_revision=beta_manifest["source"]["revision"])
         write(directory / "state.json", state)  # Persist process ownership before further probes.
         stage = "freeze"
         source_files = run("git", "-C", ROOT, "ls-files", "-co", "--exclude-standard").splitlines()
@@ -204,7 +252,8 @@ def prepare(args):
             "head": run("git", "-C", ROOT, "rev-parse", "HEAD").strip(),
             "dirty": run("git", "-C", ROOT, "status", "--porcelain"),
             "sources": {name: digest(ROOT / name) for name in sorted(set(source_files)) if (ROOT / name).is_file()},
-            "bundle": {str(p.relative_to(bundle)): digest(p) for p in [executable, *sorted((bundle / "Contents/Resources").glob("*.dylib"))]},
+            "bundle": ({"Contents/" + name: sha for name, sha in beta_manifest["sha256"].items()} if beta_manifest_path else
+                       {str(p.relative_to(bundle)): digest(p) for p in [executable, *sorted((bundle / "Contents/Resources").glob("*.dylib"))]}),
             "app_pid": app_pid, "executable_inode": executable.stat().st_ino,
             "system": run("sw_vers"),
         })
@@ -229,7 +278,7 @@ def prepare(args):
         state.update(probe=str(probe), fixture_executable=str(host_exe), fixture_bundle=str(fixture))
         write(directory / "diagnostics.json", {"host_sha256": digest(host_exe), "probe_sha256": digest(probe), "compiled_sources": {p.name: digest(p) for p in frozen.glob("*.swift")}})
         stage = "permission_and_connection"
-        run(probe, app_pid, "press", "AXButton", "设备", timeout=8)
+        # --show-settings starts on Key Mapping, which owns the remote toggle.
         run(probe, app_pid, "press", "AXButton", "启用遥控器", timeout=8)
         permission_snapshot = json.loads(run(probe, app_pid, "snapshot", timeout=8))
         write(directory / "permission-check.json", permission_snapshot)
@@ -422,7 +471,11 @@ def managed_run(directory):
         raise RuntimeError("run identity mismatch")
     if state.get("app_executable"):
         executable = Path(state["app_executable"]).resolve()
-        executable.relative_to((ROOT / "dist").resolve())
+        if state.get("lane") == "installed-beta":
+            if executable != INSTALLED_BETA / "Contents/MacOS/MiMac" or Path(state["app_bundle"]) != INSTALLED_BETA:
+                raise RuntimeError("unexpected installed Beta path")
+        else:
+            executable.relative_to((ROOT / "dist").resolve())
         if executable.name != "MiMac" or executable.parent.name != "MacOS":
             raise RuntimeError("unexpected App executable")
     return directory, state
@@ -591,7 +644,8 @@ def main():
     p.add_argument("--source-check", action="store_true", help="explicit in-memory same-source local ASR diagnostic on App exit; never writes PCM")
     p.add_argument("--reuse-build", action="store_true", help="verify/relaunch the existing stopped binary after permission refresh; never rebuild")
     p.add_argument("--previous-run", type=Path, help="previous run whose bundle SHA values must match for --reuse-build")
-    p.add_argument("--audio-backend", default="", choices=["", "mimac-compat"])
+    p.add_argument("--audio-backend", choices=["", "mimac-compat"])
+    p.add_argument("--installed-beta-manifest", type=Path, help="verify the installed app against this release manifest; never build or override its audio backend")
     p.add_argument("--target-pid", type=int)
     for action in ["observe", "finish", "status"]:
         commands.add_parser(action).add_argument("directory", type=Path)

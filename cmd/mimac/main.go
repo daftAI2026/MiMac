@@ -189,6 +189,8 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 			s.showOnboarding()
 		} else if s.shouldPresentInitialOnboarding() {
 			s.showInitialOnboarding()
+		} else {
+			s.resumePermissionGuideOnLaunch()
 		}
 	}
 	settingsShown := s.window != nil || s.onboarding.window != nil
@@ -417,6 +419,7 @@ func main() {
 		}) {
 			return
 		}
+		s.savePendingPermissionGuide()
 		s.closing = true
 		s.closeOnboarding()
 		s.closePermissionGuide()
