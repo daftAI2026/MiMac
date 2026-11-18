@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -44,7 +45,6 @@ type permissionGuideState struct {
 	phase               permissionGuidePhase
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
-	repairOffered       [permissionGuideIDCount]bool
 	repairAttempted     [permissionGuideIDCount]bool
 	repairing           bool
 	repairFailedFor     permissionGuideID
@@ -142,7 +142,6 @@ func (s *shell) showPermissionGuide() {
 	s.phase = permissionGuideWaiting
 	s.currentID = 0
 	s.settingsOpenedFor = 0
-	s.repairOffered = [permissionGuideIDCount]bool{}
 	s.repairAttempted = [permissionGuideIDCount]bool{}
 	s.repairFailedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
@@ -153,7 +152,6 @@ func (s *shell) showPermissionGuide() {
 		Content: ui.View(s.permissionGuideView),
 	})
 	s.guideWindow = window
-	permissionguide.ConfigurePermissionPanel(window)
 	window.SetMovable(true)
 	window.OnShow(func() {
 		if s.guideWindow == window && s.generation == generation {
@@ -197,9 +195,10 @@ func (s *shell) showPermissionGuide() {
 	})
 	window.OnReadyToShow(func() {
 		if s.guideWindow == window && s.generation == generation {
-			if !permissionguide.SystemSettingsRunning() {
-				window.Center()
+			if err := permissionguide.ConfigurePermissionPanel(window); err != nil {
+				log.Printf("permission guide: %v", err)
 			}
+			window.Center()
 			s.showPermissionGuideWindow(window, generation)
 		}
 	})
@@ -440,19 +439,23 @@ func (s *shell) refreshPermissionGuide() {
 		return
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
+	finishOnboardingGuide := s.onboarding.permissionGuideOpened && s.onboarding.step == onboardingStepPermissions &&
+		!summarizeOnboardingPermissions(s.snapshot.rows).allGranted() && summarizeOnboardingPermissions(nextSnapshot.rows).allGranted()
 	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
 	for _, row := range nextSnapshot.rows {
-		if row.access == permissionGuideGranted {
-			s.repairOffered[row.id] = false
-			if s.repairFailedFor == row.id {
-				s.repairFailedFor = 0
-			}
+		if row.access == permissionGuideGranted && s.repairFailedFor == row.id {
+			s.repairFailedFor = 0
 		}
 	}
 	s.updateOnboardingPermissions(nextSnapshot)
+	if finishOnboardingGuide {
+		s.onboarding.permissionGuideOpened = false
+		s.closePermissionGuide()
+		return
+	}
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
 }
@@ -697,9 +700,6 @@ func (s *shell) permissionGuideRow(c *ui.Context, a appearance, row permissionGu
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(4).Children(func() {
 			s.permissionGuideOpenSettingsButton(c, a, row)
 			description := row.description
-			if s.canOfferPermissionRepair(row) {
-				description = "仍未授权，可移除旧记录后重新添加"
-			}
 			if s.repairFailedFor == row.id {
 				description = "请在系统设置移除旧记录后重新添加"
 			}
@@ -721,7 +721,7 @@ func (s *shell) permissionGuideOpenSettingsButton(c *ui.Context, a appearance, r
 			}
 		})
 	})
-	if button.Clicked() && s.snapshot.actionsEnabled {
+	if button.Clicked() && s.snapshot.actionsEnabled && !s.repairing {
 		s.openPermissionGuideSettings(row.id, true)
 	}
 }
@@ -736,18 +736,14 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 		return
 	}
 	label := permissionGuideActionLabel(row)
-	if s.canOfferPermissionRepair(row) {
-		label = "重置授权…"
+	if s.repairing && s.currentID == row.id {
+		label = "正在准备"
 	}
 	button := styleAppButton(ui.ButtonBase(c).Label(label), a, s.repairing).
 		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
 	if button.Clicked() && s.snapshot.actionsEnabled && !s.repairing {
-		if s.canOfferPermissionRepair(row) {
-			s.repairPermissionGuideAccess(row.id)
-		} else {
-			s.performPermissionGuideAction(row.id)
-		}
+		s.performPermissionGuideAction(row.id)
 	}
 }
 
@@ -790,8 +786,8 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 	if !exists {
 		return
 	}
-	if _, allowed := permissionGuideResetService(id, access); allowed {
-		s.repairOffered[id] = true
+	if s.preparePermissionGuideGrant(id) {
+		return
 	}
 	runPermissionGuideGrant(id, access, func(id permissionGuideID) {
 		switch id {
@@ -819,8 +815,8 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	if _, exists := permissionGuideAccessForID(s.snapshot, id); !exists {
 		return
 	}
-	// Release the panel’s key-window claim before handing off to Settings.
-	s.yieldPermissionGuideKeyboard()
+	// Cooperate with Settings before opening its selected pane.
+	permissionguide.YieldToSystemSettings()
 	s.currentID = id
 	s.phase = permissionGuideWaiting
 	s.settingsOpenedFor = id

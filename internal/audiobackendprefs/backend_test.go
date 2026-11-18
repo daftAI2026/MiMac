@@ -197,3 +197,18 @@ func TestWriteFailureLeavesExistingDirectoryTargetIntact(t *testing.T) {
 		t.Fatalf("failed atomic replacement left temporary files: %v", entries)
 	}
 }
+
+func TestPrepareDistinguishesAbsentSidecarFromSavedOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audio-backend.json")
+	start, err := Prepare(path, "", false, "", false)
+	if err != nil || start.Explicit || start.Backend != "" {
+		t.Fatalf("absent preference: %+v, %v", start, err)
+	}
+	if err := Write(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	start, err = Prepare(path, "", false, "", false)
+	if err != nil || !start.Explicit || start.Backend != "" {
+		t.Fatalf("saved shortcut-only choice: %+v, %v", start, err)
+	}
+}

@@ -184,12 +184,12 @@ func scheduleDetach(ctx context.Context, plan installPlan) error {
 	command := exec.Command("/usr/bin/osascript", "-l", "JavaScript", scriptPath,
 		fmt.Sprint(plan.SourcePID), plan.Identity.BundleID, plan.Source.Path,
 		plan.Image.ImagePath, plan.Image.Device, plan.Image.VolumeDevice, plan.Image.MountPoint)
-	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	diagnostics, err := os.CreateTemp(filepath.Dir(scriptPath), "detach-*.log")
 	if err != nil {
 		return err
 	}
-	defer devNull.Close()
-	command.Stdin, command.Stdout, command.Stderr = devNull, devNull, devNull
+	defer diagnostics.Close()
+	command.Stdout, command.Stderr = diagnostics, diagnostics
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start bounded disk-image cleanup helper: %w", err)
 	}
@@ -285,23 +285,40 @@ function run(argv) {
     delay(0.25);
   }
   if (Date.now() >= deadline) throw new Error('source app did not exit before cleanup deadline');
-  var output = app.doShellScript('/usr/bin/hdiutil info -plist');
-  var nsOutput = $.NSString.stringWithString(output);
-  var data = nsOutput.dataUsingEncoding($.NSUTF8StringEncoding);
-  var format = Ref();
-  var parseError = Ref();
-  var root = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-    data, $.NSPropertyListImmutable, format, parseError);
-  if (root === null || root === undefined) throw new Error('cannot parse attached disk images');
-  var images = ObjC.deepUnwrap(root).images || [];
-  var match = false;
-  images.forEach(function(image) {
-    if (image['image-path'] !== imagePath || image.writeable !== false) return;
-    (image['system-entities'] || []).forEach(function(entity) {
-      if (entity['dev-entry'] === volumeDevice && entity['mount-point'] === mountPoint) match = true;
+  function imageState() {
+    var output = app.doShellScript('/usr/bin/hdiutil info -plist');
+    var data = $.NSString.stringWithString(output).dataUsingEncoding($.NSUTF8StringEncoding);
+    var root = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      data, $.NSPropertyListImmutable, Ref(), Ref());
+    if (root == null) throw new Error('cannot parse attached disk images');
+    var images = ObjC.deepUnwrap(root).images || [];
+    var matches = 0;
+    var present = false;
+    images.forEach(function(image) {
+      (image['system-entities'] || []).forEach(function(entity) {
+        if (entity['dev-entry'] !== volumeDevice) return;
+        present = true;
+        if (image['image-path'] === imagePath && image.writeable === false &&
+            entity['mount-point'] === mountPoint) matches += 1;
+      });
     });
-  });
-  if (!match) throw new Error('source image no longer matches the mounted device');
-  app.doShellScript('/usr/bin/hdiutil detach ' + volumeDevice);
+    if (!present) return 'detached';
+    if (matches === 1) return 'ready';
+    throw new Error('source image no longer matches the mounted device');
+  }
+
+  var ejectDeadline = Date.now() + 15000;
+  var attempts = 0;
+  while (true) {
+    if (imageState() === 'detached') return 'already ejected';
+    attempts += 1;
+    try {
+      app.doShellScript('/usr/bin/hdiutil detach ' + volumeDevice);
+      return 'ejected after ' + attempts + ' attempt(s)';
+    } catch (error) {
+      if (!/resource busy/i.test(String(error)) || Date.now() >= ejectDeadline) throw error;
+      delay(0.25);
+    }
+  }
 }
 `

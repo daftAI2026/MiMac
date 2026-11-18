@@ -332,7 +332,7 @@ func TestPermissionGuideAdvancesOnlyAfterObservedGrant(t *testing.T) {
 	check(permissionGuideInput)
 }
 
-func TestPermissionGuideRecoveryIsExplicitScopedAndSingleAttempt(t *testing.T) {
+func TestPermissionGuideRecoveryIsScopedAndSingleAttempt(t *testing.T) {
 	var s shell
 	for _, tc := range []struct {
 		id      permissionGuideID
@@ -347,22 +347,17 @@ func TestPermissionGuideRecoveryIsExplicitScopedAndSingleAttempt(t *testing.T) {
 		{permissionGuidePostEvent, permissionGuideUnknown, ""},
 		{permissionGuideBluetooth, permissionGuideDenied, ""},
 	} {
-		row := permissionGuideRow{id: tc.id, access: tc.access}
 		service, eligible := permissionGuideResetService(tc.id, tc.access)
 		if service != tc.service || eligible != (tc.service != "") {
 			t.Fatalf("row %d access %d mapped to %q, want %q", tc.id, tc.access, service, tc.service)
 		}
-		if s.canOfferPermissionRepair(row) {
-			t.Fatal("recovery was offered before an explicit grant action")
-		}
-		s.repairOffered[tc.id] = true
-		if s.canOfferPermissionRepair(row) != eligible {
-			t.Fatal("recovery eligibility after grant action differs from service eligibility")
+		if s.permissionGuideGrantNeedsRepair(tc.id, tc.access) != eligible {
+			t.Fatal("explicit grant recovery differs from service eligibility")
 		}
 		s.repairAttempted[tc.id] = true
-		if s.canOfferPermissionRepair(row) {
-			t.Fatal("recovery was offered a second time")
+		if s.permissionGuideGrantNeedsRepair(tc.id, tc.access) {
+			t.Fatal("explicit grant attempted a second recovery")
 		}
-		s.repairOffered[tc.id], s.repairAttempted[tc.id] = false, false
+		s.repairAttempted[tc.id] = false
 	}
 }

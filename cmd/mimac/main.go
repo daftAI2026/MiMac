@@ -167,6 +167,7 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 	s.loadMappings()
 	s.loadVoiceTools()
 	s.refreshAudioComponent()
+	s.report.AudioBackend = s.effectiveAudioBackend()
 	tray, err := mygo.NewTray(mygo.TrayOptions{ID: "dev.mimac.app.status", Icon: brand.TrayPNG, IconIsTemplate: true, ToolTip: mygo.App.Name()})
 	if err != nil {
 		s.report.Error = err.Error()
@@ -307,7 +308,7 @@ func main() {
 	backend := startup.Backend
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend}}
+	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend, selectInstalledBackend: !development && mygo.App.IsPackaged() && !startup.Explicit}}
 	s.onboarding.showOnboardingOnLaunch = *showOnboarding
 	sourceCheckLibrary := ""
 	if *sourceCheckPath != "" {
@@ -371,7 +372,13 @@ func main() {
 	})
 	// Refresh the visible permission projection on real activation; reopening
 	// or moving windows remains an explicit user action.
-	mygo.App.OnDidBecomeActive(s.refreshPermissionGuide)
+	mygo.App.OnDidBecomeActive(func() {
+		if s.guideWindow != nil && s.guideWindow.IsVisible() {
+			s.refreshPermissionGuide()
+		} else if !s.closing && s.onboarding.step == onboardingStepPermissions {
+			s.refreshOnboardingProjection()
+		}
+	})
 	mygo.App.OnActivate(func(_ bool) {
 		if s.report.Ready && !s.closing {
 			if s.guideWindow != nil {

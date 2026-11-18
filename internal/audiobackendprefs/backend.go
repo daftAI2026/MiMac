@@ -21,8 +21,9 @@ const (
 )
 
 type Startup struct {
-	Backend string
-	Exit    bool
+	Backend  string
+	Explicit bool
+	Exit     bool
 }
 
 type document struct {
@@ -40,47 +41,52 @@ func Validate(backend string) error {
 // Read returns the fail-closed default when the sidecar or its optional backend
 // member is absent. Malformed, oversized, or unknown values are errors.
 func Read(path string) (string, error) {
+	backend, _, err := read(path)
+	return backend, err
+}
+
+func read(path string) (string, bool, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > maxFileSize {
-		return "", errors.New("invalid audio backend preference file")
+		return "", false, errors.New("invalid audio backend preference file")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(data) > maxFileSize {
-		return "", errors.New("audio backend preference file too large")
+		return "", false, errors.New("audio backend preference file too large")
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var value document
 	if err := decoder.Decode(&value); err != nil {
-		return "", err
+		return "", false, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return "", errors.New("trailing audio backend preference data")
+		return "", false, errors.New("trailing audio backend preference data")
 	}
 	if value.Version != fileVersion {
-		return "", errors.New("unsupported audio backend preference version")
+		return "", false, errors.New("unsupported audio backend preference version")
 	}
 	if err := Validate(value.Backend); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return value.Backend, nil
+	return value.Backend, true, nil
 }
 
 // Write atomically replaces only this module's sidecar. A failed write leaves
@@ -134,11 +140,11 @@ func Prepare(path, override string, overrideProvided bool, setBackend string, se
 		if err := Validate(override); err != nil {
 			return Startup{}, err
 		}
-		return Startup{Backend: override}, nil
+		return Startup{Backend: override, Explicit: true}, nil
 	}
-	saved, err := Read(path)
+	saved, explicit, err := read(path)
 	if err != nil {
 		return Startup{}, err
 	}
-	return Startup{Backend: saved}, nil
+	return Startup{Backend: saved, Explicit: explicit}, nil
 }

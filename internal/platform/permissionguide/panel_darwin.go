@@ -3,28 +3,53 @@
 package permissionguide
 
 import (
+	"errors"
+
+	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
 )
 
-// ConfigurePermissionPanel tunes the existing host-owned panel. It stays visible
-// beside System Settings and acquires keyboard focus only when a control needs it.
-func ConfigurePermissionPanel(window *mygo.Window) {
-	if window == nil || !window.IsPanel() {
-		return
+// ConfigurePermissionPanel applies only to this pointer-operated sidecar.
+// It can receive clicks and file drags without becoming the keyboard window.
+func ConfigurePermissionPanel(window *mygo.Window) error {
+	if window == nil || !window.IsPanel() || window.IsDestroyed() {
+		return errors.New("missing permission panel")
 	}
-	mygo.RunOnMain(func() {
-		if window.IsDestroyed() || loadAppKitFramework() != nil {
-			return
+	panel := objc.ID(window.NativeHandle())
+	if panel == 0 {
+		return errors.New("permission panel has no native window")
+	}
+	panel.Send(objc.RegisterName("setHidesOnDeactivate:"), false)
+	panel.Send(objc.RegisterName("setBecomesKeyOnlyIfNeeded:"), true)
+
+	const name = "MiMacPermissionSidecar"
+	base := panel.Class()
+	var class objc.Class
+	if class = objc.GetClass(name); class == 0 {
+		var err error
+		class, err = objc.RegisterClass(name, base, nil, nil, []objc.MethodDef{{
+			Cmd: objc.RegisterName("canBecomeKeyWindow"),
+			Fn:  func(objc.ID, objc.SEL) bool { return false },
+		}})
+		if err != nil {
+			return err
 		}
-		handle := window.NativeHandle()
-		if handle == 0 {
-			return
-		}
-		panel := objc.ID(handle)
-		panel.Send(objc.RegisterName("setHidesOnDeactivate:"), false)
-		panel.Send(objc.RegisterName("setBecomesKeyOnlyIfNeeded:"), true)
-	})
+	}
+	if base == class {
+		return nil
+	}
+	if class.SuperClass() != base {
+		return errors.New("permission panel class has changed")
+	}
+	address, err := purego.Dlsym(purego.RTLD_DEFAULT, "object_setClass")
+	if err != nil {
+		return err
+	}
+	var setClass func(objc.ID, objc.Class) objc.Class
+	purego.RegisterFunc(&setClass, address)
+	setClass(panel, class)
+	return nil
 }
 
 // YieldToSystemSettings gives the live Settings process the opportunity to

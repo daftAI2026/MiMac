@@ -27,14 +27,15 @@ type audioRouteConfig struct {
 type audioRouteFactory func(context.Context, audioRouteConfig) (liveAudioRoute, error)
 
 type liveAudioState struct {
-	backend            string
-	connection         *liveAudioConnection
-	toolID, appPath    string
-	generation         uint64
-	retiring           bool
-	audioFailure       error
-	componentStatus    audioComponentAvailability
-	componentInspector func() (audioComponentInspector, error)
+	backend                string
+	selectInstalledBackend bool
+	connection             *liveAudioConnection
+	toolID, appPath        string
+	generation             uint64
+	retiring               bool
+	audioFailure           error
+	componentStatus        audioComponentAvailability
+	componentInspector     func() (audioComponentInspector, error)
 	// Tests substitute native construction without opening hardware.
 	factory func(context.Context, uint64, string) (liveAudioRoute, error)
 }
@@ -220,7 +221,7 @@ func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, b
 	if s.liveAudio.retiring {
 		return "正在切换语音工具", toneNeutral, true
 	}
-	if s.currentVoiceTool != appleSpeechToolID && s.liveAudio.backend == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
+	if s.currentVoiceTool != appleSpeechToolID && s.effectiveAudioBackend() == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
 		return "没有找到遥控器音频组件", toneError, true
 	}
 	if label, ok := liveAudioFailureStatus(s.liveAudio.audioFailure); ok {
@@ -288,7 +289,17 @@ func (s *shell) logAudioCompletion(event bridge.Event, failed bool, err error) {
 }
 
 func (s *shell) audioRequested() bool {
-	return s.liveAudio.backend != "" || s.currentVoiceTool == appleSpeechToolID
+	return s.effectiveAudioBackend() != "" || s.currentVoiceTool == appleSpeechToolID
+}
+
+// Ordinary packaged launches can reuse an existing verified endpoint for a
+// supported current tool. A stored or diagnostic opt-out stays shortcut-only.
+func (s *shell) effectiveAudioBackend() string {
+	if s.liveAudio.selectInstalledBackend && s.liveAudio.componentStatus == audioComponentAvailable &&
+		s.currentVoiceTool != appleSpeechToolID && s.selectedAudioRouteTool() != nil {
+		return compatibilityAudioBackend
+	}
+	return s.liveAudio.backend
 }
 
 func (s *shell) selectedAudioRouteTool() *voiceTool {

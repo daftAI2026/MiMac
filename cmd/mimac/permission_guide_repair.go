@@ -21,28 +21,31 @@ func permissionGuideResetService(id permissionGuideID, access permissionGuideAcc
 	}
 }
 
-func (s *shell) canOfferPermissionRepair(row permissionGuideRow) bool {
-	_, allowed := permissionGuideResetService(row.id, row.access)
-	return allowed && s.repairOffered[row.id] && !s.repairAttempted[row.id]
+func (s *shell) permissionGuideGrantNeedsRepair(id permissionGuideID, access permissionGuideAccess) bool {
+	_, allowed := permissionGuideResetService(id, access)
+	return allowed && !s.repairAttempted[id]
 }
 
-// Called only from an explicitly labeled recovery control. The fresh probe
-// guards against a grant received between drawing and clicking that control.
-func (s *shell) repairPermissionGuideAccess(id permissionGuideID) {
+// Only a deliberate row action may recover an old record. Refresh first
+// so a grant received since drawing the row is never reset.
+func (s *shell) preparePermissionGuideGrant(id permissionGuideID) bool {
 	window := s.guideWindow
 	if s.closing || s.repairing || window == nil || window.IsDestroyed() {
-		return
+		return true
 	}
 	fresh := s.readPermissionGuideSnapshot()
 	access, exists := permissionGuideAccessForID(fresh, id)
 	service, resettable := permissionGuideResetService(id, access)
 	bundleID, identityOK := permissionguide.MainBundleIdentifier()
-	if !exists || !resettable || !fresh.actionsEnabled ||
+	if !exists || access == permissionGuideGranted || access == permissionGuideRestricted {
+		s.refreshPermissionGuide()
+		return true
+	}
+	if !resettable || !fresh.actionsEnabled ||
 		fresh.appBundlePath != s.snapshot.appBundlePath ||
 		!identityOK || !permissionGuideBundleIdentityAllowed(bundleID, mygo.App.Name(), true) ||
-		!s.canOfferPermissionRepair(permissionGuideRow{id: id, access: access}) {
-		s.refreshPermissionGuide()
-		return
+		!s.permissionGuideGrantNeedsRepair(id, access) {
+		return false
 	}
 	s.repairAttempted[id] = true
 	s.repairing = true
@@ -62,8 +65,6 @@ func (s *shell) repairPermissionGuideAccess(id permissionGuideID) {
 			if err != nil {
 				log.Printf("permission recovery: %s: %v", service, err)
 				s.repairFailedFor = id
-				window.Invalidate()
-				return
 			}
 			s.refreshPermissionGuide()
 			if access, exists := permissionGuideAccessForID(s.snapshot, id); exists && access != permissionGuideGranted {
@@ -71,18 +72,5 @@ func (s *shell) repairPermissionGuideAccess(id permissionGuideID) {
 			}
 		})
 	}()
-}
-
-func (s *shell) yieldPermissionGuideKeyboard() bool {
-	window := s.guideWindow
-	if window == nil || window.IsDestroyed() || !window.IsVisible() {
-		return false
-	}
-	permissionguide.YieldToSystemSettings()
-	if !window.IsFocused() {
-		return false
-	}
-	window.Hide()
-	window.ShowInactive()
 	return true
 }

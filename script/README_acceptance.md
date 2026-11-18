@@ -30,3 +30,7 @@ Apple 本机识别不用 `--audio-backend` 或 `--target-pid`。已核验的固�
 若需要区别源音频缺失与外部输入法漏字，在用户已经同意该诊断时加原有 `--source-check`。它复用本次源 PCM 的内存镜像做 Apple 对照，不额外开麦、不落盘录音；以报告的完整捕获及重放检查为准。
 
 每个 `prepare/finish` run 只允许一个会话；`finish` 会关闭 App 和自有输入窗口。一个批次若安排完整句和短句，应分别准备两个 run，不能把两次按键放进一个 run。连续输入、同窗口前缀保留和旧结果隔离使用专门的连续会话实验，不能由两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
+
+### Verify the ordinary-launch audio route
+
+A session driven by an explicit backend argument verifies only that diagnostic launch. Check the ordinary launch with the same packaged identity, current tool, and installed audio endpoint before a Beta handoff. With a missing backend sidecar, a verified compatibility endpoint and a supported current tool select the existing route automatically. A saved or one-run empty value preserves shortcut-only mode. The independent restart verifier needs the expected automatic route for the fixed test machine. Confirm real source, target consumption and text in the live acceptance flow.

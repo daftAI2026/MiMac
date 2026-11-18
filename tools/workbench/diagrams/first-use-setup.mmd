@@ -40,10 +40,10 @@ flowchart TD
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
-    permissionGuide -.-> nativeWindow["宿主持久非激活面板：显示与重开不取键盘，点击控件仍可操作"]
+    permissionGuide -.-> nativeWindow["新小卡先居中，鼠标和拖放有效，键盘留给系统设置"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
-    existingSettings -->|否：新小卡先居中，等待用户打开设置| stable
+    existingSettings -->|否：新小卡已居中，等待用户打开设置| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
@@ -55,11 +55,9 @@ flowchart TD
     drag --> spotlight["MyGo原生会话Started事件：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
     spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
-    endDrop -->|系统接受拖放| keyboardHandoff["向运行中的系统设置交还激活，系统接管键盘认证"]
-    keyboardHandoff --> guideRefresh
-    endDrop -->|其他结果| guideRefresh
-    missing -->|否| complete["显示已完成；可关闭，不接管设备"]
-    grantAction -.-> retry["列表权限仍未通过时，可显式重置该 App 的单项授权"]
+    endDrop --> guideRefresh["刷新实际授权，保留系统认证窗口的键盘焦点"]
+    missing -->|否| complete["主卡显示已授权；首次引导的最后一项通过后关闭小卡，主卡保留继续按钮"]
+    grantAction -.-> retry["明确点击授权后，复核并按需清理当前 App 对应的旧记录"]
     retry --> recheckGrant["确认当前 Bundle 身份与实时权限；仅重置仍缺失的对应权限"]
     recheckGrant -->|重置成功且仍缺权限| settings
     recheckGrant -->|查询已获准| guideRefresh

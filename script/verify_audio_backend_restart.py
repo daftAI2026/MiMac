@@ -39,6 +39,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--result-dir", type=Path, required=True)
+    parser.add_argument("--expect-automatic-backend", choices=["", "mimac-compat"], default="",
+                        help="expected backend with no sidecar, based on the fixed tool and installed endpoint")
     args = parser.parse_args()
     bundle = args.bundle.resolve(strict=True)
     executable = bundle / "Contents/MacOS/MiMac"
@@ -133,7 +135,7 @@ def main():
         if original is not None:
             sidecar.unlink()
             last_owned = None
-        launch("01-absent-default", "")
+        launch("01-absent-default", args.expect_automatic_backend)
         save("mimac-compat")
         launch("02-saved-normal-start", "mimac-compat")
         launch("03-empty-one-run-override", "", ["--audio-backend="])

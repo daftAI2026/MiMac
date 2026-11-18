@@ -333,3 +333,21 @@ func TestBuiltInAudioRouteFactoriesAreExplicit(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveAudioOrdinaryLaunchUsesVerifiedInstalledBackendForSelectedTool(t *testing.T) {
+	s, _ := liveHostFixture(t, nil)
+	s.liveAudio.backend = ""
+	s.liveAudio.selectInstalledBackend = true
+	s.liveAudio.componentStatus = audioComponentMissing
+	if s.audioRequested() || s.desiredLiveAudioTool() != nil {
+		t.Fatal("unavailable component changed the shortcut-only path")
+	}
+	s.liveAudio.componentStatus = audioComponentAvailable
+	if s.effectiveAudioBackend() != compatibilityAudioBackend || s.desiredLiveAudioTool() != s.tools[0] {
+		t.Fatal("ordinary launch omitted the selected tool's installed audio route")
+	}
+	s.liveAudio.selectInstalledBackend = false
+	if s.audioRequested() || s.desiredLiveAudioTool() != nil {
+		t.Fatal("an explicit disabled preference was overridden")
+	}
+}
