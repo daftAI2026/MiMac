@@ -272,6 +272,10 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 			if callback, ok := boolCallback(c.callbacks.VoiceOverlay, value); ok {
 				callback()
 			}
+		case 6:
+			if value == 0 && c.callbacks.ManagePermissions != nil {
+				c.callbacks.ManagePermissions()
+			}
 		}
 	})
 }

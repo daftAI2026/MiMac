@@ -132,9 +132,6 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 		settingsValueRow(c, &a.theme, a.fonts.body, "连接", s.deviceConnectionLabel())
 		sectionLine(c, a)
 		ui.Row(c).FillWidth().MinWidth(0).MinHeight(settingsRowHeight).AlignItems(ui.Center).Justify(ui.End).Gap(spaceSM).Children(func() {
-			if appButton(c, a, "系统权限…", false).Clicked() {
-				s.showPermissionGuide()
-			}
 			if appButton(c, a, "蓝牙设置", false).Clicked() {
 				s.performSetupAction(setupBluetoothConnection)
 			}
@@ -159,7 +156,12 @@ func (s *shell) deviceSettings(c *ui.Context, a appearance) {
 			})
 		}
 		if s.deviceNeedsPermission {
-			ui.Text(c, "授权后，在按键映射中启用遥控器。").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(spaceSM).Children(func() {
+				ui.Text(c, "请在通用设置中授权输入监控").Grow(1).FontSize(a.fonts.caption).TextColor(a.theme.TextMuted)
+				if appButton(c, a, "打开通用设置", false).Clicked() {
+					s.navigate(pageGeneral)
+				}
+			})
 		}
 	})
 	if s.deviceNeedsConnection {

@@ -84,6 +84,13 @@ private struct SettingsForm: View {
                 Text("显示").font(.system(size: state.BodySize, weight: .semibold))
             }
 
+            Section {
+                LabeledContent("系统权限") {
+                    Button("管理…") { changed(6, 0) }
+                        .accessibilityLabel("管理系统权限")
+                }
+            }
+
             if !state.Error.isEmpty {
                 Text(state.Error)
                     .font(.system(size: state.CaptionSize))

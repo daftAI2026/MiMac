@@ -40,12 +40,12 @@ flowchart TD
     nativeRebind -.-> pendingSettings
     pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接"]
     oneShot -.-> once
-    once -->|对应权限实际已授权| recoverSettings["回设备页及权限小卡，显示实际状态"]
+    once -->|对应权限实际已授权| recoverSettings["回通用页及权限小卡，显示实际状态"]
     once -->|未授权或无记录| tray["保留菜单栏启动行为"]
     explicit["显式诊断窗口参数"] --> override["按参数显示或隐藏，不写首启配置"]
     device --> detected{"当前 HID 已发现可用设备？"}
-    device --> permissionGuide["显示可关闭的系统权限引导"]
-    reopen["菜单或设备页：系统权限"] --> permissionGuide
+    device -.->|缺输入监控时| reopen["菜单或通用设置：系统权限"]
+    reopen --> permissionGuide
     permissionGuide -.-> nativeWindow["原生小卡创建后配置焦点、居中并主动显示，键盘留给系统设置"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings

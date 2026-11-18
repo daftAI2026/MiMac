@@ -52,6 +52,7 @@ func (s *shell) syncGeneralControls() {
 			_ = s.applyAppearancePreference(mygo.ThemeSource(source))
 			s.syncGeneralControls()
 		},
+		ManagePermissions: s.showPermissionGuide,
 	}
 	var err error
 	s.generalControls, err = nativeprefs.New(s.window.NativeHandle(), nativeprefs.Layout{Left: float64(sidebarWidth + lineWidth), Top: float64(contentHeaderHeight)}, state, callbacks)

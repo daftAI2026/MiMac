@@ -30,9 +30,10 @@ type State struct {
 // Callbacks report user changes to the host. The host applies changes and
 // calls Update with the actual resulting state.
 type Callbacks struct {
-	Login        func(bool)
-	Dock         func(bool)
-	VoiceOverlay func(bool)
-	Appearance   func(string)
-	TextSize     func(int)
+	Login             func(bool)
+	Dock              func(bool)
+	VoiceOverlay      func(bool)
+	Appearance        func(string)
+	TextSize          func(int)
+	ManagePermissions func()
 }

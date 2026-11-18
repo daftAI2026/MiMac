@@ -66,7 +66,7 @@ func (s *shell) resumePermissionGuideOnLaunch() {
 		return
 	}
 	if id != 0 && shouldResumePermissionGuide(id, s.readPermissionGuideSnapshot()) {
-		s.page = pageDevice
+		s.page = pageGeneral
 		s.showSettings()
 		s.showPermissionGuide()
 	}
