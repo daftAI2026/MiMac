@@ -56,7 +56,7 @@ flowchart TD
     spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh["刷新实际授权，保留系统认证窗口的键盘焦点"]
-    missing -->|否| complete["主卡显示已授权；首次引导的最后一项通过后关闭小卡，主卡保留继续按钮"]
+    missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
     grantAction -.-> retry["明确点击授权后，复核并按需清理当前 App 对应的旧记录"]
     retry --> recheckGrant["确认当前 Bundle 身份与实时权限；仅重置仍缺失的对应权限"]
     recheckGrant -->|重置成功且仍缺权限| settings

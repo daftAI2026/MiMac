@@ -439,8 +439,6 @@ func (s *shell) refreshPermissionGuide() {
 		return
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
-	finishOnboardingGuide := s.onboarding.permissionGuideOpened && s.onboarding.step == onboardingStepPermissions &&
-		!summarizeOnboardingPermissions(s.snapshot.rows).allGranted() && summarizeOnboardingPermissions(nextSnapshot.rows).allGranted()
 	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
@@ -451,11 +449,6 @@ func (s *shell) refreshPermissionGuide() {
 		}
 	}
 	s.updateOnboardingPermissions(nextSnapshot)
-	if finishOnboardingGuide {
-		s.onboarding.permissionGuideOpened = false
-		s.closePermissionGuide()
-		return
-	}
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
 }
