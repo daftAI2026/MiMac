@@ -217,7 +217,7 @@ def verify_upgrade_identity(previous: Path, candidate: Path) -> dict:
 
     def requirement(bundle: Path) -> str:
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
-        subprocess.run(["/usr/bin/codesign", "--verify", "-R", developer_id, str(bundle)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "-R", "=" + developer_id, str(bundle)], check=True)
         result = subprocess.run(["/usr/bin/codesign", "--display", "-r-", str(bundle)],
                                 check=True, text=True, capture_output=True)
         matches = re.findall(r"^designated => (.+)$", result.stdout + "\n" + result.stderr, re.MULTILINE)
@@ -228,7 +228,7 @@ def verify_upgrade_identity(previous: Path, candidate: Path) -> dict:
     previous_requirement = requirement(previous)
     candidate_requirement = requirement(candidate)
     for bundle, expected in [(candidate, previous_requirement), (previous, candidate_requirement)]:
-        subprocess.run(["/usr/bin/codesign", "--verify", "-R", expected, str(bundle)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "-R", "=" + expected, str(bundle)], check=True)
     return {
         "previous_designated_requirement": previous_requirement,
         "candidate_designated_requirement": candidate_requirement,
