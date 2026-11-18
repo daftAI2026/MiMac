@@ -207,6 +207,35 @@ def verify_release(
     }
 
 
+def verify_upgrade_identity(previous: Path, candidate: Path) -> dict:
+    """Check both directions against the designated requirements of signed releases."""
+    previous = previous.resolve(strict=True)
+    candidate = candidate.resolve(strict=True)
+    if previous == candidate:
+        raise ValueError("upgrade check requires two different app bundles")
+    developer_id = "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+
+    def requirement(bundle: Path) -> str:
+        subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "-R", developer_id, str(bundle)], check=True)
+        result = subprocess.run(["/usr/bin/codesign", "--display", "-r-", str(bundle)],
+                                check=True, text=True, capture_output=True)
+        matches = re.findall(r"^designated => (.+)$", result.stdout + "\n" + result.stderr, re.MULTILINE)
+        if len(matches) != 1:
+            raise ValueError(f"no unique designated requirement in {bundle}")
+        return matches[0]
+
+    previous_requirement = requirement(previous)
+    candidate_requirement = requirement(candidate)
+    for bundle, expected in [(candidate, previous_requirement), (previous, candidate_requirement)]:
+        subprocess.run(["/usr/bin/codesign", "--verify", "-R", expected, str(bundle)], check=True)
+    return {
+        "previous_designated_requirement": previous_requirement,
+        "candidate_designated_requirement": candidate_requirement,
+        "mutually_compatible": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
@@ -217,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-number", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--component-profile", choices=COMPONENT_PROFILES, required=True)
+    parser.add_argument("--previous-signed-bundle", type=Path, help="verify mutually compatible Developer ID requirements with this prior release")
     args = parser.parse_args(argv)
     try:
         manifest = verify_release(
@@ -228,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             args.build_number,
             args.component_profile,
         )
+        if args.previous_signed_bundle is not None:
+            manifest["upgrade_identity"] = verify_upgrade_identity(args.previous_signed_bundle, args.bundle)
         # Never overwrite a previous successful manifest after a failed check.
         # The workflow uses its per-job temporary directory for these sidecars.
         with args.output.open("x", encoding="utf-8") as stream:

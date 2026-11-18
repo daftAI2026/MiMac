@@ -135,7 +135,7 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
         if command[0] == "/usr/bin/nm":
             name = Path(command[-1]).name
             if name == SIRI:
-                return "_mimac_siri_glass_abi_version\n_mimac_siri_glass_update_frame\n"
+                return "_mimac_siri_glass_abi_version\n_mimac_siri_glass_update_frame\n_mimac_siri_glass_update\n"
             return "_" + REQUIRED[name] + "\n"
         raise AssertionError("unexpected command: " + " ".join(command))
 

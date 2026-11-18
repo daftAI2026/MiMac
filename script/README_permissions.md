@@ -24,6 +24,12 @@ Dev permissions do not authorize the daily app, or vice versa; an ad-hoc rebuild
 
 Before handing off a Beta, run the native first-install query gate (`MIMAC_APPINSTALL_NATIVE_FIXTURE=1 go test ./internal/platform/appinstall -run "^TestAppinstallNative(FreshTransactionQueriesMissingTarget|MissingDestinationIsNotRunning)$" -count=1 -timeout=30s`). This read-only AppKit gate exercises the real process query with a missing destination; mocked transaction tests and a mounted-package hash check do not cover first installation. Verify an actual DMG launch through copy, installed-path startup and source exit, and check update/rollback separately. Do not remove a user’s installed app to create an empty test target.
 
+## Preserve privacy grants across Beta updates
+
+Use the same daily Bundle ID and stable Developer ID Application signing identity across builds intended to inherit permissions. Use the MyGo build's `-sign` option with that identity, verify the nested signature, and pass the previous signed App to `verify_release.py --previous-signed-bundle`. The gate checks both designated requirements against the opposite bundle. A failed check prevents a continuity claim. Keep the ordinary ad-hoc Beta lane explicitly local. Its designated requirement is bound to the individual build hash.
+
+When moving the daily identity from an ad-hoc build to the signed lane, refresh the affected permissions once if macOS rejects the existing grant. The exact-app helper below can remove and re-add the matching stale row after the current App exits. If System Settings requests authentication, let the user enter it in the system window. Verify input monitoring and key output before and after a signed-to-signed update on macOS prior to promising permission continuity.
+
 ## Inspect first-use UI
 
 Use the isolated Dev bundle with `--show-onboarding` to reopen the welcome page followed by the three-step guide. Explicit display does not reset or create the saved first-use marker; the final action records completion. An unfinished automatic first run resumes even if tool settings were saved during the guide. Existing installations without a marker keep their normal launch behavior. `--show-settings` remains the explicit settings-only diagnostic entry.
