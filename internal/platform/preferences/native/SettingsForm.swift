@@ -43,8 +43,13 @@ private struct SettingsForm: View {
             }
 
             Section {
-                Toggle("显示语音状态", isOn: toggle(state.VoiceOverlay, kind: 5))
-                    .accessibilityIdentifier("voice-overlay-row")
+                Picker("语音提示", selection: toggle(state.VoiceOverlay, kind: 5)) {
+                    Text("MiMac 语音球").tag(true)
+                    Text("跟随语音工具").tag(false)
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("voice-overlay-row")
+                .accessibilityHint("跟随语音工具时，由工具决定是否显示提示")
 
                 HStack(alignment: .center) {
                     Text("外观")

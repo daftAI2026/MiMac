@@ -17,9 +17,10 @@ flowchart TD
     match --> frame
     idle --> frame
 
-    preference["show_voice_overlay：默认开启的持久偏好"] --> enabled{"显示偏好开启？"}
+    preference["通用设置：MiMac 语音球 / 跟随语音工具"] --> enabled{"选择 MiMac 语音球？"}
     frame --> enabled
-    enabled -->|否| hidden["隐藏并停止频谱分析；丢弃部分窗口"]
+    enabled -->|否| hidden["关闭 MiMac 面板和频谱分析"]
+    hidden --> toolDisplay["语音工具自行决定是否显示原生提示"]
     enabled -->|是| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
     panel --> gate{"arm64 + macOS26公开API下限？"}
     gate -->|是| capability{"原生符号、布局与witness兼容？"}
