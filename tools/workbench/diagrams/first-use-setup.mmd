@@ -40,14 +40,14 @@ flowchart TD
     device --> detected{"当前 HID 已发现可用设备？"}
     device --> permissionGuide["显示可关闭的系统权限引导"]
     reopen["菜单或设备页：系统权限"] --> permissionGuide
-    permissionGuide -.-> nativeWindow["宿主持久非激活浮动Panel：仅控件需要时取得键盘，不随App停用隐藏"]
+    permissionGuide -.-> nativeWindow["宿主持久非激活面板：显示与重开不取键盘，点击控件仍可操作"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
     existingSettings -->|否：不启动设置，只读等待现窗| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
-    titleLink["用户点击权限标题链接"] --> settings["打开对应系统设置页"]
+    titleLink["用户点击权限标题链接"] --> settings["若面板拥有键盘先交还，再打开对应系统设置页"]
     settings --> stable["面板显示或显式设置动作开启：六秒内查找同一窗口与完整frame，两次稳定后350ms ease-in-out贴边，窗口顶对齐、横向间距16pt"]
     stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
     follow --> illustration["位置稳定且鼠标松开后显示96pt来源图标槽中的半透明图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]

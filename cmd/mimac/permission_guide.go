@@ -110,7 +110,7 @@ type permissionGuideRow struct {
 	access      permissionGuideAccess
 }
 
-// showPermissionGuide opens or focuses the one native permission panel. The
+// showPermissionGuide presents the one native permission panel. The
 // snapshot queries active capability owners and read-only OS authorization APIs.
 func (s *shell) showPermissionGuide() {
 	if s.closing {
@@ -122,9 +122,10 @@ func (s *shell) showPermissionGuide() {
 			s.snapshot = s.readPermissionGuideSnapshot()
 			s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(s.snapshot))
 			s.showPermissionGuideWindow(s.guideWindow, s.generation)
+		} else {
+			s.guideWindow.ShowInactive()
 		}
 		s.refreshPermissionGuide()
-		s.guideWindow.Focus()
 		return
 	}
 	s.generation++
@@ -208,7 +209,7 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 	if window == nil || window.IsDestroyed() || s.guideWindow != window || s.generation != generation {
 		return
 	}
-	window.Show()
+	window.ShowInactive()
 	if !window.IsVisible() {
 		return
 	}
@@ -783,6 +784,12 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	}
 	if _, exists := permissionGuideAccessForID(s.snapshot, id); !exists {
 		return
+	}
+	// A click can make this nonactivating panel key. Order it out to release
+	// that key claim, then keep the guide visible without taking it again.
+	if s.guideWindow.IsFocused() {
+		s.guideWindow.Hide()
+		s.guideWindow.ShowInactive()
 	}
 	s.currentID = id
 	s.phase = permissionGuideWaiting

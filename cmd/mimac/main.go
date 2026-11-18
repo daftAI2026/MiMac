@@ -375,8 +375,7 @@ func main() {
 		if s.report.Ready && !s.closing {
 			if s.guideWindow != nil {
 				s.refreshSetupAfterActivation()
-				s.guideWindow.Show()
-				s.guideWindow.Focus()
+				s.guideWindow.ShowInactive()
 				return
 			}
 			if s.onboarding.window != nil {
