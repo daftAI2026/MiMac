@@ -18,7 +18,23 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 		errorText = p.loginError
 	}
 	a := appAppearance(mygo.Theme.IsDark(), p.value.TextSize)
-	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoiceOverlay: p.value.ShowVoiceOverlay, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption)}
+	permissions := s.snapshot
+	if s.guideWindow == nil || !s.guideWindow.IsVisible() {
+		permissions = s.readPermissionGuideSnapshot()
+	}
+	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoiceOverlay: p.value.ShowVoiceOverlay, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions)}
+}
+
+func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.PermissionRow {
+	rows := make([]nativeprefs.PermissionRow, 0, 2)
+	for _, row := range snapshot.rows {
+		if permissionGuideAllowsAppDrag(row.id) {
+			rows = append(rows, nativeprefs.PermissionRow{
+				Title: row.title, Status: permissionGuideAccessLabel(row.access), Granted: row.access == permissionGuideGranted,
+			})
+		}
+	}
+	return rows
 }
 
 func (s *shell) syncGeneralControls() {

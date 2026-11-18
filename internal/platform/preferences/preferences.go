@@ -23,8 +23,15 @@ type State struct {
 	// BodySize and CaptionSize are point sizes from the host appearance state.
 	BodySize    float64
 	CaptionSize float64
+	Permissions []PermissionRow
 	Disabled    bool
 	Error       string
+}
+
+type PermissionRow struct {
+	Title   string
+	Status  string
+	Granted bool
 }
 
 // Callbacks report user changes to the host. The host applies changes and

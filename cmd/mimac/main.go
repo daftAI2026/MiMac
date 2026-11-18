@@ -380,8 +380,13 @@ func main() {
 	mygo.App.OnDidBecomeActive(func() {
 		if s.guideWindow != nil && s.guideWindow.IsVisible() {
 			s.refreshPermissionGuide()
-		} else if !s.closing && s.onboarding.step == onboardingStepPermissions {
-			s.refreshOnboardingProjection()
+		} else {
+			if s.generalControls != nil {
+				s.syncGeneralControls()
+			}
+			if !s.closing && s.onboarding.step == onboardingStepPermissions {
+				s.refreshOnboardingProjection()
+			}
 		}
 	})
 	mygo.App.OnActivate(func(_ bool) {

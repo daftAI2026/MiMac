@@ -433,6 +433,7 @@ func (s *shell) refreshPermissionGuide() {
 		return
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
+	changed := !samePermissionGuideSnapshot(s.snapshot, nextSnapshot)
 	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
@@ -441,6 +442,9 @@ func (s *shell) refreshPermissionGuide() {
 		s.resumeID = 0
 	}
 	s.updateOnboardingPermissions(nextSnapshot)
+	if changed && s.generalControls != nil {
+		s.syncGeneralControls()
+	}
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
 }

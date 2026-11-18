@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+private struct PermissionRow: Decodable {
+    let Title: String
+    let Status: String
+    let Granted: Bool
+}
+
 // Value snapshots come from the Go host. SwiftUI owns only the rendered form;
 // preference persistence, login items and appearance stay with MyGo.
 private struct PreferencesState: Decodable {
@@ -12,6 +18,7 @@ private struct PreferencesState: Decodable {
     var TextSize = 0
     var BodySize = 13.0
     var CaptionSize = 12.0
+    var Permissions: [PermissionRow] = []
     var Disabled = true
     var Error = ""
 }
@@ -84,10 +91,24 @@ private struct SettingsForm: View {
                 Text("显示").font(.system(size: state.BodySize, weight: .semibold))
             }
 
-            Section {
-                LabeledContent("系统权限") {
-                    Button("管理…") { changed(6, 0) }
-                        .accessibilityLabel("管理系统权限")
+            if !state.Permissions.isEmpty {
+                Section {
+                    ForEach(state.Permissions, id: \.Title) { permission in
+                        LabeledContent(permission.Title) {
+                            HStack(alignment: .center, spacing: 12) {
+                                if permission.Granted {
+                                    Label(permission.Status, systemImage: "checkmark.circle")
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Text(permission.Status).foregroundStyle(.secondary)
+                                }
+                                Button("管理…") { changed(6, 0) }
+                                    .accessibilityLabel("管理" + permission.Title)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("系统权限").font(.system(size: state.BodySize, weight: .semibold))
                 }
             }
 
