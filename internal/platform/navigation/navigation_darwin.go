@@ -27,7 +27,9 @@ var (
 // Control owns only the native toolbar objects. All state is main-thread only.
 type Control struct {
 	window, toolbar, delegate, identifiers objc.ID
-	spacer, group, titleItem, titleField   objc.ID
+	spacer, group, titleField              objc.ID
+	spacerWidth, buttonGroup               objc.ID
+	leading                                float64
 	back, forward                          objc.ID
 	owned                                  []objc.ID
 	onNavigate                             func(int)
@@ -49,7 +51,7 @@ func newOnMain(window objc.ID, sidebarWidth, contentInset float64, callback func
 	if err = ensureDelegate(); err != nil {
 		return nil, err
 	}
-	c := &Control{window: window, onNavigate: callback}
+	c := &Control{window: window, onNavigate: callback, leading: sidebarWidth + contentInset}
 	window.Send(sel("retain"))
 	defer func() {
 		if err != nil {
@@ -75,9 +77,9 @@ func newOnMain(window objc.ID, sidebarWidth, contentInset float64, callback func
 
 	c.spacer = c.item("mimac.sidebar")
 	spacerView := c.own(objc.ID(objc.GetClass("NSView")).Send(sel("new")))
-	// Unified toolbars reserve the native traffic-light group before their items.
-	// The remaining spacer keeps the toolbar aligned with our fixed sidebar.
-	c.fixedSize(spacerView, math.Max(1, sidebarWidth+contentInset-100), 32)
+	// Start with the content inset, then resolve the actual native toolbar
+	// position after layout. Traffic-light reservations vary by host and OS.
+	c.spacerWidth = c.fixedSize(spacerView, sidebarWidth/2, 32)
 	c.spacer.Send(sel("setView:"), spacerView)
 	c.spacer.Send(sel("setBordered:"), false)
 
@@ -121,30 +123,31 @@ func newOnMain(window objc.ID, sidebarWidth, contentInset float64, callback func
 		glass.Send(sel("setContentView:"), container)
 		groupView = glass
 	}
-	c.group.Send(sel("setView:"), groupView)
 	c.group.Send(sel("setLabel:"), ns("导航"))
 	c.group.Send(sel("setBordered:"), false)
 
-	c.titleItem = c.item("mimac.title")
 	c.titleField = c.own(objc.ID(objc.GetClass("NSTextField")).Send(sel("labelWithString:"), ns("按键映射")).Send(sel("retain")))
 	c.titleField.Send(sel("setFont:"), objc.ID(objc.GetClass("NSFont")).Send(sel("systemFontOfSize:weight:"), 16.0, 0.3))
 	c.titleField.Send(sel("setAccessibilityRole:"), ns("AXHeading"))
-	// Intrinsic text height, centered against the same 36pt control container.
-	// A fixed 24pt text field centers its frame but leaves its glyphs too high.
-	titleContainer := c.own(objc.ID(objc.GetClass("NSView")).Send(sel("new")))
-	c.fixedSize(titleContainer, 104, 36)
+	// Keep the group's title gap in one native item. Adjacent toolbar items
+	// can overlap their view bounds under the unified toolbar style.
+	row := c.own(objc.ID(objc.GetClass("NSView")).Send(sel("new")))
+	c.fixedSize(row, 64+contentInset+104, 36)
+	c.buttonGroup = groupView
 	c.titleField.Send(sel("setTranslatesAutoresizingMaskIntoConstraints:"), false)
-	titleContainer.Send(sel("addSubview:"), c.titleField)
+	row.Send(sel("addSubview:"), groupView)
+	row.Send(sel("addSubview:"), c.titleField)
 	for _, constraint := range []objc.ID{
-		c.titleField.Send(sel("leadingAnchor")).Send(sel("constraintEqualToAnchor:"), titleContainer.Send(sel("leadingAnchor"))),
-		c.titleField.Send(sel("trailingAnchor")).Send(sel("constraintEqualToAnchor:"), titleContainer.Send(sel("trailingAnchor"))),
-		c.titleField.Send(sel("centerYAnchor")).Send(sel("constraintEqualToAnchor:"), titleContainer.Send(sel("centerYAnchor"))),
+		groupView.Send(sel("leadingAnchor")).Send(sel("constraintEqualToAnchor:"), row.Send(sel("leadingAnchor"))),
+		groupView.Send(sel("centerYAnchor")).Send(sel("constraintEqualToAnchor:"), row.Send(sel("centerYAnchor"))),
+		c.titleField.Send(sel("leadingAnchor")).Send(sel("constraintEqualToAnchor:constant:"), groupView.Send(sel("trailingAnchor")), contentInset),
+		c.titleField.Send(sel("trailingAnchor")).Send(sel("constraintEqualToAnchor:"), row.Send(sel("trailingAnchor"))),
+		c.titleField.Send(sel("centerYAnchor")).Send(sel("constraintEqualToAnchor:"), row.Send(sel("centerYAnchor"))),
 	} {
 		constraint.Send(sel("setActive:"), true)
 	}
-	c.titleItem.Send(sel("setView:"), titleContainer)
-	c.titleItem.Send(sel("setBordered:"), false)
-	c.identifiers = array(ns("mimac.sidebar"), ns("mimac.navigation"), ns("mimac.title"), ns("NSToolbarFlexibleSpaceItem"))
+	c.group.Send(sel("setView:"), row)
+	c.identifiers = array(ns("mimac.sidebar"), ns("mimac.navigation"), ns("NSToolbarFlexibleSpaceItem"))
 	c.zoom, err = attachVerticalZoom(window)
 	if err != nil {
 		return nil, err
@@ -155,6 +158,7 @@ func newOnMain(window objc.ID, sidebarWidth, contentInset float64, callback func
 	window.Send(sel("setTitlebarSeparatorStyle:"), 1) // none
 	window.Send(sel("setToolbar:"), c.toolbar)
 	c.toolbar.Send(sel("setVisible:"), true)
+	c.alignOnMain()
 	return c, nil
 }
 
@@ -169,13 +173,35 @@ func (c *Control) item(identifier string) objc.ID {
 	item.Send(sel("setVisibilityPriority:"), 1000)
 	return item
 }
-func (c *Control) fixedSize(view objc.ID, width, height float64) {
+func (c *Control) fixedSize(view objc.ID, width, height float64) objc.ID {
 	view.Send(sel("setTranslatesAutoresizingMaskIntoConstraints:"), false)
-	for _, constraint := range []objc.ID{
-		view.Send(sel("widthAnchor")).Send(sel("constraintEqualToConstant:"), width),
-		view.Send(sel("heightAnchor")).Send(sel("constraintEqualToConstant:"), height),
-	} {
-		constraint.Send(sel("setActive:"), true)
+	horizontal := view.Send(sel("widthAnchor")).Send(sel("constraintEqualToConstant:"), width)
+	vertical := view.Send(sel("heightAnchor")).Send(sel("constraintEqualToConstant:"), height)
+	horizontal.Send(sel("setActive:"), true)
+	vertical.Send(sel("setActive:"), true)
+	return horizontal
+}
+
+// Align resolves the fixed sidebar's leading edge from the native item frame.
+func (c *Control) Align() {
+	if c != nil {
+		mygo.RunOnMain(c.alignOnMain)
+	}
+}
+
+func (c *Control) alignOnMain() {
+	if c.closed || c.buttonGroup.Send(sel("window")) != c.window {
+		return
+	}
+	bounds := objc.Send[zoomRect](c.buttonGroup, sel("bounds"))
+	frame := objc.Send[zoomRect](c.buttonGroup, sel("convertRect:toView:"), bounds, objc.ID(0))
+	constant := objc.Send[float64](c.spacerWidth, sel("constant"))
+	delta := c.leading - frame.Origin.X
+	if frame.Size.Width > 0 && math.Abs(delta) >= .5 {
+		width := math.Max(1, constant+delta)
+		if width != constant {
+			c.spacerWidth.Send(sel("setConstant:"), width)
+		}
 	}
 }
 func (c *Control) SetEnabled(back, forward bool) {
@@ -196,7 +222,6 @@ func (c *Control) SetTitle(title string) {
 	mygo.RunOnMain(func() {
 		if !c.closed {
 			c.titleField.Send(sel("setStringValue:"), ns(title))
-			c.titleItem.Send(sel("setLabel:"), ns(title))
 		}
 	})
 }
@@ -279,7 +304,7 @@ func toolbarIdentifiers(target objc.ID, _ objc.SEL, _ objc.ID) objc.ID {
 }
 func toolbarItem(target objc.ID, _ objc.SEL, _ objc.ID, identifier objc.ID, _ bool) objc.ID {
 	if c := control(target); c != nil && !c.closed {
-		for _, item := range []objc.ID{c.spacer, c.group, c.titleItem} {
+		for _, item := range []objc.ID{c.spacer, c.group} {
 			if objc.Send[bool](identifier, sel("isEqualToString:"), item.Send(sel("itemIdentifier"))) {
 				return item
 			}

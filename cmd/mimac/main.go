@@ -122,6 +122,9 @@ func (s *shell) showSettings() {
 	if navigationErr != nil {
 		s.report.Error = fmt.Sprintf("navigation: %v", navigationErr)
 	}
+	control := s.navigation
+	s.window.OnReadyToShow(control.Align)
+	s.window.OnResize(control.Align)
 	s.syncNavigation()
 	s.syncGeneralControls()
 	s.report.WindowsCreated++

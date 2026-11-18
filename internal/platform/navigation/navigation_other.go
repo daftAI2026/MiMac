@@ -19,3 +19,5 @@ func (*Control) Close() {}
 func (*Control) SetTitle(string) {}
 
 func (*Control) SetTitleSize(float64) {}
+
+func (c *Control) Align() {}
