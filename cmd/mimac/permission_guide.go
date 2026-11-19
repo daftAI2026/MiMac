@@ -813,8 +813,9 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	if _, exists := permissionGuideAccessForID(s.snapshot, id); !exists {
 		return
 	}
-	// Cooperate with Settings before opening its selected pane.
-	s.yieldPermissionGuideKeyboard()
+	// The row routes to Settings without reordering the visible guide.
+	// Release a retained key claim only after an actual native file drop.
+	permissionguide.YieldToSystemSettings()
 	s.currentID = id
 	s.phase = permissionGuideWaiting
 	s.settingsOpenedFor = id
