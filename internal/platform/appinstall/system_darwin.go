@@ -184,6 +184,9 @@ func scheduleDetach(ctx context.Context, plan installPlan) error {
 	command := exec.Command("/usr/bin/osascript", "-l", "JavaScript", scriptPath,
 		fmt.Sprint(plan.SourcePID), plan.Identity.BundleID, plan.Source.Path,
 		plan.Image.ImagePath, plan.Image.Device, plan.Image.VolumeDevice, plan.Image.MountPoint)
+	// The installer can be launched from its mounted volume. A helper that
+	// inherits that directory keeps the volume busy after the installer exits.
+	command.Dir = filepath.Dir(scriptPath)
 	diagnostics, err := os.CreateTemp(filepath.Dir(scriptPath), "detach-*.log")
 	if err != nil {
 		return err
