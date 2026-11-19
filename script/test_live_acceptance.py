@@ -44,6 +44,28 @@ class InstalledBetaTests(unittest.TestCase):
                     live_acceptance.verify_installed_beta(path, bundle)
 
 
+class FixedDevTests(unittest.TestCase):
+    def test_receipt_pins_checkout_and_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(live_acceptance, "ROOT", root):
+                bundle = live_acceptance.fixed_dev_bundle("arm64")
+                bundle.mkdir(parents=True)
+                path = root / "receipt.json"
+                receipt = {"arch": "arm64", "bundle": str(bundle), "sha256": {"MacOS/MiMac Dev": "known"}}
+                path.write_text(json.dumps(receipt))
+                with patch.object(live_acceptance, "verify", return_value=receipt) as verify:
+                    self.assertEqual(live_acceptance.verify_fixed_dev(path), (bundle, "arm64"))
+                    verify.assert_called_once_with(bundle, "arm64", development=True, require_audio_installer=True)
+                with patch.object(live_acceptance, "verify", return_value={"sha256": {}}):
+                    with self.assertRaisesRegex(RuntimeError, "differs from the verified receipt"):
+                        live_acceptance.verify_fixed_dev(path)
+                receipt["bundle"] = str(root / "other/MiMac Dev.app")
+                path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(RuntimeError, "checkout's canonical bundle"):
+                    live_acceptance.verify_fixed_dev(path)
+
+
 class AcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.voice = report()

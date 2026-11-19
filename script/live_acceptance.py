@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare and close a recorded live speech acceptance run; never opens a mic.
 
-prepare builds the source lane or verifies an installed Beta, opens a task-owned text
+prepare builds the source lane or verifies a fixed Dev or installed Beta, opens a task-owned text
 fixture and starts passive observations. Only READY permits asking for a remote
 test. On BLOCKED follow its stage; do not keep asking the user to press again.
 finish stops the owned run, checks full reports and reports each boundary.
@@ -23,6 +23,8 @@ import time
 from inspect_voice_report import inspect as inspect_voice_report
 from acceptance_evidence import summarize_text_evidence, assess_utterance
 from acceptance_observer import run_observer
+from build_dev import launch_development, require_device_handoff
+from verify_app_bundle import verify
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path.home() / "Library/Caches/MiMac/live-acceptance"
@@ -32,6 +34,24 @@ TOOL_INPUT_SOURCES = {
     "voice-doubao": "com.bytedance.inputmethod.doubaoime.pinyin",
     "voice-wetype": "com.tencent.inputmethod.wetype.pinyin",
 }
+
+
+def fixed_dev_bundle(arch):
+    if arch not in ("arm64", "amd64"):
+        raise RuntimeError("unsupported Dev architecture")
+    return ROOT / ".mygo/dev" / ("darwin-" + arch) / "MiMac Dev.app"
+
+
+def verify_fixed_dev(receipt_path):
+    receipt = read(receipt_path)
+    arch = receipt["arch"]
+    bundle = fixed_dev_bundle(arch)
+    if Path(receipt["bundle"]) != bundle or bundle.resolve(strict=True) != bundle:
+        raise RuntimeError("fixed Dev receipt does not identify this checkout's canonical bundle")
+    checked = verify(bundle, arch, development=True, require_audio_installer=True)
+    if checked["sha256"] != receipt["sha256"]:
+        raise RuntimeError("fixed Dev bundle differs from the verified receipt")
+    return bundle, arch
 
 
 def read(path):
@@ -178,7 +198,10 @@ def prepare(args):
         assess_utterance("", None, state["expected_text"])
         if sys.platform != "darwin":
             raise RuntimeError("macOS required")
-        tools = read(Path.home() / "Library/Application Support/MiMac/tools.json")
+        dev_receipt = getattr(args, "fixed_dev_receipt", None)
+        app_name = "MiMac Dev" if dev_receipt else "MiMac"
+        user_data = Path.home() / "Library/Application Support" / app_name
+        tools = read(user_data / "tools.json")
         tool = tools.get("current")
         if tool not in tools.get("enabled", []):
             raise RuntimeError("current voice tool is not enabled")
@@ -191,11 +214,13 @@ def prepare(args):
             raise RuntimeError("target PID must be positive")
         beta_manifest_path = getattr(args, "installed_beta_manifest", None)
         backend = args.audio_backend
+        if dev_receipt and (beta_manifest_path or args.reuse_build or args.previous_run):
+            raise RuntimeError("fixed Dev cannot be combined with an installed Beta or source-build reuse")
         if beta_manifest_path and (backend is not None or args.reuse_build or args.previous_run):
             raise RuntimeError("installed Beta cannot use a backend override or source-build reuse")
         if not beta_manifest_path and tool in TOOL_INPUT_SOURCES and backend != "mimac-compat":
             raise RuntimeError("input-method route requires explicit --audio-backend mimac-compat")
-        recovery = Path.home() / "Library/Application Support/MiMac/voice-mapping-recovery.plist"
+        recovery = user_data / "voice-mapping-recovery.plist"
         if recovery.exists():
             raise RuntimeError("disable the remote and finish its cleanup before building")
         if beta_manifest_path:
@@ -205,11 +230,15 @@ def prepare(args):
                 raise RuntimeError("installed Beta path is not canonical")
             beta_manifest = verify_installed_beta(beta_manifest_path, bundle)
             write(directory / "release-manifest.json", beta_manifest)
+        elif dev_receipt:
+            stage = "fixed_dev_identity"
+            bundle, arch = verify_fixed_dev(dev_receipt)
+            require_device_handoff()
         else:
             go = args.go or os.environ.get("MIMAC_GO", "go")
             arch = run(go, "env", "GOARCH").strip()
             bundle = ROOT / f"dist/darwin-{arch}/MiMac.app"
-        executable = bundle / "Contents/MacOS/MiMac"
+        executable = bundle / "Contents/MacOS" / app_name
         if args.reuse_build:
             if not args.previous_run:
                 raise RuntimeError("--reuse-build requires --previous-run to prove the fixed bundle is unchanged")
@@ -217,7 +246,7 @@ def prepare(args):
             for name, expected in previous["bundle"].items():
                 if digest(bundle / name) != expected:
                     raise RuntimeError(f"fixed bundle changed since previous run: {name}")
-        if bundle.exists() and not args.reuse_build and not beta_manifest_path:
+        if bundle.exists() and not args.reuse_build and not beta_manifest_path and not dev_receipt:
             stage = "backup"
             run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, directory / "previous-app.zip")
         stage = "installed_beta_launch" if beta_manifest_path else "build"
@@ -231,6 +260,15 @@ def prepare(args):
                 if exact_pids(executable):
                     raise RuntimeError("quit the installed Beta before starting its acceptance run")
                 run("open", "-n", "--stdout", directory / "stdout.log", "--stderr", directory / "stderr.log", bundle, "--args", *app_arguments)
+            elif dev_receipt:
+                stage = "fixed_dev_launch"
+                if exact_pids(executable):
+                    raise RuntimeError("quit the already running Dev before starting the device test")
+                launch_development(
+                    bundle, ROOT, arch,
+                    ["-n", "--stdout", str(directory / "stdout.log"), "--stderr", str(directory / "stderr.log")],
+                    ["--device-access", *app_arguments], device_access=True,
+                )
             elif args.reuse_build:
                 if exact_pids(executable):
                     raise RuntimeError("finish the previous App run before reusing its fixed binary")
@@ -245,6 +283,8 @@ def prepare(args):
         state.update(app_pid=app_pid, app_executable=str(executable), app_bundle=str(bundle), tool=tool, input_source=expected_source, target_pid=args.target_pid, audio_backend=backend)
         if beta_manifest_path:
             state.update(lane="installed-beta", release_revision=beta_manifest["source"]["revision"])
+        elif dev_receipt:
+            state.update(lane="fixed-dev", architecture=arch)
         write(directory / "state.json", state)  # Persist process ownership before further probes.
         stage = "freeze"
         source_files = run("git", "-C", ROOT, "ls-files", "-co", "--exclude-standard").splitlines()
@@ -471,12 +511,18 @@ def managed_run(directory):
         raise RuntimeError("run identity mismatch")
     if state.get("app_executable"):
         executable = Path(state["app_executable"]).resolve()
+        expected_name = "MiMac"
         if state.get("lane") == "installed-beta":
             if executable != INSTALLED_BETA / "Contents/MacOS/MiMac" or Path(state["app_bundle"]) != INSTALLED_BETA:
                 raise RuntimeError("unexpected installed Beta path")
+        elif state.get("lane") == "fixed-dev":
+            bundle = fixed_dev_bundle(state.get("architecture"))
+            expected_name = "MiMac Dev"
+            if executable != bundle / "Contents/MacOS" / expected_name or Path(state["app_bundle"]) != bundle:
+                raise RuntimeError("unexpected fixed Dev path")
         else:
             executable.relative_to((ROOT / "dist").resolve())
-        if executable.name != "MiMac" or executable.parent.name != "MacOS":
+        if executable.name != expected_name or executable.parent.name != "MacOS":
             raise RuntimeError("unexpected App executable")
     return directory, state
 
@@ -646,6 +692,7 @@ def main():
     p.add_argument("--previous-run", type=Path, help="previous run whose bundle SHA values must match for --reuse-build")
     p.add_argument("--audio-backend", choices=["", "mimac-compat"])
     p.add_argument("--installed-beta-manifest", type=Path, help="verify the installed app against this release manifest; never build or override its audio backend")
+    p.add_argument("--fixed-dev-receipt", type=Path, help="use the same verified Dev executable and its own settings for an explicit device handoff")
     p.add_argument("--target-pid", type=int)
     for action in ["observe", "finish", "status"]:
         commands.add_parser(action).add_argument("directory", type=Path)

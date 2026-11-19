@@ -38,6 +38,31 @@ Use the isolated Dev bundle with `--show-onboarding` to reopen the welcome page 
 
 Opening or navigating the guide does not enable a remote or begin recording. Choosing a voice tool uses the existing plugin and Current selection action; downloading its model or opening its download page is explicit. UI verification can navigate pages without choosing a tool, changing system input sources, or acquiring shared hardware.
 
+## Inspect or repair a stale Dev registration
+
+For repeated Dev tests, the permission-record repair command checks whether
+macOS recently rejected the fixed Dev bundle's code signature for one service.
+After a native drop and a permission check, run it from the checkout that
+built the bundle:
+
+```sh
+python3 script/permission_record_repair.py --permission input-monitoring
+python3 script/permission_record_repair.py --permission accessibility
+```
+
+If the result is `stale_registration`, quit the exact Dev app and rerun that
+command with `--apply`. It verifies the selected bundle, confirms it is the
+Launch Services default and resets only that service. Open the same Dev bundle
+again, drag it from the guide, complete authorization in System Settings, and
+check the app's actual permission after reopening. `no_stale_evidence` leaves
+the registration alone. An explicit reset is separate from authorization.
+
+To test speech with the same Dev app after both grants, pass its existing
+`bundle-verification.json` to `live_acceptance.py prepare --fixed-dev-receipt`.
+The runner validates that bundle and its hashes, performs the usual serial
+device handoff, and uses the Dev tool selection. It leaves the verified
+executable in place.
+
 ## Refresh one exact privacy identity
 
 This helper accepts only two exact app identities. It reads `CFBundleIdentifier` from the selected app’s `Info.plist` and uses that value to choose the matching Settings row:
