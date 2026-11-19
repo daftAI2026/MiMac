@@ -46,6 +46,8 @@ type permissionGuideState struct {
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
 	resumeID            permissionGuideID
+	recoveryID          permissionGuideID
+	recoveringID        permissionGuideID
 	generation          uint64
 	pollTimer           *time.Timer
 	followTimer         *time.Timer
@@ -186,6 +188,8 @@ func (s *shell) showPermissionGuide() {
 			s.currentID = 0
 			s.settingsOpenedFor = 0
 			s.resumeID = 0
+			s.recoveryID = 0
+			s.recoveringID = 0
 			s.generation++
 		}
 	})
@@ -440,6 +444,9 @@ func (s *shell) refreshPermissionGuide() {
 	s.snapshot = nextSnapshot
 	if shouldResumePermissionGuide(s.resumeID, nextSnapshot) {
 		s.resumeID = 0
+	}
+	if !permissionGuideCanRecover(s.recoveryID, nextSnapshot) {
+		s.recoveryID = 0
 	}
 	s.updateOnboardingPermissions(nextSnapshot)
 	if changed && s.generalControls != nil {
@@ -721,11 +728,32 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 		return
 	}
 	label := permissionGuideActionLabel(row)
+	recovery := s.recoveryID == row.id && permissionGuideCanRecover(row.id, s.snapshot)
+	if recovery {
+		label = "清除旧记录"
+	}
+	if s.recoveringID == row.id {
+		label = "正在清除"
+	}
+	padding := float32(10)
+	if recovery {
+		padding = 8
+	}
 	button := styleAppButton(ui.ButtonBase(c).Label(label), a, false).
-		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
+		MinWidth(64).Height(24).Padding(0, padding).Radius(12)
+	if s.recoveringID == row.id {
+		button.Disabled(true)
+	}
+	if recovery {
+		button.Tooltip("清除该项权限记录，然后再次拖入 MiMac 图标")
+	}
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
 	if button.Clicked() && s.snapshot.actionsEnabled {
-		s.performPermissionGuideAction(row.id)
+		if recovery {
+			s.recoverPermissionGuideDrop(row.id)
+		} else {
+			s.performPermissionGuideAction(row.id)
+		}
 	}
 }
 

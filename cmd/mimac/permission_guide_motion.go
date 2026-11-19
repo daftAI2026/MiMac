@@ -59,6 +59,9 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				}
 				if d := s.dropGuide; d != nil && permissionGuideAllowsAppDrag(draggedPermission) && result.Operation == transfer.Copy && d.acceptsRelease(result.Point) {
 					s.resumeID = draggedPermission
+					if permissionGuideCanRecover(draggedPermission, s.snapshot) {
+						s.recoveryID = draggedPermission
+					}
 				}
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
