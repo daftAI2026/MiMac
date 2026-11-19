@@ -19,18 +19,33 @@ func YieldToSystemSettings() {
 	}
 }
 
-// FinishSystemSettingsVisit asks Settings to quit normally and requests
-// activation so the first-use window can receive input again.
+// FinishSystemSettingsVisit closes Settings normally after an explicit first-use
+// visit. Ask Launch Services to activate the existing app so the request is not
+// dependent on the exiting Settings app yielding keyboard ownership.
 func FinishSystemSettingsVisit() {
-	if pid, ok := systemSettingsPID(); ok {
-		running := objc.Send[objc.ID](objc.ID(objc.GetClass("NSRunningApplication")), objc.RegisterName("runningApplicationWithProcessIdentifier:"), pid)
+	workspace := objc.Send[objc.ID](objc.ID(objc.GetClass("NSWorkspace")), objc.RegisterName("sharedWorkspace"))
+	front := objc.Send[objc.ID](workspace, objc.RegisterName("frontmostApplication"))
+	current := objc.Send[objc.ID](objc.ID(objc.GetClass("NSRunningApplication")), objc.RegisterName("currentApplication"))
+	frontPID := objc.Send[int32](front, objc.RegisterName("processIdentifier"))
+	currentPID := objc.Send[int32](current, objc.RegisterName("processIdentifier"))
+	settingsPID, settingsRunning := systemSettingsPID()
+	if settingsRunning {
+		running := objc.Send[objc.ID](objc.ID(objc.GetClass("NSRunningApplication")), objc.RegisterName("runningApplicationWithProcessIdentifier:"), settingsPID)
 		if running != 0 {
 			_ = objc.Send[bool](running, objc.RegisterName("terminate"))
 		}
 	}
-	app := objc.Send[objc.ID](objc.ID(objc.GetClass("NSApplication")), objc.RegisterName("sharedApplication"))
-	activate := objc.RegisterName("activate")
-	if app != 0 && objc.Send[bool](app, objc.RegisterName("respondsToSelector:"), activate) {
-		app.Send(activate)
+	if frontPID != currentPID && (!settingsRunning || frontPID != settingsPID) {
+		return
 	}
+	bundleURL := objc.Send[objc.ID](current, objc.RegisterName("bundleURL"))
+	config := objc.Send[objc.ID](objc.ID(objc.GetClass("NSWorkspaceOpenConfiguration")), objc.RegisterName("configuration"))
+	if workspace == 0 || bundleURL == 0 || config == 0 {
+		return
+	}
+	config.Send(objc.RegisterName("setActivates:"), true)
+	config.Send(objc.RegisterName("setCreatesNewApplicationInstance:"), false)
+	config.Send(objc.RegisterName("setAllowsRunningApplicationSubstitution:"), false)
+	config.Send(objc.RegisterName("setAddsToRecentItems:"), false)
+	workspace.Send(objc.RegisterName("openApplicationAtURL:configuration:completionHandler:"), bundleURL, config, uintptr(0))
 }
