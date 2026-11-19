@@ -110,3 +110,36 @@ func TestPermissionGuideWrappedDescriptionsKeepControlsOnTheTopIconTrack(t *test
 		}
 	}
 }
+
+func TestPermissionGuideRepairCopyHasSpaceBelowThePermissionRows(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap)}}
+		s.navigationSymbols[symbolKey{name: "xmark", dark: true, size: 11}] = nil
+		for _, palette := range []bool{false, true} {
+			s.navigationSymbols[symbolKey{name: "arrow.up.right.circle", dark: palette, size: permissionGuideLinkIconSize, weight: permissionGuideLinkIconWeight}] = nil
+		}
+		s.snapshot.actionsEnabled = true
+		for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
+			row := permissionGuideRowFor(id)
+			row.access = permissionGuideDenied
+			s.snapshot.rows = append(s.snapshot.rows, row)
+			for _, palette := range []bool{false, true} {
+				s.navigationSymbols[symbolKey{name: row.icon, dark: palette, size: 18}] = nil
+			}
+		}
+		s.repairAttempt = &permissionGuideRepairAttempt{id: permissionGuidePostEvent, stale: true}
+		title, detail := s.permissionGuideRepairCopy(s.snapshot)
+		height := permissionGuideWindowHeight(s.snapshot) + 54
+		view := ui.NewTester(s.permissionGuideView, permissionGuideWidth, height)
+		view.SetDark(dark)
+		view.Advance(2 * time.Millisecond)
+		tit, titleVisible := view.Find(title)
+		msg, detailVisible := view.Find(detail)
+		row, rowVisible := view.Find(s.snapshot.rows[1].description)
+		if !titleVisible || !detailVisible || !rowVisible || tit.X != permissionGuideContentInset+permissionGuideRepairInset ||
+			tit.Y < row.Y+row.H+permissionGuideRepairTop || msg.Y < tit.Y+tit.H+permissionGuideRepairTextGap-1 ||
+			msg.Y+msg.H > float32(height)-permissionGuideContentInset {
+			t.Fatalf("dark=%t repair layout: row %v, title %v, detail %v", dark, row, tit, msg)
+		}
+	}
+}

@@ -50,11 +50,11 @@ flowchart TD
     menuPermissions["菜单：系统权限"] --> permissionGuide
     generalPermissions -->|按行保留所选权限| directPlacement{"已有可见的系统设置窗口？"}
     directPlacement -->|有且对应权限仍缺：首帧直接贴靠| permissionGuide
-    directPlacement -->|无：独立居中| permissionGuide
+    directPlacement -->|无：独立小卡靠右| permissionGuide
     permissionGuide -.-> nativeWindow["MyGo 创建可点击和拖动的小卡，小卡不取得键盘"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
-    existingSettings -->|否：新小卡已居中，等待用户打开设置| stable
+    existingSettings -->|否：独立小卡靠右，等待用户打开设置| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]

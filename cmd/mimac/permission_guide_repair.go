@@ -5,10 +5,15 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
-const permissionGuideRepairHeight = 54
+const (
+	permissionGuideRepairTop     float32 = 12
+	permissionGuideRepairInset   float32 = 12
+	permissionGuideRepairTextGap float32 = 4
+)
 
 type permissionGuideRepairAttempt struct {
 	id       permissionGuideID
@@ -28,12 +33,23 @@ func permissionGuideRepairPending(snapshot permissionGuideSnapshot, id permissio
 	return snapshot.actionsEnabled && exists && access != permissionGuideGranted && access != permissionGuideRestricted
 }
 
-func (s *shell) permissionGuideRepairText(snapshot permissionGuideSnapshot) string {
+func (s *shell) permissionGuideRepairCopy(snapshot permissionGuideSnapshot) (title, detail string) {
 	attempt := s.repairAttempt
 	if attempt == nil || !attempt.stale || !permissionGuideMayRepair(snapshot, attempt.id) {
-		return ""
+		return "", ""
 	}
-	return permissionGuideRowFor(attempt.id).title + "仍使用旧授权。在系统设置选中「" + mygo.App.Name() + "」，点「−」移除，再把图标拖入。"
+	return permissionGuideRowFor(attempt.id).title + "授权需更新",
+		"在系统设置选中「" + mygo.App.Name() + "」，点「−」移除，再拖入图标"
+}
+
+func permissionGuideRepairMeasuredHeight(c *ui.Context, title, detail string) float32 {
+	if title == "" {
+		return 0
+	}
+	width := permissionGuideWidth - 2*permissionGuideContentInset - 2*permissionGuideRepairInset
+	_, titleHeight := c.MeasureText(width, ui.Span{Text: title, Size: permissionGuideCaption, Weight: 600})
+	_, detailHeight := c.MeasureText(width, ui.Span{Text: detail, Size: permissionGuideCaption})
+	return permissionGuideRepairTop + titleHeight + permissionGuideRepairTextGap + detailHeight
 }
 
 func (s *shell) recordPermissionGuideDrop(id permissionGuideID, started time.Time) {

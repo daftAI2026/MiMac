@@ -351,3 +351,20 @@ func TestPermissionGuideInitialPlacementUsesVisibleDestinationOnlyForGeneralRow(
 		t.Fatal("already-granted row unexpectedly attaches a standalone guide")
 	}
 }
+
+func TestPermissionGuideStandaloneStartsOnTheRightAndFits(t *testing.T) {
+	panel := mygo.Rectangle{X: 710, Y: 197, Width: 500, Height: 359}
+	for _, test := range []struct {
+		area mygo.Rectangle
+		want int
+	}{
+		{mygo.Rectangle{Width: 1920}, 960},
+		{mygo.Rectangle{Width: 800}, 300},
+		{mygo.Rectangle{X: 100, Width: 1200}, 700},
+		{mygo.Rectangle{}, panel.X},
+	} {
+		if got := permissionGuideStandaloneX(test.area, panel); got != test.want {
+			t.Fatalf("standalone x = %d, want %d for %+v", got, test.want, test.area)
+		}
+	}
+}

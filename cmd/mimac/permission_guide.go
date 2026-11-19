@@ -202,27 +202,34 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	})
 	// MyGo already created the native window. OnReadyToShow is for web
 	// content and will not present this hidden native panel.
-	if !s.placePermissionGuideNextToSettings(window, preferred) {
-		window.Center()
-	}
+	s.positionPermissionGuideForPresentation(window, preferred)
 	s.showPermissionGuideWindow(window, generation)
 }
 
 // A direct General action can already see its destination. Place the hidden
-// guide there before displaying it so the centered frame never covers Settings.
-func (s *shell) placePermissionGuideNextToSettings(window *mygo.Window, preferred permissionGuideID) bool {
-	if !permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened) {
-		return false
-	}
+// guide before showing it so it never covers that Settings window initially.
+func (s *shell) positionPermissionGuideForPresentation(window *mygo.Window, preferred permissionGuideID) {
 	settings, found := permissionguide.SystemSettingsWindowSnapshot()
+	if found && permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened) {
+		display := permissionGuideSettingsDisplay(settings.Frame)
+		if target, ok := permissionGuideCompanionBounds(settings.Frame, display.WorkArea, window.Bounds()); ok {
+			window.SetPosition(target.X, target.Y)
+			return
+		}
+	}
+	window.Center()
 	if !found {
-		return false
+		bounds := window.Bounds()
+		area := mygo.Screen.DisplayMatching(bounds).WorkArea
+		window.SetPosition(permissionGuideStandaloneX(area, bounds), bounds.Y)
 	}
-	target, ok := permissionGuideCompanionBounds(settings.Frame, permissionGuideSettingsDisplay(settings.Frame).WorkArea, window.Bounds())
-	if ok {
-		window.SetPosition(target.X, target.Y)
+}
+
+func permissionGuideStandaloneX(area, panel mygo.Rectangle) int {
+	if area.Width < panel.Width || panel.Width <= 0 {
+		return panel.X
 	}
-	return ok
+	return min(area.X+area.Width/2, area.X+area.Width-panel.Width)
 }
 
 func permissionGuideStartsAttached(snapshot permissionGuideSnapshot, preferred permissionGuideID, onboarding bool) bool {
@@ -672,12 +679,10 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 	if len(rows) > 0 {
 		rowsHeight += float32(len(rows)+1) * lineWidth // Card border and row separators.
 	}
-	repair := s.permissionGuideRepairText(s.snapshot)
+	repairTitle, repairDetail := s.permissionGuideRepairCopy(s.snapshot)
+	repairHeight := permissionGuideRepairMeasuredHeight(c, repairTitle, repairDetail)
 	if s.guideWindow != nil && len(rows) > 0 {
-		height := permissionGuideChromeHeight + int(math.Ceil(float64(rowsHeight)))
-		if repair != "" {
-			height += permissionGuideRepairHeight
-		}
+		height := permissionGuideChromeHeight + int(math.Ceil(float64(rowsHeight+repairHeight)))
 		if s.guideWindow.Bounds().Height != height {
 			s.guideWindow.SetSize(permissionGuideWidth, height)
 		}
@@ -719,9 +724,12 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 					}
 				})
 			}
-			if repair != "" {
-				ui.Box(c).FillWidth().Height(permissionGuideRepairHeight).Shrink(0).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, repair).FillWidth().FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
+			if repairTitle != "" {
+				ui.Column(c).FillWidth().MinWidth(0).Height(repairHeight).Shrink(0).
+					Padding(permissionGuideRepairTop, permissionGuideRepairInset, 0, permissionGuideRepairInset).
+					Gap(permissionGuideRepairTextGap).Children(func() {
+					ui.Text(c, repairTitle).FillWidth().FontSize(permissionGuideCaption).FontWeight(600).TextColor(a.theme.Text)
+					ui.Text(c, repairDetail).FillWidth().MinWidth(0).FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 				})
 			}
 		})

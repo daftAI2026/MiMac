@@ -25,7 +25,8 @@ func TestPermissionGuideRepairTextAppearsOnlyForProvenPendingGrant(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			s.repairAttempt = test.attempt
 			snapshot.rows[0].access = test.access
-			if got := s.permissionGuideRepairText(snapshot) != ""; got != test.want {
+			title, detail := s.permissionGuideRepairCopy(snapshot)
+			if got := title != "" && detail != ""; got != test.want {
 				t.Fatalf("repair text visible = %t, want %t", got, test.want)
 			}
 		})
