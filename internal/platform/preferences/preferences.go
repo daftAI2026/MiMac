@@ -29,6 +29,7 @@ type State struct {
 }
 
 type PermissionRow struct {
+	ID      int32
 	Title   string
 	Status  string
 	Granted bool
@@ -42,5 +43,5 @@ type Callbacks struct {
 	VoiceOverlay      func(bool)
 	Appearance        func(string)
 	TextSize          func(int)
-	ManagePermissions func()
+	ManagePermissions func(int32)
 }

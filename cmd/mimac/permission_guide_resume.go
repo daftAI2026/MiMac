@@ -34,9 +34,9 @@ func takePermissionGuideResume(path string) (permissionGuideID, error) {
 	return 0, nil
 }
 
-func shouldResumePermissionGuide(id permissionGuideID, snapshot permissionGuideSnapshot) bool {
-	access, exists := permissionGuideAccessForID(snapshot, id)
-	return permissionGuideAllowsAppDrag(id) && exists && access == permissionGuideGranted
+func permissionGuideCanRestore(id permissionGuideID, snapshot permissionGuideSnapshot) bool {
+	_, exists := permissionGuideAccessForID(snapshot, id)
+	return permissionGuideAllowsAppDrag(id) && exists
 }
 
 // An orderly OS restart can happen before the running process sees a grant.
@@ -65,9 +65,9 @@ func (s *shell) resumePermissionGuideOnLaunch() {
 		log.Printf("permission guide resume: %v", err)
 		return
 	}
-	if id != 0 && shouldResumePermissionGuide(id, s.readPermissionGuideSnapshot()) {
+	if permissionGuideCanRestore(id, s.readPermissionGuideSnapshot()) {
 		s.page = pageGeneral
 		s.showSettings()
-		s.showPermissionGuide()
+		s.showPermissionGuideFor(id)
 	}
 }

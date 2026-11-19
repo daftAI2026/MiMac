@@ -30,7 +30,7 @@ func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.Permi
 	for _, row := range snapshot.rows {
 		if permissionGuideAllowsAppDrag(row.id) {
 			rows = append(rows, nativeprefs.PermissionRow{
-				Title: row.title, Status: permissionGuideAccessLabel(row.access), Granted: row.access == permissionGuideGranted,
+				ID: int32(row.id), Title: row.title, Status: permissionGuideAccessLabel(row.access), Granted: row.access == permissionGuideGranted,
 			})
 		}
 	}
@@ -68,7 +68,15 @@ func (s *shell) syncGeneralControls() {
 			_ = s.applyAppearancePreference(mygo.ThemeSource(source))
 			s.syncGeneralControls()
 		},
-		ManagePermissions: s.showPermissionGuide,
+		ManagePermissions: func(value int32) {
+			if value == int32(permissionGuideInput) || value == int32(permissionGuidePostEvent) {
+				id := permissionGuideID(value)
+				s.showPermissionGuideFor(id)
+				if permissionGuideCanRestore(id, s.snapshot) {
+					s.resumeID = id
+				}
+			}
+		},
 	}
 	var err error
 	s.generalControls, err = nativeprefs.New(s.window.NativeHandle(), nativeprefs.Layout{Left: float64(sidebarWidth + lineWidth), Top: float64(contentHeaderHeight)}, state, callbacks)

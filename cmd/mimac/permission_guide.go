@@ -117,6 +117,10 @@ type permissionGuideRow struct {
 // showPermissionGuide presents the one native permission panel. The
 // snapshot queries active capability owners and read-only OS authorization APIs.
 func (s *shell) showPermissionGuide() {
+	s.showPermissionGuideFor(0)
+}
+
+func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	if s.closing {
 		return
 	}
@@ -124,10 +128,18 @@ func (s *shell) showPermissionGuide() {
 		if !s.guideWindow.IsVisible() {
 			s.settingsOpenedFor = 0
 			s.snapshot = s.readPermissionGuideSnapshot()
+			s.currentID = preferred
 			s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(s.snapshot))
 			s.showPermissionGuideWindow(s.guideWindow, s.generation)
 		} else {
 			s.guideWindow.ShowInactive()
+			if access, exists := permissionGuideAccessForID(s.snapshot, preferred); exists && permissionGuideCanRoute(preferred, access) {
+				s.settingsOpenedFor = 0
+				s.currentID = preferred
+				if permissionguide.SystemSettingsRunning() {
+					s.openPermissionGuideSettings(preferred, true)
+				}
+			}
 		}
 		s.refreshPermissionGuide()
 		return
@@ -139,7 +151,7 @@ func (s *shell) showPermissionGuide() {
 	s.iconDragging, s.hasDraggedIcon = false, false
 	s.snapshot = s.readPermissionGuideSnapshot()
 	s.phase = permissionGuideWaiting
-	s.currentID = 0
+	s.currentID = preferred
 	s.settingsOpenedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 系统权限",
@@ -225,7 +237,7 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 	// An existing Settings session is routed to the missing list before joining.
 	// A closed Settings app remains closed until an explicit row action.
 	if len(s.snapshot.rows) > 0 && s.phase == permissionGuideWaiting && !s.followManual {
-		runPermissionGuidePresentation(s.snapshot, permissionguide.SystemSettingsRunning(),
+		runPermissionGuidePresentation(s.snapshot, s.currentID, permissionguide.SystemSettingsRunning(),
 			func(id permissionGuideID) { s.openPermissionGuideSettings(id, true) },
 			func() { s.schedulePermissionGuideFollowing(window, generation) })
 	}
@@ -442,9 +454,6 @@ func (s *shell) refreshPermissionGuide() {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
-	if shouldResumePermissionGuide(s.resumeID, nextSnapshot) {
-		s.resumeID = 0
-	}
 	if !permissionGuideCanRecover(s.recoveryID, nextSnapshot) {
 		s.recoveryID = 0
 	}
@@ -903,10 +912,18 @@ func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permiss
 
 // Presentation may attach to an existing settings session. It must not launch
 // one implicitly or issue native permission requests.
-func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, settingsRunning bool, open func(permissionGuideID), join func()) {
+func permissionGuideCanRoute(id permissionGuideID, access permissionGuideAccess) bool {
+	return permissionGuideAllowsAppDrag(id) && access != permissionGuideGranted && access != permissionGuideRestricted
+}
+
+func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, preferred permissionGuideID, settingsRunning bool, open func(permissionGuideID), join func()) {
 	if settingsRunning && snapshot.actionsEnabled {
+		if access, exists := permissionGuideAccessForID(snapshot, preferred); exists && permissionGuideCanRoute(preferred, access) {
+			open(preferred)
+			return
+		}
 		for _, row := range snapshot.rows {
-			if permissionGuideAllowsAppDrag(row.id) && row.access != permissionGuideGranted && row.access != permissionGuideRestricted {
+			if permissionGuideCanRoute(row.id, row.access) {
 				open(row.id)
 				return
 			}

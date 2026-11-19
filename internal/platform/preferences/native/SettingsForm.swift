@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 private struct PermissionRow: Decodable {
+    let ID: Int32
     let Title: String
     let Status: String
     let Granted: Bool
@@ -93,7 +94,7 @@ private struct SettingsForm: View {
 
             if !state.Permissions.isEmpty {
                 Section {
-                    ForEach(state.Permissions, id: \.Title) { permission in
+                    ForEach(state.Permissions, id: \.ID) { permission in
                         LabeledContent(permission.Title) {
                             HStack(alignment: .center, spacing: 12) {
                                 if permission.Granted {
@@ -102,7 +103,7 @@ private struct SettingsForm: View {
                                 } else {
                                     Text(permission.Status).foregroundStyle(.secondary)
                                 }
-                                Button("管理…") { changed(6, 0) }
+                                Button("管理…") { changed(6, permission.ID) }
                                     .accessibilityLabel("管理" + permission.Title)
                             }
                         }

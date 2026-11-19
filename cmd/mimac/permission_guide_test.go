@@ -311,10 +311,12 @@ func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T
 		name             string
 		running, enabled bool
 		rows             []permissionGuideRow
+		preferred        permissionGuideID
 		want             permissionGuideID
 	}{
 		{name: "closed", enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}},
 		{name: "existing", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}, want: permissionGuideInput},
+		{name: "explicit device control", running: true, enabled: true, preferred: permissionGuidePostEvent, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}, {id: permissionGuidePostEvent, access: permissionGuideNotGranted}}, want: permissionGuidePostEvent},
 		{name: "skip granted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideGranted}, {id: permissionGuidePostEvent, access: permissionGuideNotGranted}}, want: permissionGuidePostEvent},
 		{name: "no bluetooth prompt", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideBluetooth, access: permissionGuideNotDetermined}}},
 		{name: "restricted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideRestricted}}},
@@ -323,7 +325,7 @@ func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			var opened permissionGuideID
 			joins := 0
-			runPermissionGuidePresentation(permissionGuideSnapshot{actionsEnabled: test.enabled, rows: test.rows}, test.running, func(id permissionGuideID) { opened = id }, func() { joins++ })
+			runPermissionGuidePresentation(permissionGuideSnapshot{actionsEnabled: test.enabled, rows: test.rows}, test.preferred, test.running, func(id permissionGuideID) { opened = id }, func() { joins++ })
 			if opened != test.want {
 				t.Errorf("opened=%v, want%v", opened, test.want)
 			}

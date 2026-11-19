@@ -47,11 +47,15 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 		icon.Tooltip("拖入系统设置的权限列表")
 		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
 			window, generation := s.guideWindow, s.generation
-			var draggedPermission permissionGuideID
+			var draggedPermission, previousResumeID permissionGuideID
 			icon.DragData(data, transfer.DragOptions{Started: func(image.Point) {
 				if s.guideWindow == window && s.generation == generation {
 					draggedPermission = s.currentID
+					previousResumeID = s.resumeID
 					s.startPermissionGuideDrop()
+					if d := s.dropGuide; d != nil && d.active && d.targetID != 0 {
+						s.resumeID = draggedPermission
+					}
 				}
 			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(result transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
@@ -62,6 +66,8 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					if permissionGuideCanRecover(draggedPermission, s.snapshot) {
 						s.recoveryID = draggedPermission
 					}
+				} else {
+					s.resumeID = previousResumeID
 				}
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
