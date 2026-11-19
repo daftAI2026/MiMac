@@ -66,7 +66,7 @@ flowchart TD
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
     drag -.-> nativeRebind["原生文件 URL 交给系统列表；授权状态以系统复查为准"]
     nativeRebind --> guideRefresh
-    guideRefresh -->|系统接收设备控制拖放后仍未获准| recoverRecord["小卡提供清除旧记录，只处理当前 App 的设备控制权限"]
+    guideRefresh -->|系统接收列表权限拖放后仍未获准| recoverRecord["小卡提供清除旧记录，仅处理当前 App 的对应权限"]
     recoverRecord -->|用户执行清除| settings
     grantAction --> nativeGrant{"首次蓝牙授权？"}
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings

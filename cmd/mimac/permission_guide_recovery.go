@@ -10,11 +10,20 @@ import (
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
+func permissionGuideResetService(id permissionGuideID) string {
+	switch id {
+	case permissionGuideInput:
+		return "ListenEvent"
+	case permissionGuidePostEvent:
+		return "Accessibility"
+	default:
+		return ""
+	}
+}
+
 func permissionGuideCanRecover(id permissionGuideID, snapshot permissionGuideSnapshot) bool {
-	// macOS reported a stale requirement on the Accessibility row. Input
-	// Monitoring and Bluetooth continue through their ordinary system flows.
 	access, exists := permissionGuideAccessForID(snapshot, id)
-	return id == permissionGuidePostEvent && snapshot.actionsEnabled && exists &&
+	return permissionGuideResetService(id) != "" && snapshot.actionsEnabled && exists &&
 		(access == permissionGuideNotGranted || access == permissionGuideDenied)
 }
 
@@ -28,23 +37,25 @@ func (s *shell) recoverPermissionGuideDrop(id permissionGuideID) {
 	if !ok || !permissionGuideCanRecover(id, s.snapshot) || !permissionGuideBundleIdentityAllowed(bundleID, mygo.App.Name(), s.snapshot.appBundlePath != "") {
 		return
 	}
+	service := permissionGuideResetService(id)
 	s.recoveringID = id
 	window.Invalidate()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := exec.CommandContext(ctx, "/usr/bin/tccutil", "reset", "Accessibility", bundleID).Run()
+		err := exec.CommandContext(ctx, "/usr/bin/tccutil", "reset", service, bundleID).Run()
 		mygo.RunOnMain(func() {
 			if s.guideWindow != window || s.generation != generation || window.IsDestroyed() || s.closing {
 				return
 			}
 			s.recoveringID = 0
 			if err != nil {
-				log.Printf("permission guide: reset accessibility record: %v", err)
+				log.Printf("permission guide: reset %s record: %v", service, err)
 				window.Invalidate()
 				return
 			}
 			s.recoveryID = 0
+			s.hasDraggedIcon = false
 			s.refreshPermissionGuide()
 			s.openPermissionGuideSettings(id, true)
 		})
