@@ -63,6 +63,7 @@ flowchart TD
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
     drag --> spotlight["MyGo原生会话Started事件：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
     spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
+    trackDrop -.-> dropRim["开孔外的细轮廓随鼠标进出调整对比度；真实落点仍由系统处理"]
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh["有效拖放后交还键盘焦点，并重查实际授权"]
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]

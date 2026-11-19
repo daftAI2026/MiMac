@@ -25,7 +25,7 @@ func TestPermissionGuideDropReleaseRequiresTrackedSettingsContent(t *testing.T) 
 
 func TestPermissionGuideDropMaskLeavesOnlyContentTransparent(t *testing.T) {
 	for _, hole := range []ui.Rect{{X: 80, Y: 60, W: 140, H: 120}, {X: -60, Y: 60, W: 200, H: 120}, {X: 400, Y: 60, W: 140, H: 120}} {
-		v := ui.NewTester(func(c *ui.Context) { drawPermissionGuideDrop(c, hole) }, 320, 240)
+		v := ui.NewTester(func(c *ui.Context) { drawPermissionGuideDrop(c, hole, false) }, 320, 240)
 		v.Frame()
 		img := v.Image()
 		if alpha := img.RGBAAt(10, 10).A; alpha < 126 || alpha > 129 {
@@ -48,6 +48,26 @@ func TestPermissionGuideDropMaskLeavesOnlyContentTransparent(t *testing.T) {
 		if v.FramePending() {
 			t.Fatal("static mask schedules frames")
 		}
+	}
+}
+
+func TestPermissionGuideDropRimBrightensOutsideTheCutout(t *testing.T) {
+	hole := ui.Rect{X: 80, Y: 60, W: 140, H: 120}
+	capture := func(inside bool) *image.RGBA {
+		v := ui.NewTester(func(c *ui.Context) { drawPermissionGuideDrop(c, hole, inside) }, 320, 240)
+		v.Frame()
+		return v.Image()
+	}
+	idle, active := capture(false), capture(true)
+	rim := image.Pt(78, 120)
+	if a, b := idle.RGBAAt(rim.X, rim.Y), active.RGBAAt(rim.X, rim.Y); a.R == 0 || b.R <= a.R {
+		t.Fatalf("rim did not brighten: idle=%v active=%v", a, b)
+	}
+	if a := active.RGBAAt(81, 120).A; a != 0 {
+		t.Fatalf("rim overlaps Settings content: alpha=%d", a)
+	}
+	if p := active.RGBAAt(76, 120); p != idle.RGBAAt(76, 120) || p.R != 0 {
+		t.Fatalf("pointer changed the dimmed backdrop: %v", p)
 	}
 }
 

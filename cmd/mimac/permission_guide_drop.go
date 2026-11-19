@@ -9,6 +9,11 @@ import (
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
+const (
+	permissionGuideDropRadius = 12
+	permissionGuideRimGap     = 1.5
+)
+
 // One guide owns its display resources. Drag phases only show or hide them.
 type permissionGuideDrop struct {
 	active        bool
@@ -29,6 +34,7 @@ type permissionGuideDropPanel struct {
 	window  *mygo.Window
 	bounds  mygo.Rectangle
 	hole    ui.Rect
+	inside  bool
 	closing bool
 }
 
@@ -87,21 +93,23 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 	}
 	hole := permissionGuideSettingsContent(target.Frame)
 	d.targetContent = hole
+	pointer := mygo.Screen.CursorScreenPoint()
+	inside := d.acceptsRelease(image.Pt(pointer.X, pointer.Y))
 	for i, display := range displays {
 		local := ui.Rect{X: float32(hole.X) - float32(display.Bounds.X), Y: float32(hole.Y) - float32(display.Bounds.Y), W: float32(hole.Width), H: float32(hole.Height)}
 		if i >= len(d.panels) {
-			p := &permissionGuideDropPanel{bounds: display.Bounds, hole: local}
+			p := &permissionGuideDropPanel{bounds: display.Bounds, hole: local, inside: inside}
 			d.panels = append(d.panels, p)
 			p.window = mygo.NewWindow(mygo.WindowOptions{Title: mygo.App.Name() + " 权限拖放区域", Width: display.Bounds.Width, Height: display.Bounds.Height,
 				UseContentSize: true, Hidden: true, Transparent: true, DisableResize: true, DisableShadow: true, Panel: true, Frameless: true,
-				Content: ui.View(func(c *ui.Context) { drawPermissionGuideDrop(c, p.hole) })})
+				Content: ui.View(func(c *ui.Context) { drawPermissionGuideDrop(c, p.hole, p.inside) })})
 			p.window.SetBounds(display.Bounds)
 			p.window.SetIgnoreMouseEvents(true)
 			p.show()
 		} else {
 			p := d.panels[i]
-			if p.hole != local {
-				p.hole = local
+			if p.hole != local || p.inside != inside {
+				p.hole, p.inside = local, inside
 				p.window.Invalidate()
 			}
 			if first {
@@ -178,12 +186,28 @@ func (p *permissionGuideDropPanel) close() {
 	}
 }
 
-func drawPermissionGuideDrop(c *ui.Context, hole ui.Rect) {
+func drawPermissionGuideDrop(c *ui.Context, hole ui.Rect, inside bool) {
 	c.Root().Background(ui.Transparent)
-	ui.Box(c).Fill().Background(ui.Transparent).Draw(func(p *ui.Painter, r ui.Rect) {
+	mask := ui.Box(c).Fill().Background(ui.Transparent)
+	targetOpacity := float32(.46)
+	if inside {
+		targetOpacity = .9
+	}
+	opacity := mask.AnimateTo("drop-rim", targetOpacity, ui.Animation{Duration: 180 * time.Millisecond, NonMotion: true})
+	mask.Draw(func(p *ui.Painter, r ui.Rect) {
 		path := permissionGuideDropPath(r, hole)
 		p.FillPath(&path, ui.RGB(0, 0, 0).Alpha(.5))
+		if hole.W > 0 && hole.H > 0 {
+			// Keep the line in the dimmed area so it never covers the system's drop feedback.
+			const outset = permissionGuideRimGap + lineWidth
+			rim := ui.Rect{X: hole.X - outset, Y: hole.Y - outset, W: hole.W + 2*outset, H: hole.H + 2*outset}
+			p.Stroke(rim, ui.RGB(255, 255, 255).Alpha(opacity), permissionGuideDropCorner(hole)+outset, lineWidth)
+		}
 	})
+}
+
+func permissionGuideDropCorner(hole ui.Rect) float32 {
+	return min(permissionGuideDropRadius, hole.W/2, hole.H/2)
 }
 
 // Opposite windings leave one transparent rounded hole in a non-zero fill.
@@ -196,7 +220,7 @@ func permissionGuideDropPath(outer, hole ui.Rect) ui.Path {
 		return p
 	}
 	x, y, w, h = hole.X, hole.Y, hole.W, hole.H
-	radius := min(float32(12), w/2, h/2)
+	radius := permissionGuideDropCorner(hole)
 	k := radius * float32(.5522847498307936)
 	p.MoveTo(x+radius, y).
 		CubeTo(x+radius-k, y, x, y+radius-k, x, y+radius).
