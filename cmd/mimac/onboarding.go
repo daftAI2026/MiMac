@@ -356,9 +356,15 @@ func (s *shell) showOnboardingPermissionGuide() {
 		return
 	}
 	s.onboarding.permissionGuideOpened = true
-	s.showPermissionGuide()
+	s.showPermissionGuideFor(0)
 	s.updateOnboardingPermissions(s.snapshot)
 	s.onboarding.window.Invalidate()
+}
+
+func shouldCloseOnboardingPermissionGuide(openedFromOnboarding bool, previous, next permissionGuideSnapshot) bool {
+	return openedFromOnboarding &&
+		!summarizeOnboardingPermissions(previous.rows).allGranted() &&
+		summarizeOnboardingPermissions(next.rows).allGranted()
 }
 
 func (s *shell) finishOnboarding() {

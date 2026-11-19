@@ -20,3 +20,25 @@ func TestPermissionGuidePublishesCurrentSetupProjection(t *testing.T) {
 		t.Fatal("query failure left setup showing its previous grant")
 	}
 }
+
+func TestOnlyOnboardingGuideClosesOnFinalGrant(t *testing.T) {
+	partial := permissionGuideSnapshot{rows: []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideGranted},
+		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
+	}}
+	granted := permissionGuideSnapshot{rows: []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideGranted},
+		{id: permissionGuidePostEvent, access: permissionGuideGranted},
+	}}
+	if !shouldCloseOnboardingPermissionGuide(true, partial, granted) {
+		t.Fatal("onboarding guide did not close after the final grant")
+	}
+	if shouldCloseOnboardingPermissionGuide(false, partial, granted) {
+		t.Fatal("ordinary settings must keep its permission guide visible")
+	}
+	if shouldCloseOnboardingPermissionGuide(true, granted, granted) ||
+		shouldCloseOnboardingPermissionGuide(true, partial, partial) ||
+		shouldCloseOnboardingPermissionGuide(true, partial, permissionGuideSnapshot{}) {
+		t.Fatal("only a new final grant can close the onboarding guide")
+	}
+}

@@ -62,12 +62,10 @@ flowchart TD
     drag --> spotlight["MyGo原生会话Started事件：每屏透明穿透层覆黑50%，设置内容区保留12pt圆角孔；180ms系统透明度动画"]
     spotlight --> trackDrop["固定本次设置窗口ID，每33ms更新几何；普通窗口采样遮挡率达60%则结束，不改变权限或焦点"]
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
-    endDrop --> guideRefresh["刷新实际授权，保留系统认证窗口的键盘焦点"]
+    endDrop --> guideRefresh["有效拖放后交还键盘焦点，并重查实际授权"]
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
     drag -.-> nativeRebind["原生文件 URL 交给系统列表；授权状态以系统复查为准"]
     nativeRebind --> guideRefresh
-    guideRefresh -->|系统接收列表权限拖放后仍未获准| recoverRecord["小卡提供清除旧记录，仅处理当前 App 的对应权限"]
-    recoverRecord -->|用户执行清除| settings
     grantAction --> nativeGrant{"首次蓝牙授权？"}
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
     nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]
@@ -78,7 +76,7 @@ flowchart TD
     guideRefresh --> sharedSetup["同一授权快照推送首启权限页，变化时才重绘，不新增轮询"]
     guideRefresh -->|授权状态变化| generalPermissions
     sharedSetup --> permissionGuide
-    sharedSetup -.-> permissionSummary["权限主卡：中性总状态；全部获准后显示图标完成角标与绿色已授权，替换授权入口"]
+    sharedSetup -.-> permissionSummary["首启最后一项获准：收起首启小卡，主卡更新状态并等继续；通用小卡保持打开"]
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
     permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意与拖动遮罩窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]

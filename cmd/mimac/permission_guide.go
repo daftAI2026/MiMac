@@ -46,8 +46,6 @@ type permissionGuideState struct {
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
 	resumeID            permissionGuideID
-	recoveryID          permissionGuideID
-	recoveringID        permissionGuideID
 	generation          uint64
 	pollTimer           *time.Timer
 	followTimer         *time.Timer
@@ -117,6 +115,7 @@ type permissionGuideRow struct {
 // showPermissionGuide presents the one native permission panel. The
 // snapshot queries active capability owners and read-only OS authorization APIs.
 func (s *shell) showPermissionGuide() {
+	s.onboarding.permissionGuideOpened = false
 	s.showPermissionGuideFor(0)
 }
 
@@ -200,8 +199,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.currentID = 0
 			s.settingsOpenedFor = 0
 			s.resumeID = 0
-			s.recoveryID = 0
-			s.recoveringID = 0
+			s.onboarding.permissionGuideOpened = false
 			s.generation++
 		}
 	})
@@ -450,16 +448,18 @@ func (s *shell) refreshPermissionGuide() {
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
 	changed := !samePermissionGuideSnapshot(s.snapshot, nextSnapshot)
+	closeOnboardingGuide := shouldCloseOnboardingPermissionGuide(s.onboarding.permissionGuideOpened, s.snapshot, nextSnapshot)
 	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
 	s.snapshot = nextSnapshot
-	if !permissionGuideCanRecover(s.recoveryID, nextSnapshot) {
-		s.recoveryID = 0
-	}
 	s.updateOnboardingPermissions(nextSnapshot)
 	if changed && s.generalControls != nil {
 		s.syncGeneralControls()
+	}
+	if closeOnboardingGuide {
+		s.closePermissionGuide()
+		return
 	}
 	s.advancePermissionGuide()
 	s.guideWindow.Invalidate()
@@ -737,32 +737,11 @@ func (s *shell) permissionGuideAccessControl(c *ui.Context, a appearance, row pe
 		return
 	}
 	label := permissionGuideActionLabel(row)
-	recovery := s.recoveryID == row.id && permissionGuideCanRecover(row.id, s.snapshot)
-	if recovery {
-		label = "清除旧记录"
-	}
-	if s.recoveringID == row.id {
-		label = "正在清除"
-	}
-	padding := float32(10)
-	if recovery {
-		padding = 8
-	}
 	button := styleAppButton(ui.ButtonBase(c).Label(label), a, false).
-		MinWidth(64).Height(24).Padding(0, padding).Radius(12)
-	if s.recoveringID == row.id {
-		button.Disabled(true)
-	}
-	if recovery {
-		button.Tooltip("清除该项权限记录，然后再次拖入 MiMac 图标")
-	}
+		MinWidth(64).Height(24).Padding(0, 10).Radius(12)
 	button.Children(func() { ui.Text(c, label).SingleLine().FontSize(permissionGuideCaption) })
 	if button.Clicked() && s.snapshot.actionsEnabled {
-		if recovery {
-			s.recoverPermissionGuideDrop(row.id)
-		} else {
-			s.performPermissionGuideAction(row.id)
-		}
+		s.performPermissionGuideAction(row.id)
 	}
 }
 
@@ -835,7 +814,7 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 		return
 	}
 	// Cooperate with Settings before opening its selected pane.
-	permissionguide.YieldToSystemSettings()
+	s.yieldPermissionGuideKeyboard()
 	s.currentID = id
 	s.phase = permissionGuideWaiting
 	s.settingsOpenedFor = id
@@ -855,6 +834,22 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 
 func permissionGuideAllowsAppDrag(id permissionGuideID) bool {
 	return id == permissionGuideInput || id == permissionGuidePostEvent
+}
+
+// Release a key claim acquired by the pointer-only guide without moving it
+// or selecting another window. AppKit owns the destination's responder.
+func (s *shell) yieldPermissionGuideKeyboard() bool {
+	window := s.guideWindow
+	if window == nil || window.IsDestroyed() || !window.IsVisible() {
+		return false
+	}
+	permissionguide.YieldToSystemSettings()
+	if !window.IsFocused() {
+		return false
+	}
+	window.Hide()
+	window.ShowInactive()
+	return true
 }
 
 func permissionGuideIDString(id permissionGuideID) string {

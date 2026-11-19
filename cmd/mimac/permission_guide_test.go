@@ -24,32 +24,6 @@ func TestPermissionGuideUnknownNeverAppearsGranted(t *testing.T) {
 	}
 }
 
-func TestPermissionGuideRecoveryRequiresMissingListPermission(t *testing.T) {
-	snapshot := permissionGuideSnapshot{actionsEnabled: true, rows: []permissionGuideRow{
-		{id: permissionGuideInput, access: permissionGuideDenied},
-		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
-		{id: permissionGuideBluetooth, access: permissionGuideDenied},
-	}}
-	if !permissionGuideCanRecover(permissionGuideInput, snapshot) || !permissionGuideCanRecover(permissionGuidePostEvent, snapshot) {
-		t.Fatal("an unavailable list permission must be eligible for explicit recovery after a drop")
-	}
-	if permissionGuideResetService(permissionGuideInput) != "ListenEvent" ||
-		permissionGuideResetService(permissionGuidePostEvent) != "Accessibility" {
-		t.Fatal("the two list permissions must target their respective system records")
-	}
-	for _, id := range []permissionGuideID{0, permissionGuideBluetooth} {
-		if permissionGuideCanRecover(id, snapshot) {
-			t.Fatalf("permission %v must never offer a list reset", id)
-		}
-	}
-	for _, access := range []permissionGuideAccess{permissionGuideGranted, permissionGuideUnknown, permissionGuideRestricted} {
-		snapshot.rows[1].access = access
-		if permissionGuideCanRecover(permissionGuidePostEvent, snapshot) {
-			t.Fatalf("device control state %v must never offer the reset", access)
-		}
-	}
-}
-
 func TestPermissionGuideAccessProbesPreserveUnknownAndNotDetermined(t *testing.T) {
 	if got := permissionGuideInputAccess(xiaomi.ListenAccessUnknown); got != permissionGuideUnknown {
 		t.Fatalf("Input Monitoring API error mapped to %v", got)

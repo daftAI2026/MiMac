@@ -61,17 +61,20 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				if s.guideWindow != window || s.generation != generation {
 					return
 				}
-				if d := s.dropGuide; d != nil && permissionGuideAllowsAppDrag(draggedPermission) && result.Operation == transfer.Copy && d.acceptsRelease(result.Point) {
+				d := s.dropGuide
+				submitted := d != nil && permissionGuideAllowsAppDrag(draggedPermission) && result.Err == nil &&
+					!result.Canceled && result.Operation == transfer.Copy && d.acceptsRelease(result.Point)
+				if submitted {
 					s.resumeID = draggedPermission
-					if permissionGuideCanRecover(draggedPermission, s.snapshot) {
-						s.recoveryID = draggedPermission
-					}
 				} else {
 					s.resumeID = previousResumeID
 				}
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
 				s.hidePermissionGuideIllustration()
+				if submitted && s.yieldPermissionGuideKeyboard() && !s.followManual {
+					s.schedulePermissionGuideFollowing(window, generation)
+				}
 				s.refreshPermissionGuide()
 			}})
 		}

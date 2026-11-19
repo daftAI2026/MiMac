@@ -71,6 +71,7 @@ func (s *shell) syncGeneralControls() {
 		ManagePermissions: func(value int32) {
 			if value == int32(permissionGuideInput) || value == int32(permissionGuidePostEvent) {
 				id := permissionGuideID(value)
+				s.onboarding.permissionGuideOpened = false
 				s.showPermissionGuideFor(id)
 				if permissionGuideCanRestore(id, s.snapshot) {
 					s.resumeID = id
