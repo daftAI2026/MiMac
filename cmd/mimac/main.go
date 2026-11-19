@@ -381,6 +381,7 @@ func main() {
 	mygo.App.OnDidBecomeActive(func() {
 		if s.guideWindow != nil && s.guideWindow.IsVisible() {
 			s.refreshPermissionGuide()
+			s.checkPermissionGuideRepair()
 		} else {
 			if s.generalControls != nil {
 				s.syncGeneralControls()

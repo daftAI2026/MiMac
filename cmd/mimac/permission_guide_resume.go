@@ -4,7 +4,9 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const permissionGuideResumeFile = "permission-resume"
@@ -12,6 +14,7 @@ const permissionGuideResumeFile = "permission-resume"
 type permissionGuideContinuation struct {
 	id         permissionGuideID
 	onboarding bool
+	droppedAt  int64
 }
 
 func savePermissionGuideResume(path string, continuation permissionGuideContinuation) error {
@@ -21,6 +24,9 @@ func savePermissionGuideResume(path string, continuation permissionGuideContinua
 	token := permissionGuideIDString(continuation.id)
 	if continuation.onboarding {
 		token = "onboarding:" + token
+	}
+	if continuation.droppedAt > 0 {
+		token += "@" + strconv.FormatInt(continuation.droppedAt, 10)
 	}
 	return os.WriteFile(path, []byte(token), 0600)
 }
@@ -37,9 +43,11 @@ func takePermissionGuideResume(path string) (permissionGuideContinuation, error)
 		return permissionGuideContinuation{}, err
 	}
 	token, onboarding := strings.CutPrefix(string(data), "onboarding:")
+	token, timestamp, _ := strings.Cut(token, "@")
+	droppedAt, _ := strconv.ParseInt(timestamp, 10, 64)
 	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
 		if token == permissionGuideIDString(id) {
-			return permissionGuideContinuation{id: id, onboarding: onboarding}, nil
+			return permissionGuideContinuation{id: id, onboarding: onboarding, droppedAt: droppedAt}, nil
 		}
 	}
 	return permissionGuideContinuation{}, nil
@@ -58,9 +66,13 @@ func (s *shell) savePendingPermissionGuide() {
 	}
 	path, err := hostDataPath(permissionGuideResumeFile)
 	if err == nil {
-		err = savePermissionGuideResume(path, permissionGuideContinuation{
+		continuation := permissionGuideContinuation{
 			id: s.resumeID, onboarding: s.onboarding.permissionGuideOpened,
-		})
+		}
+		if attempt := s.repairAttempt; attempt != nil && attempt.id == s.resumeID {
+			continuation.droppedAt = attempt.started.Unix()
+		}
+		err = savePermissionGuideResume(path, continuation)
 	}
 	if err != nil {
 		log.Printf("permission guide resume: %v", err)
@@ -90,6 +102,10 @@ func (s *shell) resumePermissionGuideOnLaunch() {
 		s.page = pageGeneral
 		s.showSettings()
 		s.showPermissionGuideFor(target)
+	}
+	if continuation.droppedAt > 0 && s.guideWindow != nil && target == continuation.id && permissionGuideMayRepair(s.snapshot, target) {
+		s.recordPermissionGuideDrop(target, time.Unix(continuation.droppedAt, 0))
+		s.checkPermissionGuideRepair()
 	}
 }
 

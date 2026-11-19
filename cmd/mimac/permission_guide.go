@@ -45,6 +45,7 @@ type permissionGuideState struct {
 	currentID           permissionGuideID
 	settingsOpenedFor   permissionGuideID
 	resumeID            permissionGuideID
+	repairAttempt       *permissionGuideRepairAttempt
 	generation          uint64
 	pollTimer           *time.Timer
 	followTimer         *time.Timer
@@ -193,6 +194,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.currentID = 0
 			s.settingsOpenedFor = 0
 			s.resumeID = 0
+			s.repairAttempt = nil
 			s.onboarding.permissionGuideOpened = false
 			s.onboarding.permissionActionTaken = false
 			s.generation++
@@ -200,8 +202,32 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	})
 	// MyGo already created the native window. OnReadyToShow is for web
 	// content and will not present this hidden native panel.
-	window.Center()
+	if !s.placePermissionGuideNextToSettings(window, preferred) {
+		window.Center()
+	}
 	s.showPermissionGuideWindow(window, generation)
+}
+
+// A direct General action can already see its destination. Place the hidden
+// guide there before displaying it so the centered frame never covers Settings.
+func (s *shell) placePermissionGuideNextToSettings(window *mygo.Window, preferred permissionGuideID) bool {
+	if !permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened) {
+		return false
+	}
+	settings, found := permissionguide.SystemSettingsWindowSnapshot()
+	if !found {
+		return false
+	}
+	target, ok := permissionGuideCompanionBounds(settings.Frame, permissionGuideSettingsDisplay(settings.Frame).WorkArea, window.Bounds())
+	if ok {
+		window.SetPosition(target.X, target.Y)
+	}
+	return ok
+}
+
+func permissionGuideStartsAttached(snapshot permissionGuideSnapshot, preferred permissionGuideID, onboarding bool) bool {
+	access, exists := permissionGuideAccessForID(snapshot, preferred)
+	return snapshot.actionsEnabled && !onboarding && exists && permissionGuideCanRoute(preferred, access)
 }
 
 // closePermissionGuide releases the panel through MyGo's normal window close
@@ -326,10 +352,7 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	}
 	initial := !s.followActive
 	settingsBounds := settings.Frame
-	display := mygo.Screen.DisplayMatching(mygo.Rectangle{
-		X: int(math.Round(settingsBounds.X)), Y: int(math.Round(settingsBounds.Y)),
-		Width: int(math.Round(settingsBounds.Width)), Height: int(math.Round(settingsBounds.Height)),
-	})
+	display := permissionGuideSettingsDisplay(settingsBounds)
 	target, ok := permissionGuideCompanionBounds(settingsBounds, display.WorkArea, window.Bounds())
 	if !ok {
 		s.followActive = false
@@ -374,6 +397,13 @@ func (s *shell) schedulePermissionGuideFollowTick(window *mygo.Window, generatio
 	}
 	s.followTimer = time.AfterFunc(interval, func() {
 		mygo.RunOnMain(func() { s.followPermissionGuideSettings(window, generation) })
+	})
+}
+
+func permissionGuideSettingsDisplay(settings permissionguide.Rect) mygo.Display {
+	return mygo.Screen.DisplayMatching(mygo.Rectangle{
+		X: int(math.Round(settings.X)), Y: int(math.Round(settings.Y)),
+		Width: int(math.Round(settings.Width)), Height: int(math.Round(settings.Height)),
 	})
 }
 
@@ -441,10 +471,14 @@ func (s *shell) refreshPermissionGuide() {
 	nextSnapshot := s.readPermissionGuideSnapshot()
 	changed := !samePermissionGuideSnapshot(s.snapshot, nextSnapshot)
 	closeOnboardingGuide, finishSettingsVisit := s.onboarding.completePermissionVisit(s.snapshot, nextSnapshot)
-	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
-		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
-	}
+	previousHeight := permissionGuideWindowHeight(s.snapshot)
 	s.snapshot = nextSnapshot
+	if attempt := s.repairAttempt; attempt != nil && !permissionGuideRepairPending(nextSnapshot, attempt.id) {
+		s.repairAttempt = nil
+	}
+	if nextHeight := permissionGuideWindowHeight(nextSnapshot); nextHeight != previousHeight {
+		s.guideWindow.SetSize(permissionGuideWidth, nextHeight)
+	}
 	s.updateOnboardingPermissions(nextSnapshot)
 	if changed && s.generalControls != nil {
 		s.syncGeneralControls()
@@ -457,6 +491,9 @@ func (s *shell) refreshPermissionGuide() {
 		return
 	}
 	s.advancePermissionGuide()
+	if changed {
+		s.checkPermissionGuideRepair()
+	}
 	s.guideWindow.Invalidate()
 }
 
@@ -635,8 +672,12 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 	if len(rows) > 0 {
 		rowsHeight += float32(len(rows)+1) * lineWidth // Card border and row separators.
 	}
+	repair := s.permissionGuideRepairText(s.snapshot)
 	if s.guideWindow != nil && len(rows) > 0 {
 		height := permissionGuideChromeHeight + int(math.Ceil(float64(rowsHeight)))
+		if repair != "" {
+			height += permissionGuideRepairHeight
+		}
 		if s.guideWindow.Bounds().Height != height {
 			s.guideWindow.SetSize(permissionGuideWidth, height)
 		}
@@ -676,6 +717,11 @@ func (s *shell) permissionGuideView(c *ui.Context) {
 						}
 						s.permissionGuideRow(c, a, row, rowHeights[index])
 					}
+				})
+			}
+			if repair != "" {
+				ui.Box(c).FillWidth().Height(permissionGuideRepairHeight).Shrink(0).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, repair).FillWidth().FontSize(permissionGuideCaption).TextColor(a.theme.TextMuted)
 				})
 			}
 		})

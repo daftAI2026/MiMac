@@ -333,3 +333,21 @@ func TestPermissionGuideAdvancesOnlyAfterObservedGrant(t *testing.T) {
 	snapshot.rows[0].access = permissionGuideRestricted
 	check(permissionGuideInput)
 }
+
+func TestPermissionGuideInitialPlacementUsesVisibleDestinationOnlyForGeneralRow(t *testing.T) {
+	snapshot := permissionGuideSnapshot{
+		actionsEnabled: true,
+		rows:           []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}},
+	}
+	if !permissionGuideStartsAttached(snapshot, permissionGuideInput, false) {
+		t.Fatal("direct General row cannot start next to an existing Settings window")
+	}
+	if permissionGuideStartsAttached(snapshot, permissionGuideInput, true) ||
+		permissionGuideStartsAttached(snapshot, 0, false) {
+		t.Fatal("first-use or generic entry lost its standalone presentation")
+	}
+	snapshot.rows[0].access = permissionGuideGranted
+	if permissionGuideStartsAttached(snapshot, permissionGuideInput, false) {
+		t.Fatal("already-granted row unexpectedly attaches a standalone guide")
+	}
+}

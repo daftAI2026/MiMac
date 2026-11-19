@@ -48,8 +48,10 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
 			window, generation := s.guideWindow, s.generation
 			var draggedPermission, previousResumeID permissionGuideID
+			var dragStarted time.Time
 			icon.DragData(data, transfer.DragOptions{Started: func(image.Point) {
 				if s.guideWindow == window && s.generation == generation {
+					dragStarted = time.Now()
 					draggedPermission = s.currentID
 					previousResumeID = s.resumeID
 					s.startPermissionGuideDrop()
@@ -66,6 +68,7 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					!result.Canceled && result.Operation == transfer.Copy && d.acceptsRelease(result.Point)
 				if submitted {
 					s.resumeID = draggedPermission
+					s.recordPermissionGuideDrop(draggedPermission, dragStarted)
 				} else {
 					s.resumeID = previousResumeID
 				}
@@ -76,6 +79,9 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					permissionguide.YieldToSystemSettings()
 				}
 				s.refreshPermissionGuide()
+				if submitted {
+					s.checkPermissionGuideRepair()
+				}
 			}})
 		}
 	}

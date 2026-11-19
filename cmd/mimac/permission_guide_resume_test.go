@@ -45,7 +45,7 @@ func TestPermissionResumeRestoresOnlyTheRequestedRowRegardlessOfGrant(t *testing
 
 func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), permissionGuideResumeFile)
-	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true}
+	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, droppedAt: 1795104400}
 	if err := savePermissionGuideResume(path, want); err != nil {
 		t.Fatal(err)
 	}
