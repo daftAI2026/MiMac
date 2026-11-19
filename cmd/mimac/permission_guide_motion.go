@@ -72,8 +72,8 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				s.stopPermissionGuideDrop()
 				s.iconDragging = false
 				s.hidePermissionGuideIllustration()
-				if submitted && s.yieldPermissionGuideKeyboard() && !s.followManual {
-					s.schedulePermissionGuideFollowing(window, generation)
+				if submitted {
+					permissionguide.YieldToSystemSettings()
 				}
 				s.refreshPermissionGuide()
 			}})

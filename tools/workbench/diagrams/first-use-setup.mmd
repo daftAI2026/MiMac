@@ -49,7 +49,7 @@ flowchart TD
     device -.->|缺输入监控时可去通用| generalPermissions["通用：输入监控和设备控制分别显示状态"]
     menuPermissions["菜单：系统权限"] --> permissionGuide
     generalPermissions -->|按行保留所选权限| permissionGuide
-    permissionGuide -.-> nativeWindow["原生小卡创建后配置焦点、居中并主动显示，键盘留给系统设置"]
+    permissionGuide -.-> nativeWindow["MyGo 创建可点击和拖动的小卡，居中显示，小卡不取得键盘"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
     existingSettings -->|否：新小卡已居中，等待用户打开设置| stable

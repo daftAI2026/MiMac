@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"image"
 	"image/png"
-	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -154,7 +153,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	s.settingsOpenedFor = 0
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 系统权限",
-		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot), Panel: true,
+		Width: permissionGuideWidth, Height: permissionGuideWindowHeight(s.snapshot), Panel: true, PanelPointerOnly: true,
 		DisableResize: true, DisableMinimize: true, DisableMaximize: true, DisableFullScreen: true,
 		TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true, Hidden: true,
 		Content: ui.View(s.permissionGuideView),
@@ -171,11 +170,6 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.stopPermissionGuidePolling()
 			s.stopPermissionGuideFollowing()
 			s.closePermissionGuideDrop()
-		}
-	})
-	window.OnFocus(func() {
-		if s.guideWindow == window && s.generation == generation {
-			s.refreshPermissionGuide()
 		}
 	})
 	window.OnMove(func() {
@@ -205,9 +199,6 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	})
 	// MyGo already created the native window. OnReadyToShow is for web
 	// content and will not present this hidden native panel.
-	if err := permissionguide.ConfigurePermissionPanel(window); err != nil {
-		log.Printf("permission guide: %v", err)
-	}
 	window.Center()
 	s.showPermissionGuideWindow(window, generation)
 }
@@ -814,7 +805,6 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 		return
 	}
 	// The row routes to Settings without reordering the visible guide.
-	// Release a retained key claim only after an actual native file drop.
 	permissionguide.YieldToSystemSettings()
 	s.currentID = id
 	s.phase = permissionGuideWaiting
@@ -835,22 +825,6 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 
 func permissionGuideAllowsAppDrag(id permissionGuideID) bool {
 	return id == permissionGuideInput || id == permissionGuidePostEvent
-}
-
-// Release a key claim acquired by the pointer-only guide without moving it
-// or selecting another window. AppKit owns the destination's responder.
-func (s *shell) yieldPermissionGuideKeyboard() bool {
-	window := s.guideWindow
-	if window == nil || window.IsDestroyed() || !window.IsVisible() {
-		return false
-	}
-	permissionguide.YieldToSystemSettings()
-	if !window.IsFocused() {
-		return false
-	}
-	window.Hide()
-	window.ShowInactive()
-	return true
 }
 
 func permissionGuideIDString(id permissionGuideID) string {
