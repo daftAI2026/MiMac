@@ -598,7 +598,13 @@ private func hasAuthenticationPrompt(_ appElement: AXUIElement) -> Bool {
     let windows = appWindows(appElement)
     for window in windows {
         let title = (axString(window, "AXTitle") ?? "").lowercased()
-        if authTerms.contains(where: { title.contains($0) }) { return true }
+        // Standard Settings panes may have password-related names. Check
+        // their sheets separately, just like sheets on the privacy pages.
+        let isMainSettingsWindow = axString(window, "AXRole") == "AXWindow" &&
+            axString(window, "AXSubrole") == "AXStandardWindow" &&
+            axString(window, "AXIdentifier") == "Main" &&
+            axNumber(window, "AXModal")?.boolValue == false
+        if !isMainSettingsWindow, authTerms.contains(where: { title.contains($0) }) { return true }
         let sheets = axAttribute(window, "AXSheets") as? [AXUIElement] ?? []
         var queue = sheets
         var cursor = 0
