@@ -79,7 +79,7 @@ flowchart TD
     guideRefresh --> sharedSetup["同一授权快照推送首启权限页，变化时才重绘，不新增轮询"]
     guideRefresh -->|授权状态变化| generalPermissions
     sharedSetup --> permissionGuide
-    sharedSetup -.-> permissionSummary["首启最后一项获准：收起首启小卡，主卡更新状态并等继续；通用小卡保持打开"]
+    sharedSetup -.-> permissionSummary["首启最后一项获准：收起小卡，主卡保留继续；本进程点击过首启授权时，向系统设置发一次正常退出请求，再请求回到首启；通用小卡保持打开"]
     identity["日用权限归 MiMac；开发权限归 MiMac Dev，均只管理自身 Bundle"] -.-> inspect
     permissionGuide -->|关闭| keepSettings["停止轮询与跟随，关闭示意与拖动遮罩窗口，保留设置与菜单入口"]
     detected -->|是| connected["显示已连接，无需再次配对"]

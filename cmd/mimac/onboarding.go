@@ -153,6 +153,7 @@ type onboardingState struct {
 	errorText              string
 	permissionSnapshot     permissionGuideSnapshot
 	permissionGuideOpened  bool
+	permissionActionTaken  bool
 	toolLocations          map[string]voicetools.State
 	toolLocationErrors     map[string]bool
 	toolLocationGeneration uint64
@@ -188,6 +189,7 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	s.onboarding.persistProgress = automaticFirstRun
 	s.onboarding.errorText = ""
 	s.onboarding.permissionGuideOpened = false
+	s.onboarding.permissionActionTaken = false
 	s.onboarding.toolLocations = nil
 	s.onboarding.toolLocationErrors = nil
 	s.onboarding.recordPath, _ = hostDataPath(onboardingRecordFile)
@@ -352,6 +354,7 @@ func (s *shell) refreshOnboardingAfterActivation() {
 }
 
 func (s *shell) showOnboardingPermissionGuide() {
+	s.onboarding.permissionActionTaken = true
 	s.showOnboardingPermissionGuideFor(0)
 }
 
@@ -365,10 +368,21 @@ func (s *shell) showOnboardingPermissionGuideFor(preferred permissionGuideID) {
 	s.onboarding.window.Invalidate()
 }
 
-func shouldCloseOnboardingPermissionGuide(openedFromOnboarding bool, previous, next permissionGuideSnapshot) bool {
-	return openedFromOnboarding &&
-		!summarizeOnboardingPermissions(previous.rows).allGranted() &&
-		summarizeOnboardingPermissions(next.rows).allGranted()
+func (s *onboardingState) completePermissionVisit(previous, next permissionGuideSnapshot) (closeGuide, finishSettingsVisit bool) {
+	if !s.permissionGuideOpened || summarizeOnboardingPermissions(previous.rows).allGranted() ||
+		!summarizeOnboardingPermissions(next.rows).allGranted() {
+		return false, false
+	}
+	if s.permissionActionTaken {
+		for _, row := range next.rows {
+			if previousAccess, exists := permissionGuideAccessForID(previous, row.id); exists && previousAccess != permissionGuideGranted {
+				finishSettingsVisit = true
+				break
+			}
+		}
+	}
+	s.permissionActionTaken = false
+	return true, finishSettingsVisit
 }
 
 func (s *shell) finishOnboarding() {

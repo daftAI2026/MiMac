@@ -194,6 +194,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.settingsOpenedFor = 0
 			s.resumeID = 0
 			s.onboarding.permissionGuideOpened = false
+			s.onboarding.permissionActionTaken = false
 			s.generation++
 		}
 	})
@@ -439,7 +440,7 @@ func (s *shell) refreshPermissionGuide() {
 	}
 	nextSnapshot := s.readPermissionGuideSnapshot()
 	changed := !samePermissionGuideSnapshot(s.snapshot, nextSnapshot)
-	closeOnboardingGuide := shouldCloseOnboardingPermissionGuide(s.onboarding.permissionGuideOpened, s.snapshot, nextSnapshot)
+	closeOnboardingGuide, finishSettingsVisit := s.onboarding.completePermissionVisit(s.snapshot, nextSnapshot)
 	if len(nextSnapshot.rows) != len(s.snapshot.rows) {
 		s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(nextSnapshot))
 	}
@@ -450,6 +451,9 @@ func (s *shell) refreshPermissionGuide() {
 	}
 	if closeOnboardingGuide {
 		s.closePermissionGuide()
+		if finishSettingsVisit {
+			permissionguide.FinishSystemSettingsVisit()
+		}
 		return
 	}
 	s.advancePermissionGuide()

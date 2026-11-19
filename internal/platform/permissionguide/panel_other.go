@@ -3,3 +3,5 @@
 package permissionguide
 
 func YieldToSystemSettings() {}
+
+func FinishSystemSettingsVisit() {}
