@@ -59,15 +59,22 @@ func TestPermissionGuideDropRimBrightensOutsideTheCutout(t *testing.T) {
 		return v.Image()
 	}
 	idle, active := capture(false), capture(true)
-	rim := image.Pt(78, 120)
+	rim := image.Pt(76, 120)
 	if a, b := idle.RGBAAt(rim.X, rim.Y), active.RGBAAt(rim.X, rim.Y); a.R == 0 || b.R <= a.R {
 		t.Fatalf("rim did not brighten: idle=%v active=%v", a, b)
 	}
 	if a := active.RGBAAt(81, 120).A; a != 0 {
 		t.Fatalf("rim overlaps Settings content: alpha=%d", a)
 	}
-	if p := active.RGBAAt(76, 120); p != idle.RGBAAt(76, 120) || p.R != 0 {
-		t.Fatalf("pointer changed the dimmed backdrop: %v", p)
+	for _, x := range []int{74, 78, 79} {
+		if p := active.RGBAAt(x, 120); p != idle.RGBAAt(x, 120) || p.R != 0 {
+			t.Fatalf("rim changed backdrop or gap at x=%d: %v", x, p)
+		}
+	}
+	for x := 75; x < 78; x++ {
+		if p := active.RGBAAt(x, 120); p.R == 0 || p.R != p.G || p.G != p.B {
+			t.Fatalf("expected a neutral rim at x=%d: %v", x, p)
+		}
 	}
 }
 

@@ -11,7 +11,8 @@ import (
 
 const (
 	permissionGuideDropRadius = 12
-	permissionGuideRimGap     = 1.5
+	permissionGuideRimGap     = 2
+	permissionGuideRimWidth   = 3
 )
 
 // One guide owns its display resources. Drag phases only show or hide them.
@@ -189,9 +190,9 @@ func (p *permissionGuideDropPanel) close() {
 func drawPermissionGuideDrop(c *ui.Context, hole ui.Rect, inside bool) {
 	c.Root().Background(ui.Transparent)
 	mask := ui.Box(c).Fill().Background(ui.Transparent)
-	targetOpacity := float32(.46)
+	targetOpacity := float32(.55)
 	if inside {
-		targetOpacity = .9
+		targetOpacity = 1
 	}
 	opacity := mask.AnimateTo("drop-rim", targetOpacity, ui.Animation{Duration: 180 * time.Millisecond, NonMotion: true})
 	mask.Draw(func(p *ui.Painter, r ui.Rect) {
@@ -199,9 +200,9 @@ func drawPermissionGuideDrop(c *ui.Context, hole ui.Rect, inside bool) {
 		p.FillPath(&path, ui.RGB(0, 0, 0).Alpha(.5))
 		if hole.W > 0 && hole.H > 0 {
 			// Keep the line in the dimmed area so it never covers the system's drop feedback.
-			const outset = permissionGuideRimGap + lineWidth
+			const outset = permissionGuideRimGap + permissionGuideRimWidth
 			rim := ui.Rect{X: hole.X - outset, Y: hole.Y - outset, W: hole.W + 2*outset, H: hole.H + 2*outset}
-			p.Stroke(rim, ui.RGB(255, 255, 255).Alpha(opacity), permissionGuideDropCorner(hole)+outset, lineWidth)
+			p.Stroke(rim, ui.RGB(255, 255, 255).Alpha(opacity), permissionGuideDropCorner(hole)+outset, permissionGuideRimWidth)
 		}
 	})
 }
