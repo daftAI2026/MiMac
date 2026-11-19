@@ -7,14 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
 const permissionGuideResumeFile = "permission-resume"
 
 type permissionGuideContinuation struct {
-	id         permissionGuideID
-	onboarding bool
-	droppedAt  int64
+	id          permissionGuideID
+	onboarding  bool
+	finishVisit bool
+	droppedAt   int64
 }
 
 func savePermissionGuideResume(path string, continuation permissionGuideContinuation) error {
@@ -23,7 +26,11 @@ func savePermissionGuideResume(path string, continuation permissionGuideContinua
 	}
 	token := permissionGuideIDString(continuation.id)
 	if continuation.onboarding {
-		token = "onboarding:" + token
+		if continuation.finishVisit {
+			token = "onboarding-visit:" + token
+		} else {
+			token = "onboarding:" + token
+		}
 	}
 	if continuation.droppedAt > 0 {
 		token += "@" + strconv.FormatInt(continuation.droppedAt, 10)
@@ -42,12 +49,13 @@ func takePermissionGuideResume(path string) (permissionGuideContinuation, error)
 	if err := os.Remove(path); err != nil {
 		return permissionGuideContinuation{}, err
 	}
-	token, onboarding := strings.CutPrefix(string(data), "onboarding:")
+	token, finishVisit := strings.CutPrefix(string(data), "onboarding-visit:")
+	token, onboarding := strings.CutPrefix(token, "onboarding:")
 	token, timestamp, _ := strings.Cut(token, "@")
 	droppedAt, _ := strconv.ParseInt(timestamp, 10, 64)
 	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
 		if token == permissionGuideIDString(id) {
-			return permissionGuideContinuation{id: id, onboarding: onboarding, droppedAt: droppedAt}, nil
+			return permissionGuideContinuation{id: id, onboarding: onboarding || finishVisit, finishVisit: finishVisit, droppedAt: droppedAt}, nil
 		}
 	}
 	return permissionGuideContinuation{}, nil
@@ -67,7 +75,9 @@ func (s *shell) savePendingPermissionGuide() {
 	path, err := hostDataPath(permissionGuideResumeFile)
 	if err == nil {
 		continuation := permissionGuideContinuation{
-			id: s.resumeID, onboarding: s.onboarding.permissionGuideOpened,
+			id:          s.resumeID,
+			onboarding:  s.onboarding.permissionGuideOpened,
+			finishVisit: s.onboarding.permissionGuideOpened && s.onboarding.permissionActionTaken,
 		}
 		if attempt := s.repairAttempt; attempt != nil && attempt.id == s.resumeID {
 			continuation.droppedAt = attempt.started.Unix()
@@ -92,11 +102,19 @@ func (s *shell) resumePermissionGuideOnLaunch() {
 	if continuation.id == 0 {
 		return
 	}
-	target := permissionGuideResumeTarget(continuation, s.onboarding.window != nil, s.onboarding.step, s.readPermissionGuideSnapshot())
+	snapshot := s.readPermissionGuideSnapshot()
+	onboardingVisible := s.onboarding.window != nil
+	target := permissionGuideResumeTarget(continuation, onboardingVisible, s.onboarding.step, snapshot)
+	finishVisit := permissionGuideResumesOnboardingVisit(continuation, onboardingVisible, s.onboarding.step, snapshot)
 	if target == 0 {
+		if finishVisit && summarizeOnboardingPermissions(snapshot.rows).allGranted() {
+			s.updateOnboardingPermissions(snapshot)
+			permissionguide.FinishSystemSettingsVisit()
+		}
 		return
 	}
 	if continuation.onboarding {
+		s.onboarding.permissionActionTaken = finishVisit
 		s.showOnboardingPermissionGuideFor(target)
 	} else {
 		s.page = pageGeneral
@@ -122,4 +140,9 @@ func permissionGuideResumeTarget(continuation permissionGuideContinuation, onboa
 	// If the system already granted the last permission, keep setup on its
 	// current page with the completed summary and the explicit Continue.
 	return nextPermissionGuideTarget(snapshot, 0, continuation.id)
+}
+
+func permissionGuideResumesOnboardingVisit(continuation permissionGuideContinuation, visible bool, step onboardingStep, snapshot permissionGuideSnapshot) bool {
+	return continuation.onboarding && continuation.finishVisit && visible &&
+		step == onboardingStepPermissions && permissionGuideCanRestore(continuation.id, snapshot)
 }

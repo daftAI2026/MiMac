@@ -45,7 +45,7 @@ func TestPermissionResumeRestoresOnlyTheRequestedRowRegardlessOfGrant(t *testing
 
 func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), permissionGuideResumeFile)
-	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, droppedAt: 1795104400}
+	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, finishVisit: true, droppedAt: 1795104400}
 	if err := savePermissionGuideResume(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +58,13 @@ func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *tes
 		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
 	}
 	snapshot := permissionGuideSnapshot{rows: rows}
+	if !permissionGuideResumesOnboardingVisit(restored, true, onboardingStepPermissions, snapshot) {
+		t.Fatal("restart lost the active first-use permission visit")
+	}
+	if permissionGuideResumesOnboardingVisit(restored, false, onboardingStepPermissions, snapshot) ||
+		permissionGuideResumesOnboardingVisit(restored, true, onboardingStepDevice, snapshot) {
+		t.Fatal("a recovered visit cannot finish outside the first-use permission step")
+	}
 	if got := permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot); got != permissionGuideInput {
 		t.Fatalf("still pending input monitoring was not selected: %v", got)
 	}
@@ -69,9 +76,24 @@ func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *tes
 	if got := permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot); got != permissionGuidePostEvent {
 		t.Fatalf("the next missing permission was not selected: %v", got)
 	}
+	complete := permissionGuideSnapshot{rows: append([]permissionGuideRow(nil), rows...)}
+	complete.rows[1].access = permissionGuideGranted
+	state := onboardingState{
+		permissionGuideOpened: true,
+		permissionActionTaken: permissionGuideResumesOnboardingVisit(restored, true, onboardingStepPermissions, snapshot),
+	}
+	if closeGuide, finishVisit := state.completePermissionVisit(snapshot, complete); !closeGuide || !finishVisit {
+		t.Fatalf("last grant after restart = close %t, finish %t", closeGuide, finishVisit)
+	}
 	rows[1].access = permissionGuideGranted
 	if permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot) != 0 {
 		t.Fatal("setup should retain its summary without reopening a completed guide")
+	}
+	if err := os.WriteFile(path, []byte("onboarding:input-monitoring"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := takePermissionGuideResume(path); err != nil || !got.onboarding || got.finishVisit {
+		t.Fatalf("legacy onboarding record changed its authorization intent: %v, %v", got, err)
 	}
 	if err := os.WriteFile(path, []byte("post-event"), 0600); err != nil {
 		t.Fatal(err)
