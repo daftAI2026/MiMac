@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -17,26 +18,65 @@ func TestPermissionResumeRestoresOnlyTheRequestedRowRegardlessOfGrant(t *testing
 		{"unreadable state", permissionGuideUnknown, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := savePermissionGuideResume(path, permissionGuideInput); err != nil {
+			want := permissionGuideContinuation{id: permissionGuideInput}
+			if err := savePermissionGuideResume(path, want); err != nil {
 				t.Fatal(err)
 			}
-			id, err := takePermissionGuideResume(path)
-			if err != nil || id != permissionGuideInput {
-				t.Fatalf("restored permission = %v, %v", id, err)
+			restored, err := takePermissionGuideResume(path)
+			if err != nil || restored != want {
+				t.Fatalf("restored permission = %v, %v", restored, err)
 			}
 			snapshot := permissionGuideSnapshot{rows: []permissionGuideRow{
 				{id: permissionGuidePostEvent, access: permissionGuideGranted},
 				{id: permissionGuideInput, access: tc.access},
 			}}
-			if got := permissionGuideCanRestore(id, snapshot); got != tc.want {
+			if got := permissionGuideResumeTarget(restored, false, onboardingStepPermissions, snapshot); (got == permissionGuideInput) != tc.want {
 				t.Fatalf("resume = %v, want %v", got, tc.want)
 			}
-			if permissionGuideCanRestore(id, permissionGuideSnapshot{rows: snapshot.rows[:1]}) {
+			if permissionGuideCanRestore(restored.id, permissionGuideSnapshot{rows: snapshot.rows[:1]}) {
 				t.Fatal("a continuation cannot target a capability that is no longer configured")
 			}
-			if repeated, err := takePermissionGuideResume(path); repeated != 0 || err != nil {
+			if repeated, err := takePermissionGuideResume(path); repeated.id != 0 || err != nil {
 				t.Fatalf("consumed permission repeated: %v, %v", repeated, err)
 			}
 		})
+	}
+}
+
+func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), permissionGuideResumeFile)
+	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true}
+	if err := savePermissionGuideResume(path, want); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := takePermissionGuideResume(path)
+	if err != nil || restored != want {
+		t.Fatalf("restored onboarding = %v, %v", restored, err)
+	}
+	rows := []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideDenied},
+		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
+	}
+	snapshot := permissionGuideSnapshot{rows: rows}
+	if got := permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot); got != permissionGuideInput {
+		t.Fatalf("still pending input monitoring was not selected: %v", got)
+	}
+	if permissionGuideResumeTarget(restored, true, onboardingStepDevice, snapshot) != 0 ||
+		permissionGuideResumeTarget(restored, false, onboardingStepPermissions, snapshot) != 0 {
+		t.Fatal("a setup continuation escaped its original surface")
+	}
+	rows[0].access = permissionGuideGranted
+	if got := permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot); got != permissionGuidePostEvent {
+		t.Fatalf("the next missing permission was not selected: %v", got)
+	}
+	rows[1].access = permissionGuideGranted
+	if permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot) != 0 {
+		t.Fatal("setup should retain its summary without reopening a completed guide")
+	}
+	if err := os.WriteFile(path, []byte("post-event"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := takePermissionGuideResume(path); got != (permissionGuideContinuation{id: permissionGuidePostEvent}) || err != nil {
+		t.Fatalf("legacy ordinary settings token = %v, %v", got, err)
 	}
 }

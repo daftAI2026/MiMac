@@ -38,7 +38,9 @@ flowchart TD
     systemReopen["系统要求退出并重开：普通启动入口"] --> resume
     grantAction -.-> pendingSettings["普通设置记住待完成的一项列表权限"]
     nativeRebind -.-> pendingSettings
-    pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接"]
+    pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接和入口"]
+    oneShot -.-> permissionStep
+    permissionStep -->|首启权限仍缺且有续接| permissionGuide
     oneShot -.-> once
     once -->|记录仍对应当前能力| recoverSettings["回通用页及权限小卡，重查并显示实际状态"]
     once -->|无适用记录| tray["保留菜单栏启动行为"]

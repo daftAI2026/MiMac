@@ -352,11 +352,15 @@ func (s *shell) refreshOnboardingAfterActivation() {
 }
 
 func (s *shell) showOnboardingPermissionGuide() {
+	s.showOnboardingPermissionGuideFor(0)
+}
+
+func (s *shell) showOnboardingPermissionGuideFor(preferred permissionGuideID) {
 	if s.onboarding.window == nil || s.onboarding.window.IsDestroyed() {
 		return
 	}
 	s.onboarding.permissionGuideOpened = true
-	s.showPermissionGuideFor(0)
+	s.showPermissionGuideFor(preferred)
 	s.updateOnboardingPermissions(s.snapshot)
 	s.onboarding.window.Invalidate()
 }
