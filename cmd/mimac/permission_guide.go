@@ -222,14 +222,12 @@ func (s *shell) positionPermissionGuideForPresentation(window *mygo.Window, pref
 	if !found {
 		bounds := window.Bounds()
 		area := mygo.Screen.DisplayMatching(bounds).WorkArea
-		if x := permissionGuideStandaloneX(area, bounds, s.onboarding.permissionGuideOpened); x != bounds.X {
-			window.SetPosition(x, bounds.Y)
-		}
+		window.SetPosition(permissionGuideStandaloneX(area, bounds), bounds.Y)
 	}
 }
 
-func permissionGuideStandaloneX(area, panel mygo.Rectangle, onboarding bool) int {
-	if onboarding || area.Width < panel.Width || panel.Width <= 0 {
+func permissionGuideStandaloneX(area, panel mygo.Rectangle) int {
+	if area.Width < panel.Width || panel.Width <= 0 {
 		return panel.X
 	}
 	return min(area.X+area.Width/2, area.X+area.Width-panel.Width)

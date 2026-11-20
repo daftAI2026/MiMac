@@ -28,7 +28,7 @@ flowchart TD
     toolStep --> explicitChoice["用户明确启用并选择已有工具；模型准备由插件提供"]
     explicitChoice --> originalSelection["复用插件启停与唯一Current选择，不自动收音"]
     toolStep -->|继续，可暂不安装或选择| permissionStep["第3步：系统权限单格摘要"]
-    permissionStep --> permissionGuide["点击授权先居中打开可关闭的小卡"]
+    permissionStep --> permissionGuide["点击授权打开可关闭的系统权限引导"]
     permissionStep -->|继续| completion["独立完成页：当前设备按键摘要，开始使用与返回权限"]
     completion -.-> completionMotion["MyGo元素单次弹簧入场与450ms角标延迟；收敛停止，减少动态效果显示最终态"]
     completion -->|返回系统权限| permissionStep
@@ -58,7 +58,7 @@ flowchart TD
     permissionGuide -.-> nativeWindow["MyGo 创建可点击和拖动的小卡，小卡不取得键盘"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
     existingSettings -->|是且有缺失列表权限：切到对应页| settings
-    existingSettings -->|否：保持初始位置，等待用户点击具体授权项| grantAction
+    existingSettings -->|否：独立小卡靠右，等待用户打开设置| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
