@@ -89,16 +89,20 @@ func (s *shell) savePendingPermissionGuide() {
 	}
 }
 
-func (s *shell) resumePermissionGuideOnLaunch() {
+func readPermissionGuideResumeOnLaunch() permissionGuideContinuation {
 	path, err := hostDataPath(permissionGuideResumeFile)
 	if err != nil {
-		return
+		return permissionGuideContinuation{}
 	}
 	continuation, err := takePermissionGuideResume(path)
 	if err != nil {
 		log.Printf("permission guide resume: %v", err)
-		return
+		return permissionGuideContinuation{}
 	}
+	return continuation
+}
+
+func (s *shell) resumePermissionGuideOnLaunch(continuation permissionGuideContinuation) {
 	if continuation.id == 0 {
 		return
 	}
@@ -145,4 +149,12 @@ func permissionGuideResumeTarget(continuation permissionGuideContinuation, onboa
 func permissionGuideResumesOnboardingVisit(continuation permissionGuideContinuation, visible bool, step onboardingStep, snapshot permissionGuideSnapshot) bool {
 	return continuation.onboarding && continuation.finishVisit && visible &&
 		step == onboardingStepPermissions && permissionGuideCanRestore(continuation.id, snapshot)
+}
+
+// Create the main onboarding window without an activating first frame while
+// the resumed guide is about to route an existing Settings session.
+func permissionGuideResumesWithSettings(continuation permissionGuideContinuation, step onboardingStep, snapshot permissionGuideSnapshot, settingsRunning func() bool) bool {
+	target := permissionGuideResumeTarget(continuation, true, step, snapshot)
+	access, exists := permissionGuideAccessForID(snapshot, target)
+	return snapshot.actionsEnabled && exists && permissionGuideCanRoute(target, access) && settingsRunning()
 }

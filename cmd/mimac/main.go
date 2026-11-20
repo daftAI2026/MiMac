@@ -188,10 +188,11 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 		if s.onboarding.showOnboardingOnLaunch {
 			s.showOnboarding()
 		} else {
+			continuation := readPermissionGuideResumeOnLaunch()
 			if s.shouldPresentInitialOnboarding() {
-				s.showInitialOnboarding()
+				s.openOnboarding(true, continuation)
 			}
-			s.resumePermissionGuideOnLaunch()
+			s.resumePermissionGuideOnLaunch(continuation)
 		}
 	}
 	settingsShown := s.window != nil || s.onboarding.window != nil

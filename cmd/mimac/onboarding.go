@@ -10,6 +10,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"mimac.local/mimac/internal/platform/permissionguide"
 	"mimac.local/mimac/internal/voicetools"
 )
 
@@ -170,13 +171,11 @@ func (s *shell) shouldPresentInitialOnboarding() bool {
 	return shouldPresentOnboarding(record, exists, !s.shouldPresentFirstRunSettings(), readErr)
 }
 
-func (s *shell) showInitialOnboarding() { s.openOnboarding(true) }
-
 // showOnboarding is an explicit menu action. It can restart a completed guide
 // without changing any device, plugin, mapping, or voice-tool owner.
-func (s *shell) showOnboarding() { s.openOnboarding(false) }
+func (s *shell) showOnboarding() { s.openOnboarding(false, permissionGuideContinuation{}) }
 
-func (s *shell) openOnboarding(automaticFirstRun bool) {
+func (s *shell) openOnboarding(automaticFirstRun bool, continuation permissionGuideContinuation) {
 	if s.closing {
 		return
 	}
@@ -214,10 +213,12 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 	if s.onboarding.step == onboardingStepPermissions {
 		s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
 	}
+	inactive := permissionGuideResumesWithSettings(continuation, s.onboarding.step,
+		s.onboarding.permissionSnapshot, permissionguide.SystemSettingsRunning)
 	s.prepareOnboardingPresentation()
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: mygo.App.Name() + " 首次设置", Width: windowWidth, Height: windowHeight,
-		MinWidth: windowMinWidth, MinHeight: windowMinHeight,
+		MinWidth: windowMinWidth, MinHeight: windowMinHeight, Hidden: inactive,
 		TitleBarStyle: mygo.TitleBarHidden, TrafficLightPosition: &mygo.Point{X: trafficLightInset, Y: trafficLightInset},
 		Content: ui.View(s.onboardingView),
 	})
@@ -245,6 +246,12 @@ func (s *shell) openOnboarding(automaticFirstRun bool) {
 			s.releaseSettingsAssets()
 		}
 	})
+	if inactive {
+		window.ShowInactive()
+		// Showing without activation still orders the window in front.
+		// Keep the Settings list unobstructed when the companion card opens.
+		window.Blur()
+	}
 	s.refreshOnboardingChecks()
 }
 

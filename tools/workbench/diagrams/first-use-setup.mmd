@@ -40,7 +40,8 @@ flowchart TD
     nativeRebind -.-> pendingSettings
     pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接、入口和首启授权动作"]
     oneShot -.-> permissionStep
-    permissionStep -->|仍缺权限：恢复小卡与首启授权动作| permissionGuide
+    permissionStep -->|仍缺权限：恢复小卡与首启授权动作| resumeWindow["已有系统设置且可切至待授权项：首启主窗非激活呈现并让到系统设置后面"]
+    resumeWindow --> permissionGuide
     permissionStep -->|续接的首启授权已齐| complete
     oneShot -.-> once
     once -->|记录仍对应当前能力| recoverSettings["回通用页及权限小卡，重查并显示实际状态"]

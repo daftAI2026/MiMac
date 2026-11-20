@@ -102,3 +102,43 @@ func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *tes
 		t.Fatalf("legacy ordinary settings token = %v, %v", got, err)
 	}
 }
+
+func TestPermissionGuideResumeOnlyYieldsFirstFrameToLiveSettings(t *testing.T) {
+	continuation := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, finishVisit: true}
+	partial := permissionGuideSnapshot{actionsEnabled: true, rows: []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideGranted},
+		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
+	}}
+	for _, tc := range []struct {
+		name         string
+		continuation permissionGuideContinuation
+		step         onboardingStep
+		control      permissionGuideAccess
+		actions      bool
+		settings     bool
+		want         bool
+		wantQuery    bool
+	}{
+		{"route second item", continuation, onboardingStepPermissions, permissionGuideNotGranted, true, true, true, true},
+		{"settings closed", continuation, onboardingStepPermissions, permissionGuideNotGranted, true, false, false, true},
+		{"both granted", continuation, onboardingStepPermissions, permissionGuideGranted, true, true, false, false},
+		{"normal first use", permissionGuideContinuation{}, onboardingStepPermissions, permissionGuideNotGranted, true, true, false, false},
+		{"general entry", permissionGuideContinuation{id: permissionGuideInput}, onboardingStepPermissions, permissionGuideNotGranted, true, true, false, false},
+		{"different step", continuation, onboardingStepDevice, permissionGuideNotGranted, true, true, false, false},
+		{"no route", continuation, onboardingStepPermissions, permissionGuideRestricted, true, true, false, false},
+		{"disabled actions", continuation, onboardingStepPermissions, permissionGuideNotGranted, false, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			partial.actionsEnabled = tc.actions
+			partial.rows[1].access = tc.control
+			queried := false
+			got := permissionGuideResumesWithSettings(tc.continuation, tc.step, partial, func() bool {
+				queried = true
+				return tc.settings
+			})
+			if got != tc.want || queried != tc.wantQuery {
+				t.Fatalf("inactive=%v queried Settings=%v, want %v and %v", got, queried, tc.want, tc.wantQuery)
+			}
+		})
+	}
+}
