@@ -354,7 +354,7 @@ func TestPermissionGuideInitialPlacementUsesVisibleDestinationOnlyForGeneralRow(
 	}
 }
 
-func TestPermissionGuideStandaloneStartsOnTheRightAndFits(t *testing.T) {
+func TestPermissionGuideStandaloneCentersFirstUseAndPlacesGeneralOnTheRight(t *testing.T) {
 	panel := mygo.Rectangle{X: 710, Y: 197, Width: 500, Height: 359}
 	for _, test := range []struct {
 		area mygo.Rectangle
@@ -365,8 +365,11 @@ func TestPermissionGuideStandaloneStartsOnTheRightAndFits(t *testing.T) {
 		{mygo.Rectangle{X: 100, Width: 1200}, 700},
 		{mygo.Rectangle{}, panel.X},
 	} {
-		if got := permissionGuideStandaloneX(test.area, panel); got != test.want {
-			t.Fatalf("standalone x = %d, want %d for %+v", got, test.want, test.area)
+		if got := permissionGuideStandaloneX(test.area, panel, false); got != test.want {
+			t.Fatalf("standalone General x = %d, want %d for %+v", got, test.want, test.area)
+		}
+		if got := permissionGuideStandaloneX(test.area, panel, true); got != panel.X {
+			t.Fatalf("standalone onboarding x = %d, want its centered x %d", got, panel.X)
 		}
 	}
 }
