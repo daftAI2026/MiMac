@@ -8,6 +8,10 @@ on:
         type: string
         required: true
         default: "00"
+      build_number:
+        description: Numeric build number from the same sequence as local packages
+        type: string
+        required: true
       build_only:
         description: Build and verify artifacts without creating a tag or release
         type: boolean
@@ -93,7 +97,7 @@ jobs:
         id: version
         env:
           RELEASE_DATE: ${{ steps.release-date.outputs.date }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
           PREVIEW_REVISION: ${{ inputs.preview_revision }}
         run: |
           set -euo pipefail

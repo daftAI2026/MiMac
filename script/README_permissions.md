@@ -141,7 +141,7 @@ All channels use the Shanghai date in `CFBundleShortVersionString` and a separat
 
 The script freezes the source in a temporary checkout, uses the standard native and app build steps, and verifies bundle identity and the image before moving it into the version directory. Use `MIMAC_PACKAGING_PYTHON` for the locked packaging dependencies. `MIMAC_PREVIEW_PROFILE=siri-glass` includes the optional arm64 display component. A clean MyGo override can be selected with `MIMAC_PREVIEW_MYGO_SOURCE`; its revision is recorded in the receipt.
 
-Local and CI previews are ad-hoc signed. Both package the daily `MiMac.app` identity. GitHub Actions requires an explicit candidate revision, checks existing tags and drafts, and uses the same stems for DMGs, ZIPs, checksums and receipts. Build-only is the default. The optional release is a draft prerelease.
+Local and CI previews are ad-hoc signed. Both package the daily `MiMac.app` identity. GitHub Actions takes an explicit candidate revision and numeric build number from the same sequence as local packages, checks existing tags and drafts, and uses the same stems for DMGs, ZIPs, checksums and receipts. Build-only is the default. The optional release is a draft prerelease.
 
 ### Stable
 
