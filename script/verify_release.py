@@ -42,6 +42,7 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
     if changed - {"mygo.json"}:
         raise ValueError("unexpected source changes: " + ", ".join(sorted(changed - {"mygo.json"})))
     baseline = json.loads(git(repo, "show", revision + ":mygo.json"))
+    product_version = baseline["version"]
     config_bytes = (repo / "mygo.json").read_bytes()
     actual = json.loads(config_bytes)
     try:
@@ -60,7 +61,7 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
         "prepared_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
         "allowed_modified_paths": sorted(changed),
         "embedded_source": embeds_source,
-        "product_version": baseline["version"],
+        "product_version": product_version,
     }
 
 

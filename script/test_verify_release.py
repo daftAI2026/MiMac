@@ -291,7 +291,9 @@ class VerifyReleaseTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             prepared = apply_versions(config, RELEASE_DATE, BUILD_NUMBER, revision)
             write_json(config_path, prepared)
-            self.assertTrue(verify_source(repo, revision, RELEASE_DATE, BUILD_NUMBER)["embedded_source"])
+            source = verify_source(repo, revision, RELEASE_DATE, BUILD_NUMBER)
+            self.assertTrue(source["embedded_source"])
+            self.assertEqual(source["product_version"], "0.1.0")
             prepared["macos"]["infoPlist"]["MiMacBuildDirty"] = True
             write_json(config_path, prepared)
             with self.assertRaisesRegex(ValueError, "differs from the planned"):
