@@ -16,6 +16,7 @@ import (
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/platform/permissionguide"
 	"mimac.local/mimac/internal/platform/statuscolor"
+	"mimac.local/mimac/internal/platform/symbols"
 )
 
 const (
@@ -609,7 +610,7 @@ func permissionGuideRowFor(id permissionGuideID) permissionGuideRow {
 	case permissionGuidePostEvent:
 		return permissionGuideRow{id: id, icon: "hand.tap", title: permissionguide.AccessibilityPermissionTitle(), description: "向当前应用发送设定的按键"}
 	case permissionGuideBluetooth:
-		return permissionGuideRow{id: id, icon: "wave.3.right", title: "蓝牙", description: "让已选语音工具使用遥控器音频"}
+		return permissionGuideRow{id: id, icon: symbols.BluetoothTemplate, title: "蓝牙", description: "接收遥控器麦克风音频，用于语音输入"}
 	default:
 		return permissionGuideRow{id: id, title: "系统权限"}
 	}
@@ -945,6 +946,11 @@ func permissionGuideCanRoute(id permissionGuideID, access permissionGuideAccess)
 }
 
 func runPermissionGuidePresentation(snapshot permissionGuideSnapshot, preferred permissionGuideID, settingsRunning bool, open func(permissionGuideID), join func()) {
+	if preferred == permissionGuideBluetooth {
+		// Bluetooth has its own explicit request in the companion card.
+		// Opening it from General should not jump to another permissions list.
+		return
+	}
 	if settingsRunning && snapshot.actionsEnabled {
 		if access, exists := permissionGuideAccessForID(snapshot, preferred); exists && permissionGuideCanRoute(preferred, access) {
 			open(preferred)

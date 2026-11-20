@@ -26,13 +26,11 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 }
 
 func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.PermissionRow {
-	rows := make([]nativeprefs.PermissionRow, 0, 2)
+	rows := make([]nativeprefs.PermissionRow, 0, len(snapshot.rows))
 	for _, row := range snapshot.rows {
-		if permissionGuideAllowsAppDrag(row.id) {
-			rows = append(rows, nativeprefs.PermissionRow{
-				ID: int32(row.id), Title: row.title, Status: permissionGuideAccessLabel(row.access), Granted: row.access == permissionGuideGranted,
-			})
-		}
+		rows = append(rows, nativeprefs.PermissionRow{
+			ID: int32(row.id), Title: row.title, Status: permissionGuideAccessLabel(row.access), Granted: row.access == permissionGuideGranted,
+		})
 	}
 	return rows
 }
@@ -69,13 +67,19 @@ func (s *shell) syncGeneralControls() {
 			s.syncGeneralControls()
 		},
 		ManagePermissions: func(value int32) {
-			if value == int32(permissionGuideInput) || value == int32(permissionGuidePostEvent) {
-				id := permissionGuideID(value)
-				s.onboarding.permissionGuideOpened = false
-				s.showPermissionGuideFor(id)
-				if permissionGuideCanRestore(id, s.snapshot) {
-					s.resumeID = id
-				}
+			id := permissionGuideID(value)
+			if int32(id) != value {
+				return
+			}
+			snapshot := s.readPermissionGuideSnapshot()
+			if _, exists := permissionGuideAccessForID(snapshot, id); !exists {
+				s.syncGeneralControls()
+				return
+			}
+			s.onboarding.permissionGuideOpened = false
+			s.showPermissionGuideFor(id)
+			if permissionGuideCanRestore(id, s.snapshot) {
+				s.resumeID = id
 			}
 		},
 	}

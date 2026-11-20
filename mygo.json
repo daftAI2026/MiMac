@@ -9,7 +9,7 @@
     "signingIdentity": "-",
     "infoPlist": {
       "LSUIElement": true,
-      "NSBluetoothAlwaysUsageDescription": "连接已配对的小米遥控器，并在使用语音功能时接收遥控器音频。"
+      "NSBluetoothAlwaysUsageDescription": "MiMac 在语音输入时通过蓝牙接收已连接遥控器的麦克风音频。"
     },
     "icon": "Assets/Brand/MiMac.icon"
   },

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"math"
 	"sync"
 	"unsafe"
@@ -165,16 +167,16 @@ func imagesOnMain(names []string, dark bool, pointSize, weight float64, foregrou
 	if foreground != nil {
 		red, green, blue, alpha = float64(foreground[0])/255, float64(foreground[1])/255, float64(foreground[2])/255, float64(foreground[3])/255
 	}
-	color := objc.ID(colorClass).Send(selector("colorWithSRGBRed:green:blue:alpha:"), red, green, blue, alpha)
-	if color == 0 {
+	nativeColor := objc.ID(colorClass).Send(selector("colorWithSRGBRed:green:blue:alpha:"), red, green, blue, alpha)
+	if nativeColor == 0 {
 		return nil, errors.New("symbols: could not create SF Symbol color")
 	}
-	color.Send(selector("retain"))
-	defer color.Send(selector("release"))
+	nativeColor.Send(selector("retain"))
+	defer nativeColor.Send(selector("release"))
 
 	// Give every symbol layer the same foreground. Hierarchical color makes
 	// outlines such as info.circle's ring look lighter than sibling icons.
-	colors := [...]objc.ID{color, color, color}
+	colors := [...]objc.ID{nativeColor, nativeColor, nativeColor}
 	palette := objc.ID(objc.GetClass("NSArray")).Send(selector("arrayWithObjects:count:"), unsafe.Pointer(&colors[0]), uintptr(len(colors)))
 	if palette == 0 {
 		return nil, errors.New("symbols: could not create SF Symbol palette")
@@ -199,6 +201,15 @@ func imagesOnMain(names []string, dark bool, pointSize, weight float64, foregrou
 		}
 	}()
 	for _, name := range names {
+		if name == BluetoothTemplate {
+			template := objc.ID(imageClass).Send(selector("imageNamed:"), nsString(name))
+			if template == 0 {
+				return nil, errors.New("symbols: AppKit Bluetooth template is unavailable")
+			}
+			template.Send(selector("retain"))
+			configured = append(configured, configuredSymbol{name: name, image: template})
+			continue
+		}
 		base := objc.ID(imageClass).Send(selector("imageWithSystemSymbolName:accessibilityDescription:"), nsString(name), nsString(name))
 		if base == 0 {
 			return nil, fmt.Errorf("symbols: unknown SF Symbol %q", name)
@@ -241,6 +252,13 @@ func imagesOnMain(names []string, dark bool, pointSize, weight float64, foregrou
 			objc.ID(bitmapClass), objc.ID(graphicsClass), objc.ID(colorSpaceClass))
 		if err != nil {
 			return nil, fmt.Errorf("symbols: rasterize %q: %w", symbol.name, err)
+		}
+		if symbol.name == BluetoothTemplate {
+			bounds := raster.Bounds()
+			tinted := image.NewNRGBA(bounds)
+			ink := image.NewUniform(color.NRGBA{R: uint8(math.Round(red * 255)), G: uint8(math.Round(green * 255)), B: uint8(math.Round(blue * 255)), A: uint8(math.Round(alpha * 255))})
+			draw.DrawMask(tinted, bounds, ink, image.Point{}, raster, bounds.Min, draw.Src)
+			raster = tinted
 		}
 		result[i] = raster
 	}

@@ -287,11 +287,13 @@ func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T
 		rows             []permissionGuideRow
 		preferred        permissionGuideID
 		want             permissionGuideID
+		standalone       bool
 	}{
 		{name: "closed", enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}},
 		{name: "existing", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}, want: permissionGuideInput},
 		{name: "explicit device control", running: true, enabled: true, preferred: permissionGuidePostEvent, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}, {id: permissionGuidePostEvent, access: permissionGuideNotGranted}}, want: permissionGuidePostEvent},
 		{name: "skip granted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideGranted}, {id: permissionGuidePostEvent, access: permissionGuideNotGranted}}, want: permissionGuidePostEvent},
+		{name: "explicit Bluetooth keeps the permissions card standalone", running: true, enabled: true, preferred: permissionGuideBluetooth, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}, {id: permissionGuideBluetooth, access: permissionGuideNotDetermined}}, standalone: true},
 		{name: "no bluetooth prompt", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideBluetooth, access: permissionGuideNotDetermined}}},
 		{name: "restricted", running: true, enabled: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideRestricted}}},
 		{name: "disabled", running: true, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideDenied}}},
@@ -303,7 +305,7 @@ func TestPermissionGuidePresentationOnlyRoutesAnExistingSettingsApp(t *testing.T
 			if opened != test.want {
 				t.Errorf("opened=%v, want%v", opened, test.want)
 			}
-			if test.want == 0 && joins != 1 || test.want != 0 && joins != 0 {
+			if shouldJoin := test.want == 0 && !test.standalone; (shouldJoin && joins != 1) || (!shouldJoin && joins != 0) {
 				t.Errorf("duplicate or missing join: %d", joins)
 			}
 		})
