@@ -99,6 +99,7 @@ jobs:
           python3 script/release_version.py \
             --date "$RELEASE_DATE" \
             --build-number "$BUILD_NUMBER" \
+            --source-revision "$GITHUB_SHA" \
             --existing-releases "$RUNNER_TEMP/mimac-releases.json"
 
       - name: Build native settings libraries
@@ -119,48 +120,61 @@ jobs:
       - name: Build macOS amd64 app
         run: go tool mygo build -platform darwin/amd64 -skip-dmg -skip-notarize
 
+      - name: Plan artifact names
+        id: names
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          base="$(python3 script/release_naming.py "$RELEASE_VERSION" "$BUILD_NUMBER" "$GITHUB_SHA")"
+          arm64="$(python3 script/release_naming.py "$RELEASE_VERSION" "$BUILD_NUMBER" "$GITHUB_SHA" --arch arm64)"
+          amd64="$(python3 script/release_naming.py "$RELEASE_VERSION" "$BUILD_NUMBER" "$GITHUB_SHA" --arch amd64)"
+          printf 'base=%s\narm64=%s\namd64=%s\n' "$base" "$arm64" "$amd64" >> "$GITHUB_OUTPUT"
+
       - name: Verify release identities and native bundle contents
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
-          ASSET_STEM: ${{ steps.version.outputs.asset_stem }}
+          ARM64_STEM: ${{ steps.names.outputs.arm64 }}
+          AMD64_STEM: ${{ steps.names.outputs.amd64 }}
         run: |
           set -euo pipefail
           release_dir="$RUNNER_TEMP/mimac-release"
           mkdir -p "$release_dir"
           for arch in arm64 amd64; do
-            verify_args=("dist/darwin-$arch/MiMac.app" \
+            stem="$ARM64_STEM"
+            if [[ "$arch" == amd64 ]]; then stem="$AMD64_STEM"; fi
+            python3 script/verify_release.py "dist/darwin-$arch/MiMac.app" \
               --arch "$arch" --revision "$GITHUB_SHA" \
               --version "$RELEASE_VERSION" --build-number "$BUILD_NUMBER" \
-              --component-profile core-only \
-              --output "$release_dir/MiMac-${ASSET_STEM}-darwin-${arch}.json")
-            python3 script/verify_release.py "${verify_args[@]}"
+              --component-profile core-only --output "$release_dir/$stem.json"
           done
 
       - name: Package apps, DMGs and checksums
         env:
-          ASSET_STEM: ${{ steps.version.outputs.asset_stem }}
+          ARTIFACT_BASE: ${{ steps.names.outputs.base }}
+          ARM64_STEM: ${{ steps.names.outputs.arm64 }}
+          AMD64_STEM: ${{ steps.names.outputs.amd64 }}
         run: |
           set -euo pipefail
           release_dir="$RUNNER_TEMP/mimac-release"
-          mkdir -p "$release_dir"
-          arm64_zip="MiMac-${ASSET_STEM}-darwin-arm64.zip"
-          amd64_zip="MiMac-${ASSET_STEM}-darwin-amd64.zip"
-          ditto -c -k --sequesterRsrc --keepParent dist/darwin-arm64/MiMac.app "$release_dir/$arm64_zip"
-          ditto -c -k --sequesterRsrc --keepParent dist/darwin-amd64/MiMac.app "$release_dir/$amd64_zip"
-          python3 script/package_dmg.py dist/darwin-arm64/MiMac.app \
-            --output "$release_dir/MiMac-${ASSET_STEM}-darwin-arm64.dmg"
-          python3 script/package_dmg.py dist/darwin-amd64/MiMac.app \
-            --output "$release_dir/MiMac-${ASSET_STEM}-darwin-amd64.dmg"
+          for arch in arm64 amd64; do
+            stem="$ARM64_STEM"
+            if [[ "$arch" == amd64 ]]; then stem="$AMD64_STEM"; fi
+            bundle="dist/darwin-$arch/MiMac.app"
+            ditto -c -k --sequesterRsrc --keepParent "$bundle" "$release_dir/$stem.zip"
+            python3 script/package_dmg.py "$bundle" --output "$release_dir/$stem.dmg"
+            hdiutil verify "$release_dir/$stem.dmg"
+          done
           cd "$release_dir"
-          shasum -a 256 "$arm64_zip" "$amd64_zip" \
-            "MiMac-${ASSET_STEM}-darwin-arm64.dmg" "MiMac-${ASSET_STEM}-darwin-amd64.dmg" \
-            "MiMac-${ASSET_STEM}-darwin-arm64.json" "MiMac-${ASSET_STEM}-darwin-amd64.json" > SHA256SUMS
+          shasum -a 256 "$ARM64_STEM.zip" "$ARM64_STEM.dmg" "$ARM64_STEM.json" \
+            "$AMD64_STEM.zip" "$AMD64_STEM.dmg" "$AMD64_STEM.json" > "$ARTIFACT_BASE.sha256"
 
       - name: Upload verified build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: MiMac-${{ steps.version.outputs.asset_stem }}-${{ github.run_id }}
+          name: ${{ steps.names.outputs.base }}
           path: ${{ runner.temp }}/mimac-release/
           if-no-files-found: error
           retention-days: 7
@@ -170,7 +184,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_TITLE: ${{ steps.version.outputs.release_title }}
+          ARTIFACT_BASE: ${{ steps.names.outputs.base }}
         run: |
           set -euo pipefail
           release_dir="$RUNNER_TEMP/mimac-release"
@@ -181,7 +195,7 @@ jobs:
           This preview uses the core-only profile. A separate Siri glass profile requires the recorded private ABI host gate; its inclusion does not establish runtime compatibility on every Mac.
           EOF
           gh release create "$RELEASE_TAG" \
-            --title "$RELEASE_TITLE" \
+            --title "$ARTIFACT_BASE" \
             --notes-file "$release_dir/RELEASE-NOTES.txt" \
             --draft \
             --prerelease \
@@ -189,4 +203,4 @@ jobs:
             "$release_dir"/*.zip \
             "$release_dir"/*.dmg \
             "$release_dir"/*.json \
-            "$release_dir/SHA256SUMS"
+            "$release_dir/$ARTIFACT_BASE.sha256"

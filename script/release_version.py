@@ -123,8 +123,9 @@ def release_title(release_date: str, tag: str) -> str:
     return f"MiMac {release_date} (build {suffix})"
 
 
-def apply_versions(config: dict[str, Any], release_date: str, build_number: str | int) -> dict[str, Any]:
-    """Update only the two version fields while preserving other config."""
+def apply_versions(config: dict[str, Any], release_date: str, build_number: str | int,
+                   source_revision: str | None = None) -> dict[str, Any]:
+    """Write the planned versions and, when provided, embedded source identity."""
     release_date = validate_date(release_date)
     build_number = validate_build_number(build_number)
     if not isinstance(config, dict):
@@ -139,6 +140,11 @@ def apply_versions(config: dict[str, Any], release_date: str, build_number: str 
 
     config["version"] = release_date
     info_plist["CFBundleVersion"] = str(build_number)
+    if source_revision is not None:
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_revision):
+            raise ValueError("expected a full Git source revision")
+        info_plist["MiMacBuildCommit"] = source_revision
+        info_plist["MiMacBuildDirty"] = False
     return config
 
 
@@ -173,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="frozen Asia/Shanghai date in YYYY.MM.DD form")
     parser.add_argument("--build-number", required=True, help="GitHub Actions run number, 1 through 9999")
+    parser.add_argument("--source-revision", help="full Git commit for the embedded release identity")
     parser.add_argument("--config", type=Path, default=Path("mygo.json"))
     parser.add_argument("--output", type=Path, default=os.environ.get("GITHUB_OUTPUT"))
     parser.add_argument(
@@ -203,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
         asset_stem = tag.removeprefix("v")
 
         config = json.loads(args.config.read_text(encoding="utf-8"))
-        config = apply_versions(config, release_date, build_number)
+        if args.source_revision is not None:
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            if head != args.source_revision:
+                raise ValueError("checkout HEAD does not match the planned source revision")
+        config = apply_versions(config, release_date, build_number, args.source_revision)
         write_config(args.config, config)
 
         append_outputs(

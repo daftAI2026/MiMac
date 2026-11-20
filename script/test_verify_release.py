@@ -175,7 +175,7 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
         return {"abi_version": 1, "compatible": True,
                 "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest()}
 
-    with patch("verify_release.verify_source", return_value={"revision": REVISION}), \
+    with patch("verify_release.verify_source", return_value={"revision": REVISION, "embedded_source": False}), \
          patch("verify_release.current_siri_abi_host", return_value=host), \
          patch("verify_release.inspect_library", side_effect=fake_inspect_library), \
          patch("verify_app_bundle.verify_product_package", side_effect=fake_verify_product_package), \
@@ -284,6 +284,18 @@ class VerifyReleaseTests(unittest.TestCase):
                 result["prepared_config_sha256"],
                 hashlib.sha256(config_path.read_bytes()).hexdigest(),
             )
+
+    def test_source_only_accepts_matching_embedded_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, config_path, revision = make_repo(Path(directory) / "repo")
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            prepared = apply_versions(config, RELEASE_DATE, BUILD_NUMBER, revision)
+            write_json(config_path, prepared)
+            self.assertTrue(verify_source(repo, revision, RELEASE_DATE, BUILD_NUMBER)["embedded_source"])
+            prepared["macos"]["infoPlist"]["MiMacBuildDirty"] = True
+            write_json(config_path, prepared)
+            with self.assertRaisesRegex(ValueError, "differs from the planned"):
+                verify_source(repo, revision, RELEASE_DATE, BUILD_NUMBER)
 
     def test_source_rejects_extra_config_change(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -12,8 +12,8 @@ case "$profile" in
   *) echo "Expected core-only or siri-glass for MIMAC_PREVIEW_PROFILE" >&2; exit 2 ;;
 esac
 case "$(uname -m)" in
-  arm64) arch=arm64; suffix=arm64 ;;
-  x86_64) arch=amd64; suffix=x86_64 ;;
+  arm64) arch=arm64 ;;
+  x86_64) arch=amd64 ;;
   *) echo "Unsupported macOS architecture" >&2; exit 2 ;;
 esac
 [[ "$profile" != siri-glass || "$arch" == arm64 ]] || { echo "Siri glass requires arm64" >&2; exit 2; }
@@ -22,7 +22,7 @@ cd "$root"
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit the source changes before packaging" >&2; exit 2; }
 revision="$(git rev-parse HEAD)"
 version="$(TZ=Asia/Shanghai date +%Y.%m.%d)"
-stem="MiMac-$version-build$build_number-${revision:0:7}-$suffix"
+stem="$(python3 script/release_naming.py "$version" "$build_number" "$revision" --arch "$arch")"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 for suffix in dmg json dmg.sha256; do
@@ -63,7 +63,7 @@ PYWORK
 fi
 export CGO_ENABLED=0
 
-python3 script/release_version.py --date "$version" --build-number "$build_number" --output "$stage/version.txt"
+python3 script/release_version.py --date "$version" --build-number "$build_number" --source-revision "$revision" --output "$stage/version.txt"
 script/build_native_settings.sh
 if [[ "$profile" == siri-glass ]]; then
   script/build_voice_overlay.sh siri-required

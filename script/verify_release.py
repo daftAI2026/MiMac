@@ -42,9 +42,16 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
     if changed - {"mygo.json"}:
         raise ValueError("unexpected source changes: " + ", ".join(sorted(changed - {"mygo.json"})))
     baseline = json.loads(git(repo, "show", revision + ":mygo.json"))
-    expected = apply_versions(baseline, version, build_number)
     config_bytes = (repo / "mygo.json").read_bytes()
     actual = json.loads(config_bytes)
+    try:
+        info = actual.get("macos", {}).get("infoPlist", {})
+    except AttributeError as error:
+        raise ValueError("prepared mygo.json must contain macOS bundle metadata") from error
+    if not isinstance(info, dict):
+        raise ValueError("prepared mygo.json must contain macOS bundle metadata")
+    embeds_source = any(key in info for key in ("MiMacBuildCommit", "MiMacBuildDirty"))
+    expected = apply_versions(baseline, version, build_number, revision if embeds_source else None)
     # Compare JSON types as well as values (Python otherwise treats True == 1).
     if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
         raise ValueError("prepared mygo.json differs from the planned version-only update")
@@ -52,6 +59,7 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
         "revision": revision,
         "prepared_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
         "allowed_modified_paths": sorted(changed),
+        "embedded_source": embeds_source,
     }
 
 
@@ -160,6 +168,8 @@ def verify_release(
     with (contents / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     verify_versions(info, version, build_number)
+    if source["embedded_source"] and (info.get("MiMacBuildCommit") != revision or info.get("MiMacBuildDirty") is not False):
+        raise ValueError("bundle embedded identity does not match the clean release source")
     executable_name = info.get("CFBundleExecutable")
     if not isinstance(executable_name, str) or executable_name in {"", ".", ".."} or Path(executable_name).name != executable_name:
         raise ValueError("invalid bundle executable name")

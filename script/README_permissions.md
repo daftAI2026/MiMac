@@ -123,8 +123,10 @@ xcrun swiftc -swift-version 5 script/first_install_acceptance.swift -o first-ins
 
 The test selects the mounted App in Finder. Double-click that App. Use `--finder-open` to send the corresponding Finder open event through macOS Automation when available. The receipt distinguishes the two entry modes. A pass requires the mounted installer PID, the different installed PID with a visible first-use window, matching code and executable identity, automatic detach and the native helper's first-attempt success receipt. The test closes the verified installed process after saving the outcome.
 
-## Local preview naming and packaging
+## Release artifact naming and local packaging
 
 Use `script/package_preview.sh BUILD_NUMBER [OUTPUT_DIRECTORY]` from a clean source checkout. A preview is named `MiMac-YYYY.MM.DD-buildN-<7-character-source-revision>-<architecture>.dmg`. The default destination is Downloads. Start in a private output directory when collecting acceptance evidence, then move the verified artifacts for delivery. Existing names are refused. Keep the matching JSON receipt and DMG SHA-256 with the image.
 
 The command freezes the source in a temporary checkout, uses the standard native and app build steps, verifies the installed identity and dependencies, and validates the DMG before making it available. Use `MIMAC_PACKAGING_PYTHON` to select the environment with the locked packaging dependencies. `MIMAC_PREVIEW_PROFILE=siri-glass` gives an arm64 preview with the optional presentation component. If testing an explicitly frozen MyGo checkout, set `MIMAC_PREVIEW_MYGO_SOURCE` to that clean checkout. Its revision is recorded in the receipt. The local preview still uses ad-hoc signing.
+
+The GitHub Actions preview uses the same naming function for its DMGs, ZIPs, JSON receipts, upload group, checksums, and release title. Individual files add the architecture suffix `arm64` or `x86_64`; the upload group and checksum covering both architectures use the common name. Bundle metadata records the full Git revision and clean-source status, checked against the executable and release plan. The system app name, Finder volume label, and date-based release tag retain their own display and upgrade purposes.

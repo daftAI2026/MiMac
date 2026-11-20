@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from release_naming import artifact_stem
 from release_version import (
     apply_versions,
     main,
@@ -20,6 +21,22 @@ from release_version import (
 
 
 class ReleaseVersionTests(unittest.TestCase):
+    def test_release_artifact_names_match_across_channels_and_architectures(self):
+        revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
+        base = "MiMac-2026.11.20-build49-02765c3"
+        self.assertEqual(artifact_stem("2026.11.20", 49, revision), base)
+        self.assertEqual(artifact_stem("2026.11.20", "49", revision, "arm64"), base + "-arm64")
+        self.assertEqual(artifact_stem("2026.11.20", "49", revision, "amd64"), base + "-x86_64")
+        for short in ("02765c3", "../../config"):
+            with self.assertRaises(ValueError):
+                artifact_stem("2026.11.20", "49", short, "arm64")
+
+    def test_release_config_can_embed_frozen_source_identity(self):
+        revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
+        info = apply_versions({}, "2026.11.20", "49", revision)["macos"]["infoPlist"]
+        self.assertEqual(info["MiMacBuildCommit"], revision)
+        self.assertIs(info["MiMacBuildDirty"], False)
+
     def test_valid_date_and_rejects_malformed_or_impossible_dates(self):
         self.assertEqual(validate_date("2026.10.23"), "2026.10.23")
         for value in ("2026-10-23", "2026.1.23", "2026.02.29", "20261023", "2026.10.23\n"):
