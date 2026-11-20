@@ -3,6 +3,11 @@ name: Release preview
 on:
   workflow_dispatch:
     inputs:
+      preview_revision:
+        description: Two-digit candidate number, starting at 00 for each day
+        type: string
+        required: true
+        default: "00"
       build_only:
         description: Build and verify artifacts without creating a tag or release
         type: boolean
@@ -95,11 +100,13 @@ jobs:
         env:
           RELEASE_DATE: ${{ steps.release-date.outputs.date }}
           BUILD_NUMBER: ${{ github.run_number }}
+          PREVIEW_REVISION: ${{ inputs.preview_revision }}
         run: |
           python3 script/release_version.py \
             --date "$RELEASE_DATE" \
             --build-number "$BUILD_NUMBER" \
             --source-revision "$GITHUB_SHA" \
+            --preview-revision "$PREVIEW_REVISION" \
             --existing-releases "$RUNNER_TEMP/mimac-releases.json"
 
       - name: Build native settings libraries
@@ -122,42 +129,40 @@ jobs:
 
       - name: Plan artifact names
         id: names
-        env:
-          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
         run: |
           set -euo pipefail
-          base="$(python3 script/release_naming.py "$BUILD_NUMBER" "$GITHUB_SHA")"
-          arm64="$(python3 script/release_naming.py "$BUILD_NUMBER" "$GITHUB_SHA" --arch arm64)"
-          amd64="$(python3 script/release_naming.py "$BUILD_NUMBER" "$GITHUB_SHA" --arch amd64)"
-          printf 'base=%s\narm64=%s\namd64=%s\n' "$base" "$arm64" "$amd64" >> "$GITHUB_OUTPUT"
+          arm64="$(python3 script/release_naming.py stem arm64)"
+          amd64="$(python3 script/release_naming.py stem amd64)"
+          printf 'arm64=%s\namd64=%s\n' "$arm64" "$amd64" >> "$GITHUB_OUTPUT"
 
       - name: Verify release identities and native bundle contents
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          RELEASE_IDENTITY: ${{ steps.version.outputs.release_identity }}
           ARM64_STEM: ${{ steps.names.outputs.arm64 }}
           AMD64_STEM: ${{ steps.names.outputs.amd64 }}
         run: |
           set -euo pipefail
-          release_dir="$RUNNER_TEMP/mimac-release"
+          release_dir="$RUNNER_TEMP/mimac-release/$RELEASE_IDENTITY"
           mkdir -p "$release_dir"
           for arch in arm64 amd64; do
             stem="$ARM64_STEM"
             if [[ "$arch" == amd64 ]]; then stem="$AMD64_STEM"; fi
             python3 script/verify_release.py "dist/darwin-$arch/MiMac.app" \
               --arch "$arch" --revision "$GITHUB_SHA" \
-              --version "$RELEASE_VERSION" --build-number "$BUILD_NUMBER" \
+              --version "$RELEASE_VERSION" --build-number "$BUILD_NUMBER" --release-identity "$RELEASE_IDENTITY" \
               --component-profile core-only --output "$release_dir/$stem.json"
           done
 
       - name: Package apps, DMGs and checksums
         env:
-          ARTIFACT_BASE: ${{ steps.names.outputs.base }}
+          RELEASE_IDENTITY: ${{ steps.version.outputs.release_identity }}
           ARM64_STEM: ${{ steps.names.outputs.arm64 }}
           AMD64_STEM: ${{ steps.names.outputs.amd64 }}
         run: |
           set -euo pipefail
-          release_dir="$RUNNER_TEMP/mimac-release"
+          release_dir="$RUNNER_TEMP/mimac-release/$RELEASE_IDENTITY"
           for arch in arm64 amd64; do
             stem="$ARM64_STEM"
             if [[ "$arch" == amd64 ]]; then stem="$AMD64_STEM"; fi
@@ -167,13 +172,15 @@ jobs:
             hdiutil verify "$release_dir/$stem.dmg"
           done
           cd "$release_dir"
+          shasum -a 256 "$ARM64_STEM.dmg" > "$ARM64_STEM.dmg.sha256"
+          shasum -a 256 "$AMD64_STEM.dmg" > "$AMD64_STEM.dmg.sha256"
           shasum -a 256 "$ARM64_STEM.zip" "$ARM64_STEM.dmg" "$ARM64_STEM.json" \
-            "$AMD64_STEM.zip" "$AMD64_STEM.dmg" "$AMD64_STEM.json" > "$ARTIFACT_BASE.sha256"
+            "$AMD64_STEM.zip" "$AMD64_STEM.dmg" "$AMD64_STEM.json" > "MiMacPreview.sha256"
 
       - name: Upload verified build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ steps.names.outputs.base }}
+          name: ${{ steps.version.outputs.release_identity }}
           path: ${{ runner.temp }}/mimac-release/
           if-no-files-found: error
           retention-days: 7
@@ -183,10 +190,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          ARTIFACT_BASE: ${{ steps.names.outputs.base }}
+          RELEASE_IDENTITY: ${{ steps.version.outputs.release_identity }}
         run: |
           set -euo pipefail
-          release_dir="$RUNNER_TEMP/mimac-release"
+          release_dir="$RUNNER_TEMP/mimac-release/$RELEASE_IDENTITY"
           cat > "$release_dir/RELEASE-NOTES.txt" <<'EOF'
           Preview build: ad hoc signed and not notarized; this is not a Developer ID distribution.
 
@@ -194,7 +201,7 @@ jobs:
           This preview uses the core-only profile. A separate Siri glass profile requires the recorded private ABI host gate; its inclusion does not establish runtime compatibility on every Mac.
           EOF
           gh release create "$RELEASE_TAG" \
-            --title "$ARTIFACT_BASE" \
+            --title "$RELEASE_IDENTITY" \
             --notes-file "$release_dir/RELEASE-NOTES.txt" \
             --draft \
             --prerelease \
@@ -202,4 +209,4 @@ jobs:
             "$release_dir"/*.zip \
             "$release_dir"/*.dmg \
             "$release_dir"/*.json \
-            "$release_dir/$ARTIFACT_BASE.sha256"
+            "$release_dir"/*.sha256

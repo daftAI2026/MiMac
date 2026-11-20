@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/egoist/mygo"
+	"howett.net/plist"
 	"mimac.local/mimac/internal/platform/runningapp"
 )
 
@@ -17,10 +18,26 @@ var errDevelopmentInputDisabled = errors.New("开发版未接管设备，请在�
 
 // MyGo supplies the packaged name, including its separate development identity.
 // Unpackaged command-line execution retains the established production path.
-func initializeHostIdentity() {
+func initializeHostIdentity() string {
 	if !mygo.App.IsPackaged() {
 		mygo.App.SetName("MiMac")
+		return ""
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(executable), "..", "Info.plist"))
+	if err != nil {
+		return ""
+	}
+	var metadata struct {
+		ReleaseVersion string `plist:"MiMacReleaseVersion"`
+	}
+	if _, err := plist.Unmarshal(data, &metadata); err != nil {
+		return ""
+	}
+	return metadata.ReleaseVersion
 }
 
 func hostDataPath(filename string) (string, error) {

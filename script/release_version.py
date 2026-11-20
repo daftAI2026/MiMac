@@ -123,8 +123,26 @@ def release_title(release_date: str, tag: str) -> str:
     return f"MiMac {release_date} (build {suffix})"
 
 
+def preview_identity(release_date: str, revision: str = "") -> str:
+    release_date = validate_date(release_date)
+    if not revision:
+        return release_date
+    if not re.fullmatch(r"[0-9]{2}", revision):
+        raise ValueError("preview revision must be 00 through 99")
+    return f"v{release_date}.preview_{revision}"
+
+
+def validate_release_identity(release_date: str, identity: str) -> str:
+    if identity == release_date:
+        return validate_date(identity)
+    prefix = re.escape(f"v{validate_date(release_date)}.preview_")
+    if not isinstance(identity, str) or not re.fullmatch(prefix + r"[0-9]{2}", identity):
+        raise ValueError("release identity does not match the planned date and preview revision")
+    return identity
+
+
 def apply_versions(config: dict[str, Any], release_date: str, build_number: str | int,
-                   source_revision: str | None = None) -> dict[str, Any]:
+                   source_revision: str | None = None, release_identity: str | None = None) -> dict[str, Any]:
     """Write the planned versions and, when provided, embedded source identity."""
     release_date = validate_date(release_date)
     build_number = validate_build_number(build_number)
@@ -145,6 +163,8 @@ def apply_versions(config: dict[str, Any], release_date: str, build_number: str 
             raise ValueError("expected a full Git source revision")
         info_plist["MiMacBuildCommit"] = source_revision
         info_plist["MiMacBuildDirty"] = False
+    if release_identity is not None:
+        info_plist["MiMacReleaseVersion"] = validate_release_identity(release_date, release_identity)
     return config
 
 
@@ -179,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="frozen Asia/Shanghai date in YYYY.MM.DD form")
     parser.add_argument("--build-number", required=True, help="GitHub Actions run number, 1 through 9999")
+    parser.add_argument("--preview-revision", help="00–99 for a deliverable preview, empty for a local date-only package")
     parser.add_argument("--source-revision", help="full Git commit for the embedded release identity")
     parser.add_argument("--config", type=Path, default=Path("mygo.json"))
     parser.add_argument("--output", type=Path, default=os.environ.get("GITHUB_OUTPUT"))
@@ -205,8 +226,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.existing_releases is not None:
             pages = json.loads(args.existing_releases.read_text(encoding="utf-8"))
             tags.extend(release_tags_from_pages(pages))
-        tag = next_release_tag(release_date, tags)
-        title = release_title(release_date, tag)
+        identity = None if args.preview_revision is None else preview_identity(release_date, args.preview_revision)
+        if args.preview_revision:
+            tag = identity
+            if tag in tags:
+                raise ValueError(f"preview already exists: {tag}")
+            title = tag
+        else:
+            tag = next_release_tag(release_date, tags)
+            title = release_title(release_date, tag)
         asset_stem = tag.removeprefix("v")
 
         config = json.loads(args.config.read_text(encoding="utf-8"))
@@ -214,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
             if head != args.source_revision:
                 raise ValueError("checkout HEAD does not match the planned source revision")
-        config = apply_versions(config, release_date, build_number, args.source_revision)
+        config = apply_versions(config, release_date, build_number, args.source_revision, identity)
         write_config(args.config, config)
 
         append_outputs(
@@ -226,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
                 "tag": tag,
                 "release_title": title,
                 "asset_stem": asset_stem,
+                **({"release_identity": identity} if identity is not None else {}),
             },
         )
     except (OSError, json.JSONDecodeError, subprocess.CalledProcessError, ValueError) as exc:

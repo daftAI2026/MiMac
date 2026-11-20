@@ -9,11 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from release_naming import artifact_stem, source_product_version
+from release_naming import preview_stem
 from release_version import (
     apply_versions,
     main,
     next_release_tag,
+    preview_identity,
     release_tags_from_pages,
     validate_build_number,
     validate_date,
@@ -21,27 +22,26 @@ from release_version import (
 
 
 class ReleaseVersionTests(unittest.TestCase):
-    def test_release_artifact_names_match_across_channels_and_architectures(self):
-        revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
-        base = "MiMac-0.1.0-build49-02765c3"
-        self.assertEqual(artifact_stem("0.1.0", 49, revision), base)
-        self.assertEqual(artifact_stem("0.1.0", "49", revision, "arm64"), base + "-arm64")
-        self.assertEqual(artifact_stem("0.1.0", "49", revision, "amd64"), base + "-x86_64")
-        for short in ("02765c3", "../../config"):
+    def test_preview_archive_and_files_use_distinct_identity_fields(self):
+        self.assertEqual(preview_identity("2026.11.20", "00"), "v2026.11.20.preview_00")
+        self.assertEqual(preview_identity("2026.11.20", "01"), "v2026.11.20.preview_01")
+        self.assertEqual(preview_identity("2026.11.21"), "2026.11.21")
+        self.assertEqual(preview_stem("arm64"), "MiMacPreview-arm64")
+        self.assertEqual(preview_stem("amd64"), "MiMacPreview-x86_64")
+        for value in ("0", "100", "../keep-out", "AB"):
             with self.assertRaises(ValueError):
-                artifact_stem("0.1.0", "49", short, "arm64")
-
-    def test_artifact_uses_the_frozen_product_version(self):
-        revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
-        with patch("release_naming.subprocess.check_output", return_value='{"version": "0.1.0"}') as read:
-            self.assertEqual(source_product_version(revision), "0.1.0")
-        read.assert_called_once_with(["git", "show", f"{revision}:mygo.json"], text=True)
+                preview_identity("2026.11.20", value)
 
     def test_release_config_can_embed_frozen_source_identity(self):
         revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
-        info = apply_versions({}, "2026.11.20", "49", revision)["macos"]["infoPlist"]
+        preview = "v2026.11.20.preview_00"
+        info = apply_versions({}, "2026.11.20", "49", revision, preview)["macos"]["infoPlist"]
         self.assertEqual(info["MiMacBuildCommit"], revision)
         self.assertIs(info["MiMacBuildDirty"], False)
+        self.assertEqual(info["MiMacReleaseVersion"], preview)
+        self.assertEqual(info["CFBundleVersion"], "49")
+        with self.assertRaises(ValueError):
+            apply_versions({}, "2026.11.20", "49", revision, "v2026.11.21.preview_00")
 
     def test_valid_date_and_rejects_malformed_or_impossible_dates(self):
         self.assertEqual(validate_date("2026.10.23"), "2026.10.23")

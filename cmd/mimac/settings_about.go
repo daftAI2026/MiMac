@@ -19,6 +19,10 @@ var aboutLinks = []struct{ name, icon, url string }{
 }
 
 func (s *shell) aboutSettings(c *ui.Context, a appearance) {
+	version := s.releaseVersion
+	if version == "" {
+		version = mygo.App.Version()
+	}
 	if s.appIcon == nil {
 		if img, err := png.Decode(bytes.NewReader(brand.AboutIconPNG)); err == nil {
 			s.appIcon = ui.NewBitmap(img)
@@ -37,7 +41,7 @@ func (s *shell) aboutSettings(c *ui.Context, a appearance) {
 				}
 				ui.Column(c).Gap(spaceXS).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, mygo.App.Name()).FontSize(a.fonts.title).FontWeight(600)
-					ui.Text(c, "版本 "+mygo.App.Version()).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
+					ui.Text(c, "版本 "+version).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
 				})
 			})
 			ui.Column(c).FillWidth().Gap(spaceSM).Children(func() {

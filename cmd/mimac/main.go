@@ -56,6 +56,7 @@ type hostReport struct {
 }
 
 type shell struct {
+	releaseVersion      string
 	isolatedDevelopment bool
 	development         bool
 
@@ -238,7 +239,7 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 }
 
 func main() {
-	initializeHostIdentity()
+	releaseVersion := initializeHostIdentity()
 	deviceAccess := flag.Bool("device-access", false, "development only: explicit serial device testing; quit daily MiMac first")
 	show := flag.Bool("show-settings", false, "open the settings window on launch")
 	showSettingsSpecified := false
@@ -315,7 +316,7 @@ func main() {
 	backend := startup.Backend
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &shell{cancel: cancel, liveAudio: liveAudioState{backend: backend, selectInstalledBackend: !development && mygo.App.IsPackaged() && !startup.Explicit}}
+	s := &shell{releaseVersion: releaseVersion, cancel: cancel, liveAudio: liveAudioState{backend: backend, selectInstalledBackend: !development && mygo.App.IsPackaged() && !startup.Explicit}}
 	s.onboarding.showOnboardingOnLaunch = *showOnboarding
 	sourceCheckLibrary := ""
 	if *sourceCheckPath != "" {

@@ -52,7 +52,8 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
     if not isinstance(info, dict):
         raise ValueError("prepared mygo.json must contain macOS bundle metadata")
     embeds_source = any(key in info for key in ("MiMacBuildCommit", "MiMacBuildDirty"))
-    expected = apply_versions(baseline, version, build_number, revision if embeds_source else None)
+    release_identity = info.get("MiMacReleaseVersion")
+    expected = apply_versions(baseline, version, build_number, revision if embeds_source else None, release_identity)
     # Compare JSON types as well as values (Python otherwise treats True == 1).
     if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
         raise ValueError("prepared mygo.json differs from the planned version-only update")
@@ -62,6 +63,7 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
         "allowed_modified_paths": sorted(changed),
         "embedded_source": embeds_source,
         "product_version": product_version,
+        "release_identity": release_identity,
     }
 
 
@@ -163,6 +165,7 @@ def verify_release(
     version: str,
     build_number: str,
     component_profile: str,
+    expected_release_identity: str | None = None,
 ) -> dict:
     source = verify_source(repo, revision, version, build_number)
     require_siri, component_contract = verify_component_profile(component_profile, arch)
@@ -170,6 +173,9 @@ def verify_release(
     with (contents / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     verify_versions(info, version, build_number)
+    release_identity = source.get("release_identity")
+    if (expected_release_identity is not None and release_identity != expected_release_identity) or info.get("MiMacReleaseVersion") != release_identity:
+        raise ValueError("bundle release identity does not match the release plan")
     if source["embedded_source"] and (info.get("MiMacBuildCommit") != revision or info.get("MiMacBuildDirty") is not False):
         raise ValueError("bundle embedded identity does not match the clean release source")
     executable_name = info.get("CFBundleExecutable")
@@ -256,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revision", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-number", required=True)
+    parser.add_argument("--release-identity")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--component-profile", choices=COMPONENT_PROFILES, required=True)
     parser.add_argument("--previous-signed-bundle", type=Path, help="verify mutually compatible Developer ID requirements with this prior release")
@@ -269,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             args.version,
             args.build_number,
             args.component_profile,
+            args.release_identity,
         )
         if args.previous_signed_bundle is not None:
             manifest["upgrade_identity"] = verify_upgrade_identity(args.previous_signed_bundle, args.bundle)

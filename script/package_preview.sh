@@ -21,8 +21,11 @@ esac
 cd "$root"
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit the source changes before packaging" >&2; exit 2; }
 revision="$(git rev-parse HEAD)"
-version="$(TZ=Asia/Shanghai date +%Y.%m.%d)"
-stem="$(python3 script/release_naming.py "$build_number" "$revision" --arch "$arch")"
+version="${MIMAC_VERSION_DATE:-$(TZ=Asia/Shanghai date +%Y.%m.%d)}"
+preview_revision="${MIMAC_PREVIEW_REVISION-}"
+release_identity="$(python3 script/release_naming.py identity "$version" "$preview_revision")"
+stem="$(python3 script/release_naming.py stem "$arch")"
+output_dir="$output_dir/$release_identity"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 for suffix in dmg json dmg.sha256; do
@@ -63,7 +66,7 @@ PYWORK
 fi
 export CGO_ENABLED=0
 
-python3 script/release_version.py --date "$version" --build-number "$build_number" --source-revision "$revision" --output "$stage/version.txt"
+python3 script/release_version.py --date "$version" --build-number "$build_number" --source-revision "$revision" --preview-revision "$preview_revision" --output "$stage/version.txt"
 script/build_native_settings.sh
 if [[ "$profile" == siri-glass ]]; then
   script/build_voice_overlay.sh siri-required
@@ -75,7 +78,7 @@ go tool mygo build -platform "darwin/$arch" -skip-dmg -skip-notarize
 [[ -z "$mygo_revision" || ( "$(git -C "$dependency" rev-parse HEAD)" == "$mygo_revision" && -z "$(git -C "$dependency" status --porcelain)" ) ]]
 bundle="$stage/source/dist/darwin-$arch/MiMac.app"
 python3 script/verify_release.py "$bundle" --arch "$arch" --revision "$revision" \
-  --version "$version" --build-number "$build_number" --component-profile "$profile" --output "$stage/$stem.json"
+  --version "$version" --build-number "$build_number" --release-identity "$release_identity" --component-profile "$profile" --output "$stage/$stem.json"
 if [[ -n "$mygo_revision" ]]; then
   python3 - "$stage/$stem.json" "$mygo_revision" <<'PY'
 import json, sys
@@ -97,4 +100,4 @@ for suffix in json dmg.sha256 dmg; do
   # Hard-link publication keeps the final move atomic and refuses an existing file.
   ln "$stage/$stem.$suffix" "$output_dir/$stem.$suffix"
 done
-printf 'Local preview: %s\nSource: %s\n' "$output_dir/$stem.dmg" "$revision"
+printf 'Local preview: %s\nRelease: %s (build %s)\nSource: %s\n' "$output_dir/$stem.dmg" "$release_identity" "$build_number" "$revision"
