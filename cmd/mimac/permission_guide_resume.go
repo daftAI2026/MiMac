@@ -79,7 +79,7 @@ func (s *shell) savePendingPermissionGuide() {
 			onboarding:  s.onboarding.permissionGuideOpened,
 			finishVisit: s.onboarding.permissionGuideOpened && s.onboarding.permissionActionTaken,
 		}
-		if attempt := s.repairAttempt; attempt != nil && attempt.id == s.resumeID {
+		if attempt := s.repairAttempt; attempt != nil && attempt.id == s.resumeID && !attempt.resetAttempted {
 			continuation.droppedAt = attempt.started.Unix()
 		}
 		err = savePermissionGuideResume(path, continuation)

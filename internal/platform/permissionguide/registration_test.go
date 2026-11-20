@@ -27,9 +27,15 @@ func TestStaleRegistrationRequiresCurrentCodeAndLatestEvidence(t *testing.T) {
 		{"generic denial", header + "denied", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := staleRegistration(test.log, bundle, ListenRegistration, current); got != test.want {
+			if got := registrationEvidence(test.log, bundle, ListenRegistration, current).Stale; got != test.want {
 				t.Fatalf("stale registration = %t, want %t", got, test.want)
 			}
 		})
+	}
+	sameService := registrationEvidence(change+observation, bundle, ListenRegistration, current)
+	wrongService := registrationEvidence(strings.ReplaceAll(change, "ListenEvent", "Accessibility")+observation, bundle, ListenRegistration, current)
+	deleted := registrationEvidence(change+strings.ReplaceAll(change, "Modify", "Delete")+observation, bundle, ListenRegistration, current)
+	if !sameService.Changed || wrongService.Changed || deleted.Changed {
+		t.Fatalf("matching drop mutation not distinguished: %+v / %+v / %+v", sameService, wrongService, deleted)
 	}
 }

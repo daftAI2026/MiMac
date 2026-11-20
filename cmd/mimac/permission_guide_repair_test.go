@@ -54,3 +54,27 @@ func TestPermissionGuideRepairSurvivesAnUnresolvedRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestPermissionGuideResetRequiresOneProvenDropForTheStillMissingService(t *testing.T) {
+	snapshot := permissionGuideSnapshot{actionsEnabled: true, rows: []permissionGuideRow{
+		{id: permissionGuideInput, access: permissionGuideGranted},
+		{id: permissionGuidePostEvent, access: permissionGuideNotGranted},
+		{id: permissionGuideBluetooth, access: permissionGuideDenied},
+	}}
+	for _, test := range []struct {
+		attempt permissionGuideRepairAttempt
+		want    bool
+	}{
+		{permissionGuideRepairAttempt{id: permissionGuidePostEvent}, false},
+		{permissionGuideRepairAttempt{id: permissionGuideInput, stale: true}, false},
+		{permissionGuideRepairAttempt{id: permissionGuideBluetooth, stale: true}, false},
+		{permissionGuideRepairAttempt{id: permissionGuidePostEvent, stale: true}, true},
+	} {
+		if got := test.attempt.takeReset(snapshot); got != test.want {
+			t.Errorf("reset for %v with evidence=%t: got %t", test.attempt.id, test.attempt.stale, got)
+		}
+		if test.attempt.takeReset(snapshot) {
+			t.Errorf("second reset for %v", test.attempt.id)
+		}
+	}
+}

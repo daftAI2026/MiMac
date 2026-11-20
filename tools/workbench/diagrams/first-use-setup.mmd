@@ -57,7 +57,8 @@ flowchart TD
     directPlacement -->|无：独立小卡靠右| permissionGuide
     permissionGuide -.-> nativeWindow["MyGo 创建可点击和拖动的小卡，小卡不取得键盘"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
-    existingSettings -->|是且有缺失列表权限：切到对应页| settings
+    existingSettings -->|首启首次打开且右侧可容纳| nativeSidecar["贴到设置右侧，同顶，间距16pt；沿用当前页面"]
+    existingSettings -->|显式权限入口或续接，且有缺失列表权限| settings
     existingSettings -->|否：独立小卡靠右，等待用户打开设置| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
@@ -76,8 +77,10 @@ flowchart TD
     drag -.-> nativeRebind["原生文件 URL 交给系统列表；授权状态以系统复查为准"]
     nativeRebind --> guideRefresh
     nativeRebind --> staleProof["确认落在系统列表后，针对同一应用、权限和代码签名读取旧授权失配证据"]
-    staleProof -->|明确失配且仍未获准| recoverEntry["提示在系统设置移除该项旧记录并重新拖入"]
-    recoverEntry --> nativeRebind
+    staleProof -->|系统更新对应项、明确失配且仍未获准| recoverEntry["原生拖放触发一次定向重置，只处理自己的对应权限"]
+    recoverEntry -->|成功| repairRequest["从原生API请求该项权限，保留系统确认及实际查询"]
+    repairRequest --> guideRefresh
+    recoverEntry -->|系统拒绝重置| repairHelp["提示用户在设置中恢复这一项"]
     grantAction --> nativeGrant{"首次蓝牙授权？"}
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
     nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]

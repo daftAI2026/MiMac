@@ -130,6 +130,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.snapshot = s.readPermissionGuideSnapshot()
 			s.currentID = preferred
 			s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(s.snapshot))
+			s.positionPermissionGuideForPresentation(s.guideWindow, preferred)
 			s.showPermissionGuideWindow(s.guideWindow, s.generation)
 		} else {
 			s.guideWindow.ShowInactive()
@@ -211,15 +212,16 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 // guide before showing it so it never covers that Settings window initially.
 func (s *shell) positionPermissionGuideForPresentation(window *mygo.Window, preferred permissionGuideID) {
 	settings, found := permissionguide.SystemSettingsWindowSnapshot()
-	if found && permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened) {
+	onboarding := s.onboarding.permissionGuideOpened && preferred == 0
+	if found && (onboarding || permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened)) {
 		display := permissionGuideSettingsDisplay(settings.Frame)
-		if target, ok := permissionGuideCompanionBounds(settings.Frame, display.WorkArea, window.Bounds()); ok {
+		if target, ok := permissionGuideSidecarBounds(settings.Frame, display.WorkArea, window.Bounds(), onboarding); ok {
 			window.SetPosition(target.X, target.Y)
 			return
 		}
 	}
 	window.Center()
-	if !found {
+	if onboarding || !found {
 		bounds := window.Bounds()
 		area := mygo.Screen.DisplayMatching(bounds).WorkArea
 		window.SetPosition(permissionGuideStandaloneX(area, bounds), bounds.Y)
@@ -257,10 +259,17 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 	if !window.IsVisible() {
 		return
 	}
+	freshOnboarding := s.onboarding.permissionGuideOpened && s.currentID == 0
 	s.advancePermissionGuide()
 	// An existing Settings session is routed to the missing list before joining.
 	// A closed Settings app remains closed until an explicit row action.
 	if len(s.snapshot.rows) > 0 && s.phase == permissionGuideWaiting && !s.followManual {
+		if freshOnboarding {
+			if permissionguide.SystemSettingsRunning() {
+				s.schedulePermissionGuideFollowing(window, generation)
+			}
+			return
+		}
 		runPermissionGuidePresentation(s.snapshot, s.currentID, permissionguide.SystemSettingsRunning(),
 			func(id permissionGuideID) { s.openPermissionGuideSettings(id, true) },
 			func() { s.schedulePermissionGuideFollowing(window, generation) })
@@ -361,7 +370,8 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	initial := !s.followActive
 	settingsBounds := settings.Frame
 	display := permissionGuideSettingsDisplay(settingsBounds)
-	target, ok := permissionGuideCompanionBounds(settingsBounds, display.WorkArea, window.Bounds())
+	rightOnly := s.onboarding.permissionGuideOpened && s.settingsOpenedFor == 0
+	target, ok := permissionGuideSidecarBounds(settingsBounds, display.WorkArea, window.Bounds(), rightOnly)
 	if !ok {
 		s.followActive = false
 		s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
@@ -441,6 +451,14 @@ func permissionGuideCompanionBounds(settings permissionguide.Rect, workArea, cur
 		y = workBottom - current.Height
 	}
 	return mygo.Rectangle{X: x, Y: y, Width: current.Width, Height: current.Height}, true
+}
+
+func permissionGuideSidecarBounds(settings permissionguide.Rect, workArea, current mygo.Rectangle, rightOnly bool) (mygo.Rectangle, bool) {
+	target, ok := permissionGuideCompanionBounds(settings, workArea, current)
+	if rightOnly && target.X < int(math.Ceil(settings.X+settings.Width))+permissionGuideWindowGap {
+		return mygo.Rectangle{}, false
+	}
+	return target, ok
 }
 
 func (s *shell) stopPermissionGuidePolling() {

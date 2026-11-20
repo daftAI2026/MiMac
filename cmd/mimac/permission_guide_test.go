@@ -370,3 +370,19 @@ func TestPermissionGuideStandaloneStartsOnTheRightAndFits(t *testing.T) {
 		}
 	}
 }
+
+func TestPermissionGuideOnboardingSidecarStartsOnTheRight(t *testing.T) {
+	area := mygo.Rectangle{Width: 1920, Height: 1050}
+	panel := mygo.Rectangle{Width: 500, Height: 537}
+	settings := permissionguide.Rect{X: 203, Y: 140, Width: 740, Height: 625}
+	if got, ok := permissionGuideSidecarBounds(settings, area, panel, true); !ok || got.X != 959 || got.Y != 140 {
+		t.Fatalf("onboarding sidecar = %v, %t", got, ok)
+	}
+	settings.X = 900
+	if got, ok := permissionGuideSidecarBounds(settings, area, panel, true); ok {
+		t.Fatalf("onboarding sidecar attached on the wrong side: %v", got)
+	}
+	if got, ok := permissionGuideSidecarBounds(settings, area, panel, false); !ok || got.X != 384 {
+		t.Fatalf("explicit row action lost existing narrow-side fallback: %v, %t", got, ok)
+	}
+}
