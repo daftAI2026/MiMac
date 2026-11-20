@@ -125,12 +125,37 @@ The test selects the mounted App in Finder. Double-click that App. Use `--finder
 
 ## Dev, Preview and Stable packaging
 
-- Dev builds the local App bundle. Package and release steps are separate.
-- Preview packages a verified App into a version directory such as `v2026.11.20.preview_00/`. The DMGs use the short names `MiMacPreview-arm64.dmg` and `MiMacPreview-x86_64.dmg`. Build number and commit are verified in the bundle and JSON receipt. About displays the same release identifier as the directory. Local and CI previews use ad-hoc signing.
-- A future Stable release uses `vYYYY.MM.DD.stable_00/` and the names `MiMac-arm64.dmg` and `MiMac-x86_64.dmg`. Stable packaging requires Developer ID signing, notarization and upgrade verification. The preview workflow cannot produce a Stable release.
+| Channel | Entry | Version and output |
+| --- | --- | --- |
+| Dev | `script/build_and_run.sh --dev --build-only` | Shanghai date and build number 1 in the local `MiMac Dev.app` |
+| Preview | `script/package_preview.sh` or the manually dispatched Preview workflow | `vYYYY.MM.DD.preview_00/MiMacPreview-arm64.dmg` or `MiMacPreview-x86_64.dmg` |
+| Stable | Read-only release planning | Reserved `vYYYY.MM.DD.stable_00/MiMac-arm64.dmg` or `MiMac-x86_64.dmg` |
 
-Run `MIMAC_PREVIEW_REVISION=00 script/package_preview.sh BUILD_NUMBER [OUTPUT_DIRECTORY]` from a clean source checkout. Use the next two-digit revision for another preview on the same date. Omitting the revision produces a date-only local check. The default destination is Downloads. Existing packages are refused. Keep the JSON receipt and SHA-256 with the image.
+All channels use the Shanghai date in `CFBundleShortVersionString` and a separate numeric `CFBundleVersion`. About reads the channel identity from the bundle. Use `MIMAC_VERSION_DATE=YYYY.MM.DD` to reproduce the date. Each new distribution uses a higher numeric build number. Keep the original number and source for a rerun. Dev produces a local app only.
+
+### Preview
+
+1. Freeze a clean, verified commit and dependency selection.
+2. Run `MIMAC_PREVIEW_REVISION=00 script/package_preview.sh BUILD_NUMBER [OUTPUT_DIRECTORY]`. Start at `00` per date and channel and use the next two-digit revision for a new candidate. Omitting the revision produces a date-only local check without a release tag. The default destination is Downloads. Existing packages are refused.
+3. Verify the version, numeric build number, full commit, architecture, bundle contents and image. Keep the JSON receipt and SHA-256 alongside the image.
 
 The script freezes the source in a temporary checkout, uses the standard native and app build steps, and verifies bundle identity and the image before moving it into the version directory. Use `MIMAC_PACKAGING_PYTHON` for the locked packaging dependencies. `MIMAC_PREVIEW_PROFILE=siri-glass` includes the optional arm64 display component. A clean MyGo override can be selected with `MIMAC_PREVIEW_MYGO_SOURCE`; its revision is recorded in the receipt.
 
-GitHub Actions takes the same explicit candidate revision, rejects a used preview tag, and uses the same architecture-specific stems for its DMGs, ZIPs, SHA files and JSON receipts. The upload and optional draft release use the preview identifier. The date and numeric build number remain the system fields for upgrade ordering.
+Local and CI previews are ad-hoc signed. Both package the daily `MiMac.app` identity. GitHub Actions requires an explicit candidate revision, checks existing tags and drafts, and uses the same stems for DMGs, ZIPs, checksums and receipts. Build-only is the default. The optional release is a draft prerelease.
+
+### Stable
+
+Plan from a clean checkout of the Dev-verified commit. Refresh the remote tags and list all releases with a token that can read drafts. Use a new output file outside the checkout.
+
+```sh
+git fetch origin --tags
+gh api --paginate --slurp 'repos/{owner}/{repo}/releases?per_page=100' > "$release_history"
+python3 script/release_version.py \
+  --stable-revision "$candidate" --build-number "$build_number" \
+  --source-revision "$(git rev-parse HEAD)" --existing-releases "$release_history" \
+  --previous-build-number "$highest_build_number" --output "$stable_plan"
+```
+
+Set `highest_build_number` to the verified maximum across previous distributions and reserved candidates, including local Previews. Use `0` only when there are none. The planner checks the frozen source, candidate tags including drafts, date ordering and numeric build ordering. It writes the plan without changing app metadata or creating artifacts, tags or releases.
+
+Stable distribution is pending. The release task will build directly from the planned source, sign the app and bundled installer for distribution, notarize and verify the image, then verify the actual installation and upgrade. Use the short Stable filenames and match the draft tag to the embedded identity and checksums. The first Stable release uses manual updates. Only published Stable builds belong in the formal update feed.

@@ -9,15 +9,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from release_naming import preview_stem
+from release_naming import artifact_stem
 from release_version import (
     apply_versions,
+    channel_identity,
     main,
     next_release_tag,
     preview_identity,
     release_tags_from_pages,
     validate_build_number,
     validate_date,
+    validate_stable_plan,
 )
 
 
@@ -26,11 +28,70 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(preview_identity("2026.11.20", "00"), "v2026.11.20.preview_00")
         self.assertEqual(preview_identity("2026.11.20", "01"), "v2026.11.20.preview_01")
         self.assertEqual(preview_identity("2026.11.21"), "2026.11.21")
-        self.assertEqual(preview_stem("arm64"), "MiMacPreview-arm64")
-        self.assertEqual(preview_stem("amd64"), "MiMacPreview-x86_64")
+        self.assertEqual(artifact_stem("preview", "arm64"), "MiMacPreview-arm64")
+        self.assertEqual(artifact_stem("preview", "amd64"), "MiMacPreview-x86_64")
         for value in ("0", "100", "../keep-out", "AB"):
             with self.assertRaises(ValueError):
                 preview_identity("2026.11.20", value)
+
+    def test_dev_and_stable_have_distinct_distribution_contracts(self):
+        date = "2026.11.20"
+        self.assertEqual(channel_identity(date, "dev"), date)
+        self.assertEqual(channel_identity(date, "stable", "00"), "v2026.11.20.stable_00")
+        self.assertEqual(artifact_stem("stable", "arm64"), "MiMac-arm64")
+        self.assertEqual(artifact_stem("stable", "amd64"), "MiMac-x86_64")
+        with self.assertRaises(ValueError):
+            artifact_stem("dev", "arm64")
+        with self.assertRaises(ValueError):
+            channel_identity(date, "dev", "00")
+        with self.assertRaises(ValueError):
+            channel_identity(date, "stable")
+
+    def test_stable_plan_accepts_new_sequence_and_rejects_duplicates_and_rollback(self):
+        identity = "v2026.11.20.stable_01"
+        validate_stable_plan(identity, 53, "52", ["v2026.11.20.stable_00", "v2026.11.21.preview_01"])
+        validate_stable_plan("v2026.11.21.stable_00", 54, "53", [identity])
+        for tag in (identity, "v2026.11.20.stable_02", "v2026.11.21.stable_00"):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                validate_stable_plan(identity, 53, "52", [tag])
+        for number in (51, 52):
+            with self.subTest(number=number), self.assertRaises(ValueError):
+                validate_stable_plan(identity, number, "52", [])
+
+    def test_stable_plan_is_read_only_and_checks_draft_reservations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "releases.json"
+            history.write_text(json.dumps([[{"tag_name": "v2026.11.20.stable_00", "draft": True}]]))
+            output = root / "stable-plan.txt"
+            missing_config = root / "mygo.json"
+            sha = "0" * 40
+            args = ["--date", "2026.11.20", "--build-number", "53", "--source-revision", sha,
+                    "--previous-build-number", "52", "--existing-releases", str(history),
+                    "--config", str(missing_config), "--output", str(output)]
+            with patch("release_version.subprocess.run", return_value=SimpleNamespace(stdout="")), \
+                 patch("release_version.subprocess.check_output", side_effect=["", "", sha, "", sha]):
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    main([*args, "--stable-revision", "00"])
+                self.assertFalse(output.exists())
+                main([*args, "--stable-revision", "01"])
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    main([*args, "--stable-revision", "01"])
+            self.assertFalse(missing_config.exists())
+            self.assertIn("mode=plan-only\n", output.read_text())
+            self.assertIn("release_identity=v2026.11.20.stable_01\n", output.read_text())
+
+    def test_date_only_preview_does_not_emit_a_release_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "mygo.json"
+            config.write_text("{}")
+            output = root / "version.txt"
+            with patch("release_version.subprocess.run", return_value=SimpleNamespace(stdout="v2026.11.20.preview_00\n")):
+                main(["--date", "2026.11.20", "--build-number", "53", "--preview-revision", "",
+                      "--config", str(config), "--output", str(output)])
+            self.assertIn("release_identity=2026.11.20\n", output.read_text())
+            self.assertNotIn("tag=", output.read_text())
 
     def test_release_config_can_embed_frozen_source_identity(self):
         revision = "02765c31b7cf90f7a5e789232fea21418dd75254"

@@ -13,12 +13,15 @@ import time
 
 from verify_app_bundle import verify
 from dev_launch_registration import ensure_current_dev_registration
+from release_version import apply_versions, build_date, channel_identity
 
 
 def development_config(config, root):
     result = json.loads(json.dumps(config))
     if result.get('identifier') != 'dev.mimac.app' or result.get('name') != 'MiMac':
         raise ValueError('expected the MiMac production build configuration')
+    date = build_date()
+    apply_versions(result, date, 1, release_identity=channel_identity(date, 'dev'))
     result['name'] += ' Dev'
     result['identifier'] += '.dev'
     result['main'] = str(root / result['main'])
@@ -125,6 +128,10 @@ def main():
         parser.error('MiMac Dev requires macOS arm64 or amd64')
     bundle = root / '.mygo/dev' / ('darwin-' + arch) / 'MiMac Dev.app'
     executable = bundle / 'Contents/MacOS/MiMac Dev'
+    try:
+        config = development_config(json.loads((root / 'mygo.json').read_text()), root)
+    except ValueError as error:
+        parser.error(str(error))
     device_access = device_access_requested(app_args)
     if device_access:
         require_device_handoff()
@@ -132,7 +139,6 @@ def main():
     for entry in ['build_native_settings.sh', 'build_voice_overlay.sh']:
         subprocess.run([str(root / 'script' / entry)], cwd=root, env=env, check=True)
     subprocess.run([sys.executable, str(root / 'script/package_audio_component.py')], cwd=root, env=env, check=True)
-    config = development_config(json.loads((root / 'mygo.json').read_text()), root)
     (root / '.mygo').mkdir(exist_ok=True)
     # A tiny build configuration under the same module resolves Go's source
     # and VCS metadata normally. Never edit the production mygo.json or dist.

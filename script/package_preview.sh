@@ -21,7 +21,7 @@ esac
 cd "$root"
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit the source changes before packaging" >&2; exit 2; }
 revision="$(git rev-parse HEAD)"
-version="${MIMAC_VERSION_DATE:-$(TZ=Asia/Shanghai date +%Y.%m.%d)}"
+version="$(python3 script/release_naming.py date)"
 preview_revision="${MIMAC_PREVIEW_REVISION-}"
 release_identity="$(python3 script/release_naming.py identity "$version" "$preview_revision")"
 stem="$(python3 script/release_naming.py stem "$arch")"

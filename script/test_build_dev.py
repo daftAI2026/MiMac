@@ -13,14 +13,20 @@ class DevelopmentBuildIsolation(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         original = json.loads((root / "mygo.json").read_text())
         saved = copy.deepcopy(original)
-        dev = build_dev.development_config(original, root)
+        with patch.dict(build_dev.os.environ, {"MIMAC_VERSION_DATE": "2026.11.20"}):
+            dev = build_dev.development_config(original, root)
         self.assertEqual(original, saved)
         self.assertEqual(dev["identifier"], "dev.mimac.app.dev")
         self.assertEqual(dev["name"], "MiMac Dev")
         self.assertEqual(dev["out"], str(root / ".mygo/dev"))
         self.assertEqual(Path(dev["main"]).resolve(), (root / original["main"]).resolve())
         self.assertTrue(all(Path(item).is_file() for item in dev["resources"]))
-        self.assertEqual(dev["macos"]["infoPlist"], original["macos"]["infoPlist"])
+        self.assertEqual(dev["version"], "2026.11.20")
+        self.assertEqual(dev["macos"]["infoPlist"], {
+            **original["macos"]["infoPlist"],
+            "CFBundleVersion": "1",
+            "MiMacReleaseVersion": "2026.11.20",
+        })
 
     def test_daily_running_refuses_device_handoff(self):
         for count in ("1", "2"):
