@@ -50,9 +50,16 @@ if [[ -n "${MIMAC_PREVIEW_MYGO_SOURCE:-}" ]]; then
   dependency="$(cd "$MIMAC_PREVIEW_MYGO_SOURCE" && pwd -P)"
   [[ -z "$(git -C "$dependency" status --porcelain)" ]] || { echo "MyGo checkout must be clean" >&2; exit 2; }
   mygo_revision="$(git -C "$dependency" rev-parse HEAD)"
-  GOWORK=auto go work init "$stage/source" "$dependency"
-  mv go.work "$stage/local.go.work"
   export GOWORK="$stage/local.go.work"
+  python3 - "$GOWORK" "$stage/source" "$dependency" <<'PYWORK'
+import json, sys
+from pathlib import Path
+
+workspace, source, dependency = sys.argv[1:]
+version = next(line.split()[1] for line in (Path(source) / "go.mod").read_text().splitlines() if line.startswith("go "))
+paths = "\n".join("  " + json.dumps(path, ensure_ascii=False) for path in (source, dependency))
+Path(workspace).write_text(f"go {version}\n\nuse (\n{paths}\n)\n")
+PYWORK
 fi
 export CGO_ENABLED=0
 
