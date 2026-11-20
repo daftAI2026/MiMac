@@ -96,3 +96,17 @@ An existing Open panel or Go To sheet can be resumed. The helper sets and reads 
 `ui_grant_requested` means the exact selected-lane System Settings row read its matching toggle identifier as `1` (`MiMac_Toggle` for Daily/Beta or `MiMac Dev_Toggle` for Dev). Verify actual input monitoring and key output using the same fixed App binary afterward; the UI result is not an independent TCC capability check.
 
 Keep permission refresh journals tied to the same lane, canonical bundle and executable hash. Never use a broad `tccutil reset` to switch lanes. Record actual query results and any pending system authentication in the current task evidence; do not claim a grant until the fixed target binary confirms it.
+
+## Native first-use acceptance
+
+Run the first-use flow with a frozen verification bundle under `~/Library/Caches/MiMac`. Give the bundle a fresh `dev.mimac.verification.*` identity and a unique `MiMac …` display and configuration name. Use the same product source and native libraries. Only the verification identity should differ. The app must use actual system permission queries.
+
+```sh
+python3 script/permission_acceptance.py \
+  --bundle "$verification_app" --sha256 "$frozen_executable_sha" \
+  --output "$new_cache_directory" --interact
+```
+
+The runner advances setup, uses native card drags for each permission, presses the system restart button, and checks the new PID and Settings window order. It waits during macOS authentication and resumes after the system dialog completes. Enter passwords only in the macOS dialog. It then checks both grants, the original Settings process exiting, the foreground handoff and the completed first-use record. The output contains phase receipts with no password data. Run during an exclusive foreground test window.
+
+If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. This runner does not reset existing permissions or use the daily or Dev bundle.
