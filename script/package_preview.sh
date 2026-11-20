@@ -22,7 +22,7 @@ cd "$root"
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit the source changes before packaging" >&2; exit 2; }
 revision="$(git rev-parse HEAD)"
 version="$(TZ=Asia/Shanghai date +%Y.%m.%d)"
-stem="$(python3 script/release_naming.py "$version" "$build_number" "$revision" --arch "$arch")"
+stem="$(python3 script/release_naming.py "$build_number" "$revision" --arch "$arch")"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 for suffix in dmg json dmg.sha256; do

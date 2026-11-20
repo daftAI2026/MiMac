@@ -60,6 +60,7 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
         "prepared_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
         "allowed_modified_paths": sorted(changed),
         "embedded_source": embeds_source,
+        "product_version": baseline["version"],
     }
 
 

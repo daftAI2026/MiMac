@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from release_naming import artifact_stem
+from release_naming import artifact_stem, source_product_version
 from release_version import (
     apply_versions,
     main,
@@ -23,13 +23,19 @@ from release_version import (
 class ReleaseVersionTests(unittest.TestCase):
     def test_release_artifact_names_match_across_channels_and_architectures(self):
         revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
-        base = "MiMac-2026.11.20-build49-02765c3"
-        self.assertEqual(artifact_stem("2026.11.20", 49, revision), base)
-        self.assertEqual(artifact_stem("2026.11.20", "49", revision, "arm64"), base + "-arm64")
-        self.assertEqual(artifact_stem("2026.11.20", "49", revision, "amd64"), base + "-x86_64")
+        base = "MiMac-0.1.0-build49-02765c3"
+        self.assertEqual(artifact_stem("0.1.0", 49, revision), base)
+        self.assertEqual(artifact_stem("0.1.0", "49", revision, "arm64"), base + "-arm64")
+        self.assertEqual(artifact_stem("0.1.0", "49", revision, "amd64"), base + "-x86_64")
         for short in ("02765c3", "../../config"):
             with self.assertRaises(ValueError):
-                artifact_stem("2026.11.20", "49", short, "arm64")
+                artifact_stem("0.1.0", "49", short, "arm64")
+
+    def test_artifact_uses_the_frozen_product_version(self):
+        revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
+        with patch("release_naming.subprocess.check_output", return_value='{"version": "0.1.0"}') as read:
+            self.assertEqual(source_product_version(revision), "0.1.0")
+        read.assert_called_once_with(["git", "show", f"{revision}:mygo.json"], text=True)
 
     def test_release_config_can_embed_frozen_source_identity(self):
         revision = "02765c31b7cf90f7a5e789232fea21418dd75254"
