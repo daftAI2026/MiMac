@@ -76,12 +76,16 @@ class Acceptance:
             entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
             self.finish_args = finish_args(entries, identity)
             self.previous_handoff = self.confirm_past_handoff(entries[-1]["timestamp"])
+            self.compile_fixture("PermissionAcceptance.swift", self.driver)
         else:
             self.previous_handoff = False
             self.output.mkdir()
             for name, destination in (("PermissionAcceptance.swift", self.driver), ("LiveAcceptanceAX.swift", self.ax)):
-                subprocess.run(["/usr/bin/xcrun", "swiftc", HERE / "fixtures" / name, "-o", destination], check=True)
+                self.compile_fixture(name, destination)
             self.record("identity", identity)
+
+    def compile_fixture(self, name, destination):
+        subprocess.run(["/usr/bin/xcrun", "swiftc", HERE / "fixtures" / name, "-o", destination], check=True)
 
     def confirm_past_handoff(self, since):
         # A late finish can run after the user has switched apps. Preserve the
@@ -220,7 +224,17 @@ class Acceptance:
         wait_for(lambda: read_json(progress).get("completed") and
                  not any(name.endswith(" 首次设置") for name in window_names(self.view(resumed_pid))), "first-use completed")
         self.check_identity()
+        self.record("first_use_verified", {"initial_pid": pid, "resumed_pid": resumed_pid, "settings_pid": settings_pid})
+        self.close(resumed_pid)
         self.record("PASSED", {"initial_pid": pid, "resumed_pid": resumed_pid, "settings_pid": settings_pid})
+
+    def close(self, pid):
+        observed = self.probe()["app"]
+        if observed == pid:
+            self.record("quit_verification", self.probe("quit-app"))
+        elif observed:
+            raise RuntimeError("the verification process changed before cleanup")
+        wait_for(lambda: not pid_exists(pid), "verification process exit")
 
 
 def finish_args(entries, identity):

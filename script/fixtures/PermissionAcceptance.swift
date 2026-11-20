@@ -65,6 +65,11 @@ guard apps.count <= 1, apps.allSatisfy({ $0.bundleURL?.resolvingSymlinksInPath()
     stop("ambiguous verification process")
 }
 let appPID = apps.first?.processIdentifier ?? 0
+if operation == "quit-app" {
+    guard let app = apps.first, app.terminate() else { stop("the exact verification app did not accept quit") }
+    emit(["performed": operation, "app": appPID])
+    exit(0)
+}
 let settingsPID = NSRunningApplication.runningApplications(withBundleIdentifier: settingsID).first?.processIdentifier ?? 0
 let front = NSWorkspace.shared.frontmostApplication
 let frontPID = front?.processIdentifier ?? 0
