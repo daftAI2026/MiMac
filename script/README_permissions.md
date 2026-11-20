@@ -110,3 +110,15 @@ python3 script/permission_acceptance.py \
 The runner advances setup, uses native card drags for each permission, presses the system restart button, and checks the new PID and Settings window order. It waits during macOS authentication and resumes after the system dialog completes. Enter passwords only in the macOS dialog. It then checks both grants, the original Settings process exiting, the foreground handoff and the completed first-use record. The output contains phase receipts with no password data. After verification the runner closes only its own diagnostic process. Run during an exclusive foreground test window.
 
 If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. This runner does not reset existing permissions or use the daily or Dev bundle.
+
+## Clean Finder first install
+
+Run this gate in a clean arm64 macOS guest or on a clean test Mac with an active Finder session. Both installation paths and the test account's MiMac preferences must be absent. Use the same frozen image and executable hashes as the release receipt.
+
+```sh
+xcrun swiftc -swift-version 5 script/first_install_acceptance.swift -o first-install-acceptance
+./first-install-acceptance --check "$dmg" "$dmg_sha256" "$executable_sha256"
+./first-install-acceptance --wait-for-double-click "$dmg" "$dmg_sha256" "$executable_sha256" "$new_output_directory"
+```
+
+The test selects the mounted App in Finder. Double-click that App. Use `--finder-open` to send the corresponding Finder open event through macOS Automation when available. The receipt distinguishes the two entry modes. A pass requires the mounted installer PID, the different installed PID with a visible first-use window, matching code and executable identity, automatic detach and the native helper's first-attempt success receipt. The test closes the verified installed process after saving the outcome.
