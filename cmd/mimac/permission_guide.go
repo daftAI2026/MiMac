@@ -306,7 +306,10 @@ func (s *shell) advancePermissionGuide() bool {
 	}
 	nextID := nextPermissionGuideTarget(s.snapshot, s.settingsOpenedFor, s.currentID)
 	if nextID == 0 {
-		changed := s.phase != permissionGuideComplete || s.currentID != 0 || s.settingsOpenedFor != 0
+		if s.phase == permissionGuideComplete && s.currentID == 0 {
+			return false
+		}
+		changed := s.phase != permissionGuideComplete || s.currentID != 0
 		if !changed {
 			return false
 		}
@@ -411,6 +414,7 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	if !ready {
 		s.hidePermissionGuideIllustration()
 		if expired {
+			s.settingsExplicitJoinPending = false
 			s.stopPermissionGuideFollowing()
 			s.stopPermissionGuideReadback()
 		} else {
@@ -947,8 +951,10 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	if s.currentID != id {
 		s.cancelDragRegistrationPreparation()
 	}
-	s.currentID = id
-	s.phase = permissionGuideWaiting
+	if s.phase != permissionGuideComplete || s.currentID != 0 {
+		s.currentID = id
+		s.phase = permissionGuideWaiting
+	}
 	s.settingsOpenedFor = id
 	s.settingsExplicitJoinPending = true
 	s.followManual = false
@@ -999,8 +1005,10 @@ func runPermissionGuideGrant(id permissionGuideID, access permissionGuideAccess,
 }
 
 // The initial join uses a bounded fast search, then a slower search only for an
-// explicitly opened route. Once a late window appears, the second stability
-// observation uses the fast cadence. Ordinary following resumes after joining.
+// explicitly opened pending route. A completed guide with no pending target
+// keeps an explicit title route within the initial deadline. Once a late
+// window appears, the second stability observation uses the fast cadence.
+// Ordinary following resumes after joining.
 func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permissionguide.WindowSnapshot, found bool, now time.Time) (ready, expired bool) {
 	if s.followActive && found && settings.ID == s.followWindowID {
 		return true, false
@@ -1010,15 +1018,16 @@ func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permiss
 		s.settingsSearchUntil = now.Add(permissionGuideSettingsSearchDuration)
 		s.settingsCandidate = permissionguide.WindowSnapshot{}
 	}
+	completedWithoutTarget := s.phase == permissionGuideComplete && s.currentID == 0
 	if s.settingsSearchUntil.IsZero() {
-		if !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
+		if completedWithoutTarget || !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
 			s.settingsOpenedFor = 0
 			return false, true
 		}
 	} else if !now.Before(s.settingsSearchUntil) {
 		s.settingsSearchUntil = time.Time{}
 		s.settingsCandidate = permissionguide.WindowSnapshot{}
-		if !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
+		if completedWithoutTarget || !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
 			s.settingsOpenedFor = 0
 			return false, true
 		}

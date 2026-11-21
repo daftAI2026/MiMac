@@ -64,7 +64,8 @@ flowchart TD
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
     titleLink["用户点击权限标题链接"] --> settings["释放小卡键窗口，向运行中的系统设置交接激活，再打开对应页"]
-    settings --> stable["面板先快速查找6秒；已点授权且窗口尚未出现时改用700ms查找。发现窗口后以100ms复核同窗同frame，稳定后350ms贴靠，顶边对齐、间距16pt"]
+    settings -->|权限已全部获准且用户点了行标题| inspectGranted["只在首轮查找期内贴靠设置窗口，保留已授权状态，省略拖放动画"]
+    settings -->|仍有权限待授权| stable["面板先快速查找6秒；已点授权且窗口尚未出现时改用700ms查找。发现窗口后以100ms复核同窗同frame，稳定后350ms贴靠，顶边对齐、间距16pt"]
     stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
     follow --> illustration["位置稳定且鼠标松开后显示96pt来源图标槽中的半透明图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]

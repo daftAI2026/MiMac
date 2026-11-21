@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
@@ -299,6 +300,8 @@ func TestExplicitSettingsRouteKeepsSlowJoinAfterFastSearchDeadline(t *testing.T)
 	settings := permissionguide.WindowSnapshot{ID: 75, Frame: permissionguide.Rect{X: 80, Y: 60, Width: 640, Height: 720}}
 	deadline := now.Add(permissionGuideSettingsSearchDuration)
 	s := permissionGuideState{
+		phase:                       permissionGuideWaiting,
+		currentID:                   permissionGuideInput,
 		settingsOpenedFor:           permissionGuideInput,
 		settingsExplicitJoinPending: true,
 		settingsSearchUntil:         deadline,
@@ -327,6 +330,39 @@ func TestExplicitSettingsRouteKeepsSlowJoinAfterFastSearchDeadline(t *testing.T)
 	}
 	if ready, expired := s.permissionGuideSettingsJoinReady(settings, true, late.Add(permissionGuideSettingsLookupInterval)); !ready || expired {
 		t.Fatalf("stable late Settings window did not join: ready=%t expired=%t", ready, expired)
+	}
+}
+
+func TestExplicitAllGrantedSettingsSearchExpiresAtItsBoundedDeadline(t *testing.T) {
+	now := time.Unix(40, 0)
+	deadline := now.Add(permissionGuideSettingsSearchDuration)
+	s := permissionGuideState{
+		phase:                       permissionGuideComplete,
+		settingsOpenedFor:           permissionGuideInput,
+		settingsExplicitJoinPending: true,
+		settingsSearchUntil:         deadline,
+	}
+	if ready, expired := s.permissionGuideSettingsJoinReady(permissionguide.WindowSnapshot{}, false, deadline.Add(-time.Millisecond)); ready || expired {
+		t.Fatalf("completed explicit route ended before its deadline: ready=%t expired=%t", ready, expired)
+	}
+	if ready, expired := s.permissionGuideSettingsJoinReady(permissionguide.WindowSnapshot{}, false, deadline); ready || !expired {
+		t.Fatalf("all-granted explicit search crossed its deadline: ready=%t expired=%t", ready, expired)
+	}
+}
+
+func TestGrantedExplicitSettingsFollowDoesNotShowDragIllustration(t *testing.T) {
+	s := &shell{
+		snapshot: permissionGuideSnapshot{actionsEnabled: true, rows: []permissionGuideRow{
+			{id: permissionGuideInput, access: permissionGuideGranted},
+			{id: permissionGuidePostEvent, access: permissionGuideGranted},
+			{id: permissionGuideBluetooth, access: permissionGuideGranted},
+		}},
+		currentID:  0,
+		iconBounds: ui.Rect{X: 20, Y: 20, W: 96, H: 96},
+	}
+	s.syncPermissionGuideIllustration(permissionguide.Rect{X: 100, Y: 100, Width: 600, Height: 700}, mygo.Rectangle{Width: 1600, Height: 900})
+	if s.illustration != nil {
+		t.Fatal("already-granted permission showed the app-drag illustration")
 	}
 }
 
