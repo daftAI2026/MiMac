@@ -9,6 +9,10 @@
 
 Dev remains a local `.app` bundle so macOS can identify its permissions; it is not a distributed DMG or release artifact. Only the daily/Beta lane is packaged for users.
 
+When a checkout is under `~/Desktop`, `~/Documents`, or `~/Downloads`, Dev output is redirected to `~/Library/Caches/MiMac/dev-builds/<sha256-of-canonical-checkout-root>/.mygo/dev`. The architecture and `MiMac Dev.app` remain below that suffix. This path is stable for the same checkout; build, Launch Services registration, stale-record inspection, and fixed-Dev voice acceptance all resolve it through `script/dev_bundle_path.py`. Other checkout locations keep the local `.mygo/dev` output.
+
+To move an existing Dev bundle into that cache path, copy the bundle without changing its contents or signature, then run `script/verify_app_bundle.py` against the cache bundle and save the resulting receipt beside it. The app bytes and SHA values remain unchanged; a pre-migration receipt whose `bundle` field exactly names this checkout's former `.mygo/dev` path remains usable after its payload hashes match the cache bundle. New builds write a receipt with the cache path. Do not re-sign solely because the bundle moved.
+
 Beta uses the daily identity so its preferences and permissions carry across upgrades when macOS accepts the code identity. It is not a third testing identity. Dev launches select the fixed checkout bundle as the Launch Services default for `dev.mimac.app.dev`, so system Quit & Reopen cannot select a retired worktree copy. The builder removes only known local duplicate Dev registrations, preserves their files and the daily identity, and verifies the selected URL before launch. An out-of-scope duplicate stops with its exact path.
 
 Dev permissions do not authorize the daily app, or vice versa; an ad-hoc rebuild may require revalidation even when the Bundle ID stays the same. Never rename a Dev bundle to make it a daily package.
@@ -37,6 +41,12 @@ When moving the daily identity from an ad-hoc build to the signed lane, refresh 
 Use the isolated Dev bundle with `--show-onboarding` to reopen the welcome page followed by the three-step guide. Explicit display does not reset or create the saved first-use marker; the final action records completion. An unfinished automatic first run resumes even if tool settings were saved during the guide. Existing installations without a marker keep their normal launch behavior. `--show-settings` remains the explicit settings-only diagnostic entry.
 
 Opening or navigating the guide does not enable a remote or begin recording. Choosing a voice tool uses the existing plugin and Current selection action; downloading its model or opening its download page is explicit. UI verification can navigate pages without choosing a tool, changing system input sources, or acquiring shared hardware.
+
+## A single drag from the permission guide
+
+Opening a list permission starts a read-only signature check for this app and that permission. Input Monitoring can supply the file when its list receives the drop. Device Control may fetch the file as soon as the drag begins. For that pane the guide checks for a proven stale registration at the native drag threshold, before publishing the file URL. Only the affected app and service are eligible for reset. System Settings handles the new grant. Canceling after a stale entry was cleared leaves that permission ungranted.
+
+For an upgrade regression, start with a known legitimately granted Dev, build the candidate once and keep its signature fixed. Record the source gesture, scoped reset, system registration and actual capability from that candidate. Check a clean registration separately. The automation uses the guide's permission buttons and never pre-opens the destination pane.
 
 ## Inspect or repair a stale Dev registration
 
@@ -107,9 +117,9 @@ python3 script/permission_acceptance.py \
   --output "$new_cache_directory" --interact
 ```
 
-The runner advances setup, uses native card drags for each permission, presses the system restart button, and checks the new PID and Settings window order. It waits during macOS authentication and resumes after the system dialog completes. Enter passwords only in the macOS dialog. It then checks both grants, the original Settings process exiting, the foreground handoff and the completed first-use record. The output contains phase receipts with no password data. After verification the runner closes only its own diagnostic process. Run during an exclusive foreground test window.
+This first-use regression covers a system-requested restart after the first grant and completion in the resumed process after the second. The runner records native drops, actual PIDs and Settings window order. Enter passwords only in the macOS dialog. A separate read-only observer records when the two tested windows expose each change in their accessibility trees, including each scan's start and end time. Compare these observations with the system grant before reporting a latency. Sampling, authentication and process launch each have distinct timing. After checking the final grant, automatic foreground handoff and saved first-use progress, the runner closes its own app. Use an exclusive foreground test period.
 
-If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. This runner does not reset existing permissions or use the daily or Dev bundle.
+If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. For the canonical Dev, pass its verified bundle receipt with `--fixed-dev-receipt` and use a fresh Dev test profile. Complete this run before freezing the Dev source for a user-installed Preview. Keep Preview authorization with the user.
 
 ## Clean Finder first install
 
@@ -135,9 +145,9 @@ All channels use the Shanghai date in `CFBundleShortVersionString` and a separat
 
 ### Preview
 
-1. Freeze a clean, verified commit and dependency selection.
+1. Run permission acceptance on the fixed Dev identity, including one native drop, actual capability readback and any system-requested reopen. Freeze that verified source and dependency selection.
 2. Run `MIMAC_PREVIEW_REVISION=00 script/package_preview.sh BUILD_NUMBER [OUTPUT_DIRECTORY]`. Start at `00` per date and channel and use the next two-digit revision for a new candidate. Omitting the revision produces a date-only local check without a release tag. The default destination is Downloads. Existing packages are refused.
-3. Verify the version, numeric build number, full commit, architecture, bundle contents and image. Keep the JSON receipt and SHA-256 alongside the image.
+3. Verify the version, numeric build number, full commit, architecture, bundle contents and image. Keep the JSON receipt and SHA-256 alongside the image. Deliver the local Preview DMG to the user for installation. A packaging request leaves the installed daily app, configuration and macOS permission grants in place. Automated permission E2E uses Dev. Record any open acceptance gates in the handoff.
 
 The script freezes the source in a temporary checkout, uses the standard native and app build steps, and verifies bundle identity and the image before moving it into the version directory. Local and CI builds resolve MyGo from the checked-in `go.mod` and `go.sum`. Use `MIMAC_PACKAGING_PYTHON` for the locked packaging dependencies. `MIMAC_PREVIEW_PROFILE=siri-glass` includes the optional arm64 display component. A local MyGo checkout can be selected for development experiments with `MIMAC_PREVIEW_MYGO_SOURCE`; its revision is recorded in the receipt.
 

@@ -4,18 +4,32 @@ package permissionguide
 
 import "github.com/ebitengine/purego/objc"
 
-// YieldToSystemSettings gives the live Settings process the opportunity to
-// take activation. It neither launches Settings nor activates a modal itself.
-func YieldToSystemSettings() {
+// YieldToSystemSettings cooperates with native drag and authentication.
+func YieldToSystemSettings() { handOffToSystemSettings(false) }
+
+// RevealExistingSystemSettings raises the current page once on an explicit
+// first-use visit. It never launches Settings or selects a new page.
+func RevealExistingSystemSettings() { handOffToSystemSettings(true) }
+
+func handOffToSystemSettings(reveal bool) {
+	app := objc.Send[objc.ID](objc.ID(objc.GetClass("NSApplication")), objc.RegisterName("sharedApplication"))
+	if app == 0 || !objc.Send[bool](app, objc.RegisterName("isActive")) {
+		return
+	}
 	pid, ok := systemSettingsPID()
 	if !ok {
 		return
 	}
-	app := objc.Send[objc.ID](objc.ID(objc.GetClass("NSApplication")), objc.RegisterName("sharedApplication"))
-	running := objc.Send[objc.ID](objc.ID(objc.GetClass("NSRunningApplication")), objc.RegisterName("runningApplicationWithProcessIdentifier:"), pid)
+	target := objc.Send[objc.ID](objc.ID(objc.GetClass("NSRunningApplication")), objc.RegisterName("runningApplicationWithProcessIdentifier:"), pid)
+	if target == 0 {
+		return
+	}
 	yield := objc.RegisterName("yieldActivationToApplication:")
-	if app != 0 && running != 0 && objc.Send[bool](app, objc.RegisterName("respondsToSelector:"), yield) {
-		app.Send(yield, running)
+	if objc.Send[bool](app, objc.RegisterName("respondsToSelector:"), yield) {
+		app.Send(yield, target)
+	}
+	if reveal {
+		_ = objc.Send[bool](target, objc.RegisterName("activateWithOptions:"), uintptr(0))
 	}
 }
 

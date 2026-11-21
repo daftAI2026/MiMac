@@ -12,7 +12,7 @@ func TestOnboardingUnfinishedStepSurvivesRecordRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, exists, err := readOnboardingRecord(path)
-	if err != nil || !exists || onboardingInitialStep(record, true) != onboardingStepDevice {
+	if err != nil || !exists || onboardingInitialStep(record, true, permissionGuideContinuation{}) != onboardingStepDevice {
 		t.Fatalf("legacy first step: %+v %t %v", record, exists, err)
 	}
 	next, write := onboardingRecordForStep(record, onboardingStepPermissions, true)
@@ -23,13 +23,13 @@ func TestOnboardingUnfinishedStepSurvivesRecordRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored, _, err := readOnboardingRecord(path)
-	if err != nil || onboardingInitialStep(restored, true) != onboardingStepPermissions {
+	if err != nil || onboardingInitialStep(restored, true, permissionGuideContinuation{}) != onboardingStepPermissions {
 		t.Fatalf("restored wrong step: %+v %v", restored, err)
 	}
 	if _, write := onboardingRecordForStep(restored, onboardingStepPermissions, true); write {
 		t.Fatal("unchanged step would rewrite progress")
 	}
-	if onboardingInitialStep(restored, false) != onboardingStepWelcome {
+	if onboardingInitialStep(restored, false, permissionGuideContinuation{}) != onboardingStepWelcome {
 		t.Fatal("explicit review did not start at its first page")
 	}
 }

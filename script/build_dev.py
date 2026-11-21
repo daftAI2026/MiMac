@@ -13,6 +13,7 @@ import time
 
 from verify_app_bundle import verify
 from dev_launch_registration import ensure_current_dev_registration
+from dev_bundle_path import development_bundle_path, development_output_root
 from release_version import apply_versions, build_date, channel_identity
 
 
@@ -25,7 +26,7 @@ def development_config(config, root):
     result['name'] += ' Dev'
     result['identifier'] += '.dev'
     result['main'] = str(root / result['main'])
-    result['out'] = str(root / '.mygo/dev')
+    result['out'] = str(development_output_root(root))
     result['icon'] = str(root / result['icon'])
     if result.get('macos', {}).get('icon'):
         result['macos']['icon'] = str(root / result['macos']['icon'])
@@ -126,7 +127,8 @@ def main():
     arch = subprocess.check_output([go, 'env', 'GOARCH'], cwd=root, env=env, text=True).strip()
     if arch not in ('arm64', 'amd64') or os.uname().sysname != 'Darwin':
         parser.error('MiMac Dev requires macOS arm64 or amd64')
-    bundle = root / '.mygo/dev' / ('darwin-' + arch) / 'MiMac Dev.app'
+    output_root = development_output_root(root)
+    bundle = development_bundle_path(root, arch)
     executable = bundle / 'Contents/MacOS/MiMac Dev'
     try:
         config = development_config(json.loads((root / 'mygo.json').read_text()), root)
@@ -149,6 +151,7 @@ def main():
         command = [go, 'tool', 'mygo', 'build', '-platform', 'darwin/' + arch, '-skip-dmg', '-skip-notarize']
         if identity := os.environ.get('MIMAC_SIGN_IDENTITY'):
             command += ['-sign', identity]
+        output_root.mkdir(parents=True, exist_ok=True)
         subprocess.run(command + [str(staging)], cwd=root, env=env, check=True)
     receipt = verify(bundle, arch, development=True, require_audio_installer=True)
     (bundle.parent / 'bundle-verification.json').write_text(json.dumps(receipt, indent=2) + '\n')

@@ -22,7 +22,7 @@ func TestOnboardingCompletionResumesWithoutMarkingSetupFinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, exists, err := readOnboardingRecord(path)
-	if err != nil || !exists || onboardingInitialStep(loaded, true) != onboardingStepCompletion || !shouldPresentOnboarding(loaded, true, true, nil) {
+	if err != nil || !exists || onboardingInitialStep(loaded, true, permissionGuideContinuation{}) != onboardingStepCompletion || !shouldPresentOnboarding(loaded, true, true, nil) {
 		t.Fatalf("closing on completion lost the unfinished step: %+v %v", loaded, err)
 	}
 	if onboardingAdjacentStep(onboardingStepCompletion, -1) != onboardingStepPermissions {

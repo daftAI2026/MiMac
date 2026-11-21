@@ -18,6 +18,8 @@ import sys
 import tempfile
 import textwrap
 
+from dev_bundle_path import development_bundle_path
+
 
 BUNDLE_ID = "dev.mimac.app.dev"
 APP_NAME = "MiMac Dev"
@@ -32,13 +34,13 @@ class Refusal(ValueError):
     """The requested running app is not the exact expected development app."""
 
 
-def default_app_path() -> Path:
-    machine = platform.machine().lower()
+def default_app_path(project_root: Path | None = None, machine: str | None = None) -> Path:
+    machine = (machine or platform.machine()).lower()
     arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(machine)
     if arch is None:
         raise Refusal(f"unsupported host architecture: {machine}")
-    root = Path(__file__).resolve().parents[1]
-    return root / ".mygo" / "dev" / f"darwin-{arch}" / f"{APP_NAME}.app"
+    root = Path(__file__).resolve().parents[1] if project_root is None else Path(project_root)
+    return development_bundle_path(root, arch)
 
 
 def sha256_file(path: Path) -> str:

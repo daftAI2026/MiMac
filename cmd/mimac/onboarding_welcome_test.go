@@ -16,12 +16,12 @@ func TestOnboardingWelcomePreservesExistingProgressNumbers(t *testing.T) {
 			t.Fatalf("saved step %d changed to %d", index, step)
 		}
 		record := onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: index}
-		if onboardingInitialStep(record, true) != step {
+		if onboardingInitialStep(record, true, permissionGuideContinuation{}) != step {
 			t.Fatalf("saved step %d did not resume", index)
 		}
 	}
 	record, write := onboardingRecordForOpen(onboardingRecord{}, false, true)
-	if !write || onboardingInitialStep(record, true) != onboardingStepWelcome {
+	if !write || onboardingInitialStep(record, true, permissionGuideContinuation{}) != onboardingStepWelcome {
 		t.Fatalf("new setup skipped welcome: %+v", record)
 	}
 	path := filepath.Join(t.TempDir(), "onboarding.json")
@@ -29,10 +29,10 @@ func TestOnboardingWelcomePreservesExistingProgressNumbers(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored, exists, err := readOnboardingRecord(path)
-	if err != nil || !exists || onboardingInitialStep(restored, true) != onboardingStepWelcome {
+	if err != nil || !exists || onboardingInitialStep(restored, true, permissionGuideContinuation{}) != onboardingStepWelcome {
 		t.Fatalf("welcome record did not resume: %+v %t %v", restored, exists, err)
 	}
-	if onboardingInitialStep(record, false) != onboardingStepWelcome || onboardingAdjacentStep(onboardingStepWelcome, 1) != onboardingStepDevice || onboardingAdjacentStep(onboardingStepDevice, -1) != onboardingStepWelcome {
+	if onboardingInitialStep(record, false, permissionGuideContinuation{}) != onboardingStepWelcome || onboardingAdjacentStep(onboardingStepWelcome, 1) != onboardingStepDevice || onboardingAdjacentStep(onboardingStepDevice, -1) != onboardingStepWelcome {
 		t.Fatal("welcome navigation is disconnected")
 	}
 }

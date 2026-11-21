@@ -3,6 +3,9 @@ package main
 import (
 	"errors"
 	"mimac.local/mimac/internal/devices"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -115,9 +118,34 @@ func TestPermissionGuideBundleIdentityMustMatchPackagedAppName(t *testing.T) {
 		{"other.bundle", "MiMac", true, false},
 	}
 	for _, tc := range cases {
-		if got := permissionGuideBundleIdentityAllowed(tc.bundleID, tc.name, tc.packaged); got != tc.want {
+		if got := permissionGuideBundleIdentityAllowed(tc.bundleID, tc.name, "", tc.packaged); got != tc.want {
 			t.Errorf("identity(%q, %q, %t) = %t, want %t", tc.bundleID, tc.name, tc.packaged, got, tc.want)
 		}
+	}
+}
+
+func TestPermissionGuideAllowsOnlyIsolatedVerificationBundle(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	cache := filepath.Join(testHome, "Library", "Caches", "MiMac")
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := filepath.EvalSymlinks(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(cache, "MiMac First Use.app")
+	const id = "dev.mimac.verification.first-use"
+	if runtime.GOOS != "darwin" {
+		t.Skip("verification bundle uses the macOS cache location")
+	}
+	if !permissionGuideBundleIdentityAllowed(id, "MiMac First Use", fixture, true) {
+		t.Fatal("the verification identity in the isolated cache was rejected")
+	}
+	if permissionGuideBundleIdentityAllowed(id, "MiMac First Use", cache+"-outside/fake.app", true) ||
+		permissionGuideBundleIdentityAllowed(id, "MiMac Dev", fixture, true) {
+		t.Fatal("verification identity escaped its isolated location or profile")
 	}
 }
 
@@ -252,6 +280,42 @@ func TestPermissionGuideJoinRequiresAnExplicitSearchAndStableWindow(t *testing.T
 	}
 }
 
+func TestExplicitSettingsRouteKeepsSlowJoinAfterFastSearchDeadline(t *testing.T) {
+	now := time.Unix(20, 0)
+	settings := permissionguide.WindowSnapshot{ID: 75, Frame: permissionguide.Rect{X: 80, Y: 60, Width: 640, Height: 720}}
+	deadline := now.Add(permissionGuideSettingsSearchDuration)
+	s := permissionGuideState{
+		settingsOpenedFor:           permissionGuideInput,
+		settingsExplicitJoinPending: true,
+		settingsSearchUntil:         deadline,
+		readbackUntil:               now.Add(2 * time.Minute),
+	}
+
+	if ready, expired := s.permissionGuideSettingsJoinReady(permissionguide.WindowSnapshot{}, false, deadline); ready || expired {
+		t.Fatalf("explicit route expired instead of entering slow join: ready=%t expired=%t", ready, expired)
+	}
+	if !s.settingsSearchUntil.IsZero() || s.settingsOpenedFor != permissionGuideInput {
+		t.Fatalf("slow join state deadline=%v route=%v", s.settingsSearchUntil, s.settingsOpenedFor)
+	}
+	if got := s.permissionGuideSettingsFollowInterval(); got != permissionGuidePollInterval {
+		t.Fatalf("late search interval = %v, want regular poll interval %v", got, permissionGuidePollInterval)
+	}
+	if !s.readbackUntil.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("geometry search changed authorization readback deadline: %v", s.readbackUntil)
+	}
+
+	late := deadline.Add(350 * time.Millisecond)
+	if ready, expired := s.permissionGuideSettingsJoinReady(settings, true, late); ready || expired {
+		t.Fatal("first late observation skipped the stability check")
+	}
+	if got := s.permissionGuideSettingsFollowInterval(); got != permissionGuideSettingsLookupInterval {
+		t.Fatalf("late window stability interval = %v, want fast interval %v", got, permissionGuideSettingsLookupInterval)
+	}
+	if ready, expired := s.permissionGuideSettingsJoinReady(settings, true, late.Add(permissionGuideSettingsLookupInterval)); !ready || expired {
+		t.Fatalf("stable late Settings window did not join: ready=%t expired=%t", ready, expired)
+	}
+}
+
 func TestPermissionGuideUnreadableAccessOffersDirectSettings(t *testing.T) {
 	if got := permissionGuideActionLabel(permissionGuideRow{id: permissionGuideInput, access: permissionGuideUnknown}); got != "打开设置" {
 		t.Fatalf("unreadable access action=%q, want direct settings", got)
@@ -371,18 +435,15 @@ func TestPermissionGuideStandaloneStartsOnTheRightAndFits(t *testing.T) {
 	}
 }
 
-func TestPermissionGuideOnboardingSidecarStartsOnTheRight(t *testing.T) {
+func TestPermissionGuideSidecarJoinsExistingSettingsWithoutMovingIt(t *testing.T) {
 	area := mygo.Rectangle{Width: 1920, Height: 1050}
 	panel := mygo.Rectangle{Width: 500, Height: 537}
-	settings := permissionguide.Rect{X: 203, Y: 140, Width: 740, Height: 625}
-	if got, ok := permissionGuideSidecarBounds(settings, area, panel, true); !ok || got.X != 959 || got.Y != 140 {
-		t.Fatalf("onboarding sidecar = %v, %t", got, ok)
+	settings := permissionguide.Rect{X: 203, Y: 145, Width: 740, Height: 625}
+	if got, ok := permissionGuideCompanionBounds(settings, area, panel); !ok || got.X != 959 || got.Y != 145 {
+		t.Fatalf("room to the right: guide = %v, found = %t", got, ok)
 	}
-	settings.X = 900
-	if got, ok := permissionGuideSidecarBounds(settings, area, panel, true); ok {
-		t.Fatalf("onboarding sidecar attached on the wrong side: %v", got)
-	}
-	if got, ok := permissionGuideSidecarBounds(settings, area, panel, false); !ok || got.X != 384 {
-		t.Fatalf("explicit row action lost existing narrow-side fallback: %v, %t", got, ok)
+	settings.X = 781
+	if got, ok := permissionGuideCompanionBounds(settings, area, panel); !ok || got.X != 265 || got.Y != 145 {
+		t.Fatalf("room to the left: guide = %v, found = %t", got, ok)
 	}
 }

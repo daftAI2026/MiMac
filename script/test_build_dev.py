@@ -6,6 +6,7 @@ import tempfile
 from unittest.mock import patch
 
 import build_dev
+from dev_bundle_path import development_bundle_path, development_output_root
 
 
 class DevelopmentBuildIsolation(unittest.TestCase):
@@ -18,7 +19,7 @@ class DevelopmentBuildIsolation(unittest.TestCase):
         self.assertEqual(original, saved)
         self.assertEqual(dev["identifier"], "dev.mimac.app.dev")
         self.assertEqual(dev["name"], "MiMac Dev")
-        self.assertEqual(dev["out"], str(root / ".mygo/dev"))
+        self.assertEqual(dev["out"], str(development_output_root(root)))
         self.assertEqual(Path(dev["main"]).resolve(), (root / original["main"]).resolve())
         self.assertTrue(all(Path(item).is_file() for item in dev["resources"]))
         self.assertEqual(dev["version"], "2026.11.20")
@@ -27,6 +28,43 @@ class DevelopmentBuildIsolation(unittest.TestCase):
             "CFBundleVersion": "1",
             "MiMacReleaseVersion": "2026.11.20",
         })
+
+    def test_protected_desktop_source_uses_stable_cache_output_and_bundle_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            root = home / "Desktop" / "web" / "mimac"
+            root.mkdir(parents=True)
+            source_root = Path(__file__).resolve().parent.parent
+            original = json.loads((source_root / "mygo.json").read_text())
+            with patch.object(build_dev.Path, "home", return_value=home):
+                first = development_output_root(root)
+                second = development_output_root(root / ".")
+                bundle = development_bundle_path(root, "arm64")
+                config = build_dev.development_config(original, root)
+            self.assertEqual(first, second)
+            self.assertEqual(config["out"], str(first))
+            self.assertEqual(bundle, first / "darwin-arm64" / "MiMac Dev.app")
+            self.assertTrue(bundle.is_relative_to(home / "Library/Caches/MiMac/dev-builds"))
+
+    def test_documents_and_downloads_sources_also_use_user_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            with patch.object(build_dev.Path, "home", return_value=home):
+                for folder in ("Documents", "Downloads"):
+                    with self.subTest(folder=folder):
+                        root = home / folder / "source"
+                        root.mkdir(parents=True)
+                        output = development_output_root(root)
+                        self.assertTrue(output.is_relative_to(home / "Library/Caches/MiMac/dev-builds"))
+                        self.assertEqual(output.parts[-2:], (".mygo", "dev"))
+
+    def test_unprotected_source_keeps_checkout_local_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            root = home / "Work" / "source"
+            root.mkdir(parents=True)
+            with patch.object(build_dev.Path, "home", return_value=home):
+                self.assertEqual(development_output_root(root), root / ".mygo/dev")
 
     def test_daily_running_refuses_device_handoff(self):
         for count in ("1", "2"):

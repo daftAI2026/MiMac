@@ -25,6 +25,7 @@ from acceptance_evidence import summarize_text_evidence, assess_utterance
 from acceptance_observer import run_observer
 from build_dev import launch_development, require_device_handoff
 from verify_app_bundle import verify
+from dev_bundle_path import development_bundle_path, legacy_development_bundle_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path.home() / "Library/Caches/MiMac/live-acceptance"
@@ -39,14 +40,18 @@ TOOL_INPUT_SOURCES = {
 def fixed_dev_bundle(arch):
     if arch not in ("arm64", "amd64"):
         raise RuntimeError("unsupported Dev architecture")
-    return ROOT / ".mygo/dev" / ("darwin-" + arch) / "MiMac Dev.app"
+    return development_bundle_path(ROOT, arch)
 
 
 def verify_fixed_dev(receipt_path):
     receipt = read(receipt_path)
     arch = receipt["arch"]
     bundle = fixed_dev_bundle(arch)
-    if Path(receipt["bundle"]) != bundle or bundle.resolve(strict=True) != bundle:
+    receipt_bundle = Path(receipt["bundle"])
+    legacy_bundle = legacy_development_bundle_path(ROOT, arch)
+    # A receipt made before the protected-folder redirect still proves the
+    # migrated cache bundle when every recorded payload hash matches it.
+    if receipt_bundle not in (bundle, legacy_bundle) or bundle.resolve(strict=True) != bundle:
         raise RuntimeError("fixed Dev receipt does not identify this checkout's canonical bundle")
     checked = verify(bundle, arch, development=True, require_audio_installer=True)
     if checked["sha256"] != receipt["sha256"]:

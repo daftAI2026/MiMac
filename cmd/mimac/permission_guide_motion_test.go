@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
@@ -231,6 +232,62 @@ func TestPermissionGuideFlightUsesCompleteNativeTiming(t *testing.T) {
 		previous = sample.at
 		if math.Abs(float64(value-sample.value)) > 0.00001 {
 			t.Errorf("scale at %v=%g, native=%g", sample.at, value, sample.value)
+		}
+	}
+}
+
+func TestPermissionGuideAnchorUpdatesDoNotStartAnotherFlight(t *testing.T) {
+	view := permissionGuideIllustration{}
+	geometry := permissionGuideFlightGeometry{bounds: mygo.Rectangle{Width: 400, Height: 240}}
+	if changed, show := view.updateGeometry(geometry); !changed || !show || view.run != 1 {
+		t.Fatalf("first flight changed=%t show=%t run=%d", changed, show, view.run)
+	}
+	geometry.bounds.Y++
+	if changed, show := view.updateGeometry(geometry); !changed || show || view.run != 1 {
+		t.Fatalf("layout update replayed flight changed=%t show=%t run=%d", changed, show, view.run)
+	}
+	view.active = false
+	if changed, show := view.updateGeometry(geometry); !changed || !show || view.run != 2 {
+		t.Fatalf("explicit reopening did not start a new flight changed=%t show=%t run=%d", changed, show, view.run)
+	}
+}
+
+func TestPermissionFileDeliveryOncePerGesture(t *testing.T) {
+	file, err := transfer.FileData("/Applications/Test App.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for gesture := 0; gesture < 2; gesture++ {
+		offer := permissionGuideFileOffer(permissionGuideInput, file, func() { count++ }).Snapshot()
+		if count != gesture {
+			t.Fatal("starting a drag consumed authorization evidence")
+		}
+		for _, format := range []transfer.Format{transfer.FileList, transfer.URIList, transfer.FileList} {
+			got, err := offer.Read(format)
+			want, _ := file.Read(format)
+			if err != nil || string(got) != string(want) || count != gesture+1 {
+				t.Fatal("delivery changed the URL or ran twice")
+			}
+		}
+	}
+}
+
+func TestDeviceControlPreparesBeforeNativeFilePrefetch(t *testing.T) {
+	file, err := transfer.FileData("/Applications/Example.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	offer := permissionGuideFileOffer(permissionGuidePostEvent, file, func() { calls++ })
+	if calls != 1 {
+		t.Fatalf("native file offer published before gesture preparation finished (calls=%d)", calls)
+	}
+	for _, format := range []transfer.Format{transfer.FileList, transfer.URIList, transfer.FileList} {
+		data, err := offer.Read(format)
+		want, _ := file.Read(format)
+		if err != nil || string(data) != string(want) || calls != 1 {
+			t.Fatalf("unexpected publication for %v, calls=%d", format, calls)
 		}
 	}
 }

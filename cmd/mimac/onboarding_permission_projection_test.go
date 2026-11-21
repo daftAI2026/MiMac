@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPermissionGuidePublishesCurrentSetupProjection(t *testing.T) {
 	s := &shell{}
@@ -18,6 +21,62 @@ func TestPermissionGuidePublishesCurrentSetupProjection(t *testing.T) {
 	revoked := permissionGuideSnapshot{actionsEnabled: true, appBundlePath: granted.appBundlePath, rows: []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideUnknown}}}
 	if !s.updateOnboardingPermissions(revoked) || s.onboarding.permissionSnapshot.rows[0].access != permissionGuideUnknown {
 		t.Fatal("query failure left setup showing its previous grant")
+	}
+}
+
+func TestPermissionGuideRefreshPublishesOneSnapshotToBothCards(t *testing.T) {
+	previous := permissionGuideSnapshot{
+		actionsEnabled: true,
+		appBundlePath:  "/test/MiMac Dev.app",
+		rows:           []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideNotGranted}},
+	}
+	s := &shell{
+		snapshot: previous,
+		onboarding: onboardingState{
+			step:               onboardingStepPermissions,
+			permissionSnapshot: previous,
+		},
+	}
+	next := permissionGuideSnapshot{
+		actionsEnabled: true,
+		appBundlePath:  previous.appBundlePath,
+		rows:           []permissionGuideRow{{id: permissionGuideInput, access: permissionGuideGranted}},
+	}
+	guideChanged, onboardingChanged := s.publishPermissionGuideSnapshot(next)
+	if !guideChanged || !onboardingChanged {
+		t.Fatalf("publication changed guide/onboarding = %t/%t, want true/true", guideChanged, onboardingChanged)
+	}
+	if !samePermissionGuideSnapshot(s.snapshot, s.onboarding.permissionSnapshot) ||
+		!samePermissionGuideSnapshot(s.snapshot, next) {
+		t.Fatal("the permission panel and main setup card received different native snapshots")
+	}
+	if guideChanged, onboardingChanged := s.publishPermissionGuideSnapshot(next); guideChanged || onboardingChanged {
+		t.Fatalf("unchanged snapshot invalidation flags = %t/%t, want false/false", guideChanged, onboardingChanged)
+	}
+}
+
+func TestPermissionGuideReadbackCadenceFallsBackAfterBoundedWindow(t *testing.T) {
+	now := time.Unix(100, 0)
+	pending := permissionGuideSnapshot{rows: []permissionGuideRow{{id: permissionGuideBluetooth, access: permissionGuideNotDetermined}}}
+	s := &shell{snapshot: pending, followActive: true, readbackUntil: now.Add(permissionGuideReadbackDuration)}
+	if got := s.permissionGuidePollIntervalAt(now); got != permissionGuideReadbackInterval {
+		t.Fatalf("active Settings poll interval = %s, want %s", got, permissionGuideReadbackInterval)
+	}
+	if got := s.permissionGuidePollIntervalAt(now.Add(permissionGuideReadbackDuration + time.Nanosecond)); got != permissionGuidePollInterval {
+		t.Fatalf("expired poll interval = %s, want %s", got, permissionGuidePollInterval)
+	}
+	s.snapshot.rows[0].access = permissionGuideGranted
+	if got := s.permissionGuidePollIntervalAt(now); got != permissionGuidePollInterval {
+		t.Fatalf("completed permission poll interval = %s, want %s", got, permissionGuidePollInterval)
+	}
+}
+
+func TestPermissionGuideCanceledTimerTokenIsStale(t *testing.T) {
+	if permissionGuideTimerCurrent(3, 4) {
+		t.Fatal("a callback from a canceled timer generation was accepted")
+	}
+	if !permissionGuideTimerCurrent(4, 4) {
+		t.Fatal("the current timer generation was rejected")
 	}
 }
 

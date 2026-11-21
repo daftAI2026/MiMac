@@ -68,7 +68,7 @@ func (s *shell) updatePermissionGuideDrop(d *permissionGuideDrop) {
 		s.closePermissionGuideDrop()
 		return
 	}
-	target, found := permissionguide.SystemSettingsDropTarget(d.targetID)
+	target, found := permissionguide.VisibleSystemSettingsWindow(d.targetID)
 	if !found {
 		s.stopPermissionGuideDrop()
 		return

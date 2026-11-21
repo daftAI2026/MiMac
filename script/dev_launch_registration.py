@@ -6,6 +6,8 @@ from pathlib import Path
 import plistlib
 import subprocess
 
+from dev_bundle_path import development_bundle_path
+
 
 DEV_BUNDLE_IDENTIFIER = "dev.mimac.app.dev"
 DEV_BUNDLE_NAME = "MiMac Dev.app"
@@ -199,7 +201,7 @@ def ensure_current_dev_registration(
         raise RuntimeError(f"Could not verify Git primary repository root at {config_path}: {error}") from error
     if not isinstance(primary_config, dict) or primary_config.get("identifier") != "dev.mimac.app" or primary_config.get("name") != "MiMac":
         raise RuntimeError(f"Git common directory does not identify the MiMac primary repository root: {primary_repository_root}")
-    expected = project_root / ".mygo" / "dev" / f"darwin-{architecture}" / DEV_BUNDLE_NAME
+    expected = development_bundle_path(project_root, architecture)
     selected = _standard_path(bundle_path)
     if selected != expected:
         raise RuntimeError(f"Only the current fixed Dev bundle may be registered: expected {expected}, got {selected}")

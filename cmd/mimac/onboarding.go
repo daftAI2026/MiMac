@@ -128,7 +128,10 @@ func onboardingRecordForOpen(record onboardingRecord, exists, automaticFirstRun 
 	return onboardingRecord{Version: onboardingRecordVersion, Started: true, Step: int(onboardingStepWelcome)}, true
 }
 
-func onboardingInitialStep(record onboardingRecord, automaticFirstRun bool) onboardingStep {
+func onboardingInitialStep(record onboardingRecord, automaticFirstRun bool, continuation permissionGuideContinuation) onboardingStep {
+	if !automaticFirstRun && continuation.onboarding {
+		return onboardingStepPermissions
+	}
 	if automaticFirstRun && validOnboardingRecord(record) && record.Started && !record.Completed {
 		return onboardingStepAt(record.Step)
 	}
@@ -209,9 +212,9 @@ func (s *shell) openOnboarding(automaticFirstRun bool, continuation permissionGu
 			}
 		}
 	}
-	s.onboarding.step = onboardingInitialStep(s.onboarding.record, automaticFirstRun)
+	s.onboarding.step = onboardingInitialStep(s.onboarding.record, automaticFirstRun, continuation)
 	if s.onboarding.step == onboardingStepPermissions {
-		s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
+		s.publishPermissionGuideSnapshot(s.readPermissionGuideSnapshot())
 	}
 	inactive := permissionGuideResumesWithSettings(continuation, s.onboarding.step,
 		s.onboarding.permissionSnapshot, permissionguide.SystemSettingsRunning)
@@ -342,7 +345,8 @@ func (s *shell) refreshOnboardingProjection() {
 		return
 	}
 	if s.onboarding.step == onboardingStepPermissions {
-		s.onboarding.permissionSnapshot = s.readPermissionGuideSnapshot()
+		s.refreshPermissionGuide()
+		return
 	}
 	s.onboarding.window.Invalidate()
 }
@@ -371,8 +375,6 @@ func (s *shell) showOnboardingPermissionGuideFor(preferred permissionGuideID) {
 	}
 	s.onboarding.permissionGuideOpened = true
 	s.showPermissionGuideFor(preferred)
-	s.updateOnboardingPermissions(s.snapshot)
-	s.onboarding.window.Invalidate()
 }
 
 func (s *onboardingState) completePermissionVisit(previous, next permissionGuideSnapshot) (closeGuide, finishSettingsVisit bool) {

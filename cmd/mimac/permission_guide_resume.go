@@ -4,9 +4,7 @@ import (
 	"errors"
 	"log"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
@@ -17,7 +15,6 @@ type permissionGuideContinuation struct {
 	id          permissionGuideID
 	onboarding  bool
 	finishVisit bool
-	droppedAt   int64
 }
 
 func savePermissionGuideResume(path string, continuation permissionGuideContinuation) error {
@@ -31,9 +28,6 @@ func savePermissionGuideResume(path string, continuation permissionGuideContinua
 		} else {
 			token = "onboarding:" + token
 		}
-	}
-	if continuation.droppedAt > 0 {
-		token += "@" + strconv.FormatInt(continuation.droppedAt, 10)
 	}
 	return os.WriteFile(path, []byte(token), 0600)
 }
@@ -51,11 +45,10 @@ func takePermissionGuideResume(path string) (permissionGuideContinuation, error)
 	}
 	token, finishVisit := strings.CutPrefix(string(data), "onboarding-visit:")
 	token, onboarding := strings.CutPrefix(token, "onboarding:")
-	token, timestamp, _ := strings.Cut(token, "@")
-	droppedAt, _ := strconv.ParseInt(timestamp, 10, 64)
+	token, _, _ = strings.Cut(token, "@") // Older builds included a drop timestamp.
 	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
 		if token == permissionGuideIDString(id) {
-			return permissionGuideContinuation{id: id, onboarding: onboarding || finishVisit, finishVisit: finishVisit, droppedAt: droppedAt}, nil
+			return permissionGuideContinuation{id: id, onboarding: onboarding || finishVisit, finishVisit: finishVisit}, nil
 		}
 	}
 	return permissionGuideContinuation{}, nil
@@ -78,9 +71,6 @@ func (s *shell) savePendingPermissionGuide() {
 			id:          s.resumeID,
 			onboarding:  s.onboarding.permissionGuideOpened,
 			finishVisit: s.onboarding.permissionGuideOpened && s.onboarding.permissionActionTaken,
-		}
-		if attempt := s.repairAttempt; attempt != nil && attempt.id == s.resumeID && !attempt.resetAttempted {
-			continuation.droppedAt = attempt.started.Unix()
 		}
 		err = savePermissionGuideResume(path, continuation)
 	}
@@ -107,12 +97,12 @@ func (s *shell) resumePermissionGuideOnLaunch(continuation permissionGuideContin
 		return
 	}
 	snapshot := s.readPermissionGuideSnapshot()
+	s.publishPermissionGuideSnapshot(snapshot)
 	onboardingVisible := s.onboarding.window != nil
 	target := permissionGuideResumeTarget(continuation, onboardingVisible, s.onboarding.step, snapshot)
 	finishVisit := permissionGuideResumesOnboardingVisit(continuation, onboardingVisible, s.onboarding.step, snapshot)
 	if target == 0 {
 		if finishVisit && summarizeOnboardingPermissions(snapshot.rows).allGranted() {
-			s.updateOnboardingPermissions(snapshot)
 			permissionguide.FinishSystemSettingsVisit()
 		}
 		return
@@ -124,10 +114,6 @@ func (s *shell) resumePermissionGuideOnLaunch(continuation permissionGuideContin
 		s.page = pageGeneral
 		s.showSettings()
 		s.showPermissionGuideFor(target)
-	}
-	if continuation.droppedAt > 0 && s.guideWindow != nil && target == continuation.id && permissionGuideMayRepair(s.snapshot, target) {
-		s.recordPermissionGuideDrop(target, time.Unix(continuation.droppedAt, 0))
-		s.checkPermissionGuideRepair()
 	}
 }
 

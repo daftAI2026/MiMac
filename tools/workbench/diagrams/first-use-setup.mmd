@@ -38,7 +38,7 @@ flowchart TD
     systemReopen["系统要求退出并重开：普通启动入口"] --> resume
     grantAction -.-> pendingSettings["普通设置记住待完成的一项列表权限"]
     nativeRebind -.-> pendingSettings
-    pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接、入口和首启授权动作"]
+    pendingSettings -->|正常退出且小卡仍打开| oneShot["保存一次性续接、入口和首启授权动作；显式复看也恢复权限页"]
     oneShot -.-> permissionStep
     permissionStep -->|仍缺权限：恢复小卡与首启授权动作| resumeWindow["已有系统设置且可切至待授权项：首启主窗非激活呈现并让到系统设置后面"]
     resumeWindow --> permissionGuide
@@ -57,14 +57,14 @@ flowchart TD
     directPlacement -->|无：独立小卡靠右| permissionGuide
     permissionGuide -.-> nativeWindow["MyGo 创建可点击和拖动的小卡，小卡不取得键盘"]
     permissionGuide --> existingSettings{"系统设置已经运行？"}
-    existingSettings -->|首启首次打开且右侧可容纳| nativeSidecar["贴到设置右侧，同顶，间距16pt；沿用当前页面"]
+    existingSettings -->|首启首次打开且有现成设置窗口| nativeSidecar["小卡从右半侧出现；从首启让位给已有设置，沿用当前页；窗口可见后贴靠，同顶、间距16pt"]
     existingSettings -->|显式权限入口或续接，且有缺失列表权限| settings
     existingSettings -->|否：独立小卡靠右，等待用户打开设置| stable
     permissionGuide --> inspect["按权限类别只读查询：输入监控与AX辅助功能分别读取，不开始监听或录音"]
     inspect --> missing{"所需能力仍缺权限？"}
     missing -->|是| grantAction["用户显式点击授权"]
     titleLink["用户点击权限标题链接"] --> settings["释放小卡键窗口，向运行中的系统设置交接激活，再打开对应页"]
-    settings --> stable["面板显示或显式设置动作开启：六秒内查找同一窗口与完整frame，两次稳定后350ms ease-in-out贴边，窗口顶对齐、横向间距16pt"]
+    settings --> stable["面板先快速查找6秒；已点授权且窗口尚未出现时改用700ms查找。发现窗口后以100ms复核同窗同frame，稳定后350ms贴靠，顶边对齐、间距16pt"]
     stable --> follow["拖动时直接跟随，松开后位置调整使用250ms ease-out；手动移开面板则停止跟随"]
     follow --> illustration["位置稳定且鼠标松开后显示96pt来源图标槽中的半透明图标与原生抓手，沿二次曲线指向设置列表，3.65秒循环；拖动及减少动态效果时隐藏"]
     illustration --> drag["真实拖动交给系统；开始拖动后停止示意"]
@@ -74,13 +74,13 @@ flowchart TD
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh["有效拖放后交还键盘焦点，并重查实际授权"]
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
-    drag -.-> nativeRebind["原生文件 URL 交给系统列表；授权状态以系统复查为准"]
+    settings -.-> staleProof["按当前权限与 App 签名后台只读核实旧登记"]
+    drag --> delivery["输入监控在系统列表接收时核实落点；设备控制在真实起拖、公布文件前核实设置页"]
+    delivery -->|本项仍被拒且已证实旧签名| recoverEntry["仅重置本应用的这一项旧登记"]
+    delivery -->|正常或无确切旧记录| nativeRebind["原生文件 URL 交给系统，系统负责登记和确认"]
+    staleProof -.-> recoverEntry
+    recoverEntry --> nativeRebind
     nativeRebind --> guideRefresh
-    nativeRebind --> staleProof["确认落在系统列表后，针对同一应用、权限和代码签名读取旧授权失配证据"]
-    staleProof -->|系统更新对应项、明确失配且仍未获准| recoverEntry["原生拖放触发一次定向重置，只处理自己的对应权限"]
-    recoverEntry -->|成功| repairRequest["从原生API请求该项权限，保留系统确认及实际查询"]
-    repairRequest --> guideRefresh
-    recoverEntry -->|系统拒绝重置| repairHelp["提示用户在设置中恢复这一项"]
     grantAction --> nativeGrant{"首次蓝牙授权？"}
     nativeGrant -->|否：列表权限或已处理的蓝牙权限| settings
     nativeGrant -->|是| bluetoothGrant["发起系统蓝牙请求，不自动再次打开设置"]

@@ -12,6 +12,7 @@ from dev_launch_registration import (
     SystemLaunchServices,
     ensure_current_dev_registration,
 )
+from dev_bundle_path import development_bundle_path
 
 
 class MockLaunchServices:
@@ -223,6 +224,27 @@ class DevLaunchRegistrationTests(unittest.TestCase):
 
         self.assertEqual(backend.register_calls, [self.selected])
         self.assertEqual(backend.default_queries, [DEV_BUNDLE_IDENTIFIER])
+
+    def test_protected_checkout_registers_only_its_stable_cache_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            project = home / "Desktop" / "source"
+            project.mkdir(parents=True)
+            selected = development_bundle_path(project, "arm64", home)
+            self._make_bundle(selected, DEV_BUNDLE_IDENTIFIER)
+            backend = MockLaunchServices(defaults={DEV_BUNDLE_IDENTIFIER: None})
+            with patch("dev_launch_registration.Path.home", return_value=home):
+                result = ensure_current_dev_registration(
+                    selected,
+                    project,
+                    "arm64",
+                    self.primary_repository_root,
+                    backend=backend,
+                    cache_root=home / "Library/Caches/MiMac",
+                )
+            self.assertEqual(result, selected)
+            self.assertEqual(backend.register_calls, [selected])
+            self.assertEqual(backend.default_url(DEV_BUNDLE_IDENTIFIER), str(selected))
 
     def test_system_adapter_queries_public_nsworkspace_apis_for_exact_dev_id(self):
         backend = SystemLaunchServices()

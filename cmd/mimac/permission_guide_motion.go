@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/png"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -48,12 +49,31 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 		if data, err := transfer.FileData(s.snapshot.appBundlePath); err == nil {
 			window, generation := s.guideWindow, s.generation
 			var draggedPermission, previousResumeID permissionGuideID
-			var dragStarted time.Time
-			icon.DragData(data, transfer.DragOptions{Started: func(image.Point) {
+			icon.DragDataFrom(func() transfer.Data {
+				draggedPermission = s.currentID
+				previousResumeID = s.resumeID
+				s.prepareDragRegistration(draggedPermission)
+				return permissionGuideFileOffer(draggedPermission, data, func() {
+					if draggedPermission == permissionGuidePostEvent {
+						if s.guideWindow == window && s.generation == generation && permissionguide.SettingsReadyForControlDrag(s.settingsOpenedFor == draggedPermission) {
+							s.repairDragRegistrationBeforeDelivery(draggedPermission)
+						}
+						return
+					}
+					d := s.dropGuide
+					if s.guideWindow != window || s.generation != generation || s.currentID != draggedPermission ||
+						!permissionGuideAllowsAppDrag(draggedPermission) || d == nil || !d.active {
+						return
+					}
+					p := mygo.Screen.CursorScreenPoint()
+					point := image.Pt(p.X, p.Y)
+					if d.acceptsRelease(point) && permissionguide.SettingsReceivesReleasedDrop(d.targetID, p.X, p.Y,
+						draggedPermission == permissionGuideInput, s.settingsOpenedFor == draggedPermission) {
+						s.repairDragRegistrationBeforeDelivery(draggedPermission)
+					}
+				})
+			}, transfer.DragOptions{Started: func(image.Point) {
 				if s.guideWindow == window && s.generation == generation {
-					dragStarted = time.Now()
-					draggedPermission = s.currentID
-					previousResumeID = s.resumeID
 					s.startPermissionGuideDrop()
 					if d := s.dropGuide; d != nil && d.active && d.targetID != 0 {
 						s.resumeID = draggedPermission
@@ -68,7 +88,6 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					!result.Canceled && result.Operation == transfer.Copy && d.acceptsRelease(result.Point)
 				if submitted {
 					s.resumeID = draggedPermission
-					s.recordPermissionGuideDrop(draggedPermission, dragStarted)
 				} else {
 					s.resumeID = previousResumeID
 				}
@@ -79,13 +98,14 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					permissionguide.YieldToSystemSettings()
 				}
 				s.refreshPermissionGuide()
-				if submitted {
-					s.checkPermissionGuideRepair()
-				}
 			}})
 		}
 	}
 	hovered, pressed, dragging := icon.Hovered(), icon.Pressed(), icon.Dragging()
+	if hovered && !s.iconWasHovered && !dragging {
+		s.prepareDragRegistration(s.currentID)
+	}
+	s.iconWasHovered = hovered
 	s.iconDragging = dragging
 	if dragging {
 		s.hidePermissionGuideIllustration()
@@ -118,6 +138,24 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 	} else {
 		c.After(time.Millisecond)
 	}
+}
+
+// MyGo calls the drag source only after the drag threshold. Device Control
+// may read the file before AppKit reports Started. Input Monitoring can defer
+// its release check until the receiver reads either URL representation.
+func permissionGuideFileOffer(id permissionGuideID, file transfer.Data, beforeDelivery func()) transfer.Data {
+	if id == permissionGuidePostEvent {
+		beforeDelivery()
+		return file
+	}
+	deliver := sync.OnceFunc(beforeDelivery)
+	representation := func(format transfer.Format) transfer.Representation {
+		return transfer.Lazy(format, func() ([]byte, error) {
+			deliver()
+			return file.Read(format)
+		})
+	}
+	return transfer.New(transfer.NewItem(representation(transfer.FileList), representation(transfer.URIList)))
 }
 
 // Supply only the icon pixels. The default native drag preview captures the
@@ -191,14 +229,33 @@ func (s *shell) syncPermissionGuideIllustration(settings permissionguide.Rect, a
 		view.window.SetIgnoreMouseEvents(true)
 	}
 	view := s.illustration
-	if view.active && view.geometry == geometry {
+	previousBounds := view.geometry.bounds
+	changed, show := view.updateGeometry(geometry)
+	if !changed {
 		return
 	}
-	view.geometry, view.active = geometry, true
-	view.run++
-	view.window.SetBounds(geometry.bounds)
-	view.window.ShowInactive()
+	if previousBounds != geometry.bounds {
+		view.window.SetBounds(geometry.bounds)
+	}
+	if show {
+		view.window.ShowInactive()
+	}
 	view.window.Invalidate()
+}
+
+// Refreshing a live anchor must not restart a partially shown flight or
+// re-order its window in front of System Settings again.
+func (view *permissionGuideIllustration) updateGeometry(geometry permissionGuideFlightGeometry) (changed, show bool) {
+	if view.active && view.geometry == geometry {
+		return false, false
+	}
+	view.geometry = geometry
+	if view.active {
+		return true, false
+	}
+	view.active = true
+	view.run++
+	return true, true
 }
 
 func (s *shell) hidePermissionGuideIllustration() {
@@ -254,11 +311,13 @@ func permissionGuideSpringResponse(t float64) float64 {
 
 func (s *shell) drawPermissionGuideIllustration(c *ui.Context, view *permissionGuideIllustration) {
 	c.Root().Background(ui.Transparent)
-	root := ui.Box(c).Fill().Background(ui.Transparent)
 	if !view.active || s.appIcon == nil || c.Preferences().ReduceMotion {
 		return
 	}
-	options := ui.KeyframeOptions{Run: view.run, Repeat: ui.RepeatForever}
+	// A newly visible flight starts at the first keyframe. Varying Run on
+	// a retained element would resume from its last sampled progress.
+	root := ui.Box(c).Key(view.run).Fill().Background(ui.Transparent)
+	options := ui.KeyframeOptions{Repeat: ui.RepeatForever}
 	opacity := root.Keyframes("opacity", permissionGuideFlightOpacity, options)
 	progress := root.Keyframes("progress", permissionGuideFlightProgress, options)
 	scale := root.Keyframes("scale", permissionGuideFlightScale, options)

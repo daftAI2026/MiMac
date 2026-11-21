@@ -7,12 +7,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	brand "mimac.local/mimac/Assets/Brand"
-	"mimac.local/mimac/internal/adapters/keyoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
 	"mimac.local/mimac/internal/platform/permissionguide"
 	"mimac.local/mimac/internal/platform/statuscolor"
@@ -33,6 +33,8 @@ const (
 	permissionGuideIconBox                float32 = 35
 	permissionGuideControlWidth           float32 = 76
 	permissionGuidePollInterval                   = 700 * time.Millisecond
+	permissionGuideReadbackInterval               = 100 * time.Millisecond
+	permissionGuideReadbackDuration               = time.Minute
 	permissionGuideFollowInterval                 = 33 * time.Millisecond
 	permissionGuideSettingsLookupInterval         = 100 * time.Millisecond
 	permissionGuideSettingsSearchDuration         = 6 * time.Second
@@ -40,36 +42,43 @@ const (
 )
 
 type permissionGuideState struct {
-	guideWindow         *mygo.Window
-	snapshot            permissionGuideSnapshot
-	phase               permissionGuidePhase
-	currentID           permissionGuideID
-	settingsOpenedFor   permissionGuideID
-	resumeID            permissionGuideID
-	repairAttempt       *permissionGuideRepairAttempt
-	generation          uint64
-	pollTimer           *time.Timer
-	followTimer         *time.Timer
-	followActive        bool
-	followManual        bool
-	followTarget        mygo.Rectangle
-	followStartBounds   mygo.Rectangle
-	followMoveStarted   time.Time
-	followMoveFrom      mygo.Rectangle
-	followMoveTime      time.Duration
-	followMoveInitial   bool
-	settingsSearchUntil time.Time
-	settingsCandidate   permissionguide.WindowSnapshot
-	followWindowID      uint32
-	followMoving        bool
-	iconDragPreview     *image.RGBA
-	iconBounds          ui.Rect
-	iconDragging        bool
-	hasDraggedIcon      bool
-	reduceMotion        bool
-	illustration        *permissionGuideIllustration
-	dropGuide           *permissionGuideDrop
-	grantedStyles       [2]permissionGuideGrantedStyle
+	guideWindow                  *mygo.Window
+	snapshot                     permissionGuideSnapshot
+	phase                        permissionGuidePhase
+	currentID                    permissionGuideID
+	settingsOpenedFor            permissionGuideID
+	resumeID                     permissionGuideID
+	repairAttempt                *permissionGuideRepairAttempt
+	dragRegistrationPreparation  *permissionGuideDragRegistrationPreparation
+	generation                   uint64
+	pollTimer                    *time.Timer
+	pollGeneration               uint64
+	followTimer                  *time.Timer
+	followGeneration             uint64
+	readbackUntil                time.Time
+	permissionGuideNativeRequest bool
+	followActive                 bool
+	followManual                 bool
+	followTarget                 mygo.Rectangle
+	followStartBounds            mygo.Rectangle
+	followMoveStarted            time.Time
+	followMoveFrom               mygo.Rectangle
+	followMoveTime               time.Duration
+	followMoveInitial            bool
+	settingsSearchUntil          time.Time
+	settingsCandidate            permissionguide.WindowSnapshot
+	settingsExplicitJoinPending  bool
+	followWindowID               uint32
+	followMoving                 bool
+	iconDragPreview              *image.RGBA
+	iconBounds                   ui.Rect
+	iconDragging                 bool
+	iconWasHovered               bool
+	hasDraggedIcon               bool
+	reduceMotion                 bool
+	illustration                 *permissionGuideIllustration
+	dropGuide                    *permissionGuideDrop
+	grantedStyles                [2]permissionGuideGrantedStyle
 }
 
 type permissionGuidePhase uint8
@@ -127,7 +136,8 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	if s.guideWindow != nil && !s.guideWindow.IsDestroyed() {
 		if !s.guideWindow.IsVisible() {
 			s.settingsOpenedFor = 0
-			s.snapshot = s.readPermissionGuideSnapshot()
+			s.settingsExplicitJoinPending = false
+			s.publishPermissionGuideSnapshot(s.readPermissionGuideSnapshot())
 			s.currentID = preferred
 			s.guideWindow.SetSize(permissionGuideWidth, permissionGuideWindowHeight(s.snapshot))
 			s.positionPermissionGuideForPresentation(s.guideWindow, preferred)
@@ -149,8 +159,8 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	s.preparePermissionGuideGrantedStyles()
 	generation := s.generation
 	s.iconBounds = ui.Rect{}
-	s.iconDragging, s.hasDraggedIcon = false, false
-	s.snapshot = s.readPermissionGuideSnapshot()
+	s.iconDragging, s.hasDraggedIcon, s.iconWasHovered = false, false, false
+	s.publishPermissionGuideSnapshot(s.readPermissionGuideSnapshot())
 	s.phase = permissionGuideWaiting
 	s.currentID = preferred
 	s.settingsOpenedFor = 0
@@ -170,8 +180,13 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 	})
 	window.OnHide(func() {
 		if s.guideWindow == window && s.generation == generation {
+			s.cancelDragRegistrationPreparation()
 			s.stopPermissionGuidePolling()
 			s.stopPermissionGuideFollowing()
+			if !s.onboardingPermissionSurfaceVisible() {
+				s.stopPermissionGuideReadback()
+			}
+			s.settingsExplicitJoinPending = false
 			s.closePermissionGuideDrop()
 		}
 	})
@@ -180,6 +195,7 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			bounds := window.Bounds()
 			if bounds.X != s.followStartBounds.X || bounds.Y != s.followStartBounds.Y {
 				s.followManual = true
+				s.settingsExplicitJoinPending = false
 				s.stopPermissionGuideFollowing()
 			}
 		}
@@ -195,7 +211,9 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 			s.phase = permissionGuideIdle
 			s.currentID = 0
 			s.settingsOpenedFor = 0
+			s.settingsExplicitJoinPending = false
 			s.resumeID = 0
+			s.cancelDragRegistrationPreparation()
 			s.repairAttempt = nil
 			s.onboarding.permissionGuideOpened = false
 			s.onboarding.permissionActionTaken = false
@@ -211,11 +229,11 @@ func (s *shell) showPermissionGuideFor(preferred permissionGuideID) {
 // A direct General action can already see its destination. Place the hidden
 // guide before showing it so it never covers that Settings window initially.
 func (s *shell) positionPermissionGuideForPresentation(window *mygo.Window, preferred permissionGuideID) {
-	settings, found := permissionguide.SystemSettingsWindowSnapshot()
+	settings, found := permissionguide.VisibleSystemSettingsWindow(0)
 	onboarding := s.onboarding.permissionGuideOpened && preferred == 0
-	if found && (onboarding || permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened)) {
+	if found && permissionGuideStartsAttached(s.snapshot, preferred, s.onboarding.permissionGuideOpened) {
 		display := permissionGuideSettingsDisplay(settings.Frame)
-		if target, ok := permissionGuideSidecarBounds(settings.Frame, display.WorkArea, window.Bounds(), onboarding); ok {
+		if target, ok := permissionGuideCompanionBounds(settings.Frame, display.WorkArea, window.Bounds()); ok {
 			window.SetPosition(target.X, target.Y)
 			return
 		}
@@ -260,12 +278,18 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 		return
 	}
 	freshOnboarding := s.onboarding.permissionGuideOpened && s.currentID == 0
-	s.advancePermissionGuide()
-	// An existing Settings session is routed to the missing list before joining.
-	// A closed Settings app remains closed until an explicit row action.
+	if s.advancePermissionGuide() {
+		window.Invalidate()
+	}
+	s.prepareDragRegistration(s.currentID)
+	// First-use presentation observes an existing window on its current page.
+	// Explicit permission actions and relaunch can navigate to a pending list.
 	if len(s.snapshot.rows) > 0 && s.phase == permissionGuideWaiting && !s.followManual {
 		if freshOnboarding {
 			if permissionguide.SystemSettingsRunning() {
+				if _, exists := permissionguide.SystemSettingsWindowSnapshot(); exists {
+					permissionguide.RevealExistingSystemSettings()
+				}
 				s.schedulePermissionGuideFollowing(window, generation)
 			}
 			return
@@ -276,26 +300,35 @@ func (s *shell) showPermissionGuideWindow(window *mygo.Window, generation uint64
 	}
 }
 
-func (s *shell) advancePermissionGuide() {
+func (s *shell) advancePermissionGuide() bool {
 	if s.closing || s.guideWindow == nil || s.guideWindow.IsDestroyed() || !s.guideWindow.IsVisible() {
-		return
+		return false
 	}
 	nextID := nextPermissionGuideTarget(s.snapshot, s.settingsOpenedFor, s.currentID)
-	s.phase = permissionGuideWaiting
 	if nextID == 0 {
+		changed := s.phase != permissionGuideComplete || s.currentID != 0 || s.settingsOpenedFor != 0
+		if !changed {
+			return false
+		}
+		s.cancelDragRegistrationPreparation()
 		s.phase = permissionGuideComplete
 		s.currentID = 0
 		s.settingsOpenedFor = 0
+		s.settingsExplicitJoinPending = false
 		s.stopPermissionGuideFollowing()
-		s.guideWindow.Invalidate()
-		return
+		return true
 	}
+	changed := s.phase != permissionGuideWaiting || s.currentID != nextID
+	s.phase = permissionGuideWaiting
 	if s.currentID != nextID {
+		s.cancelDragRegistrationPreparation()
 		s.currentID = nextID
 		s.settingsOpenedFor = 0
+		s.settingsExplicitJoinPending = false
 		s.followManual = false
 		s.stopPermissionGuideFollowing()
 	}
+	return changed
 }
 
 // Prefer the explicitly opened page only while the corresponding capability
@@ -328,12 +361,22 @@ func (s *shell) schedulePermissionGuidePoll(window *mygo.Window, generation uint
 		return
 	}
 	s.stopPermissionGuidePolling()
-	s.pollTimer = time.AfterFunc(permissionGuidePollInterval, func() {
+	token := s.pollGeneration
+	interval := s.permissionGuidePollIntervalAt(time.Now())
+	if s.permissionGuideInteractionActive() {
+		interval = permissionGuidePollInterval
+	}
+	s.pollTimer = time.AfterFunc(interval, func() {
 		mygo.RunOnMain(func() {
-			if s.guideWindow != window || s.generation != generation || s.closing || !window.IsVisible() {
+			if !permissionGuideTimerCurrent(token, s.pollGeneration) || s.guideWindow != window || s.generation != generation || s.closing || !window.IsVisible() {
 				return
 			}
-			s.refreshPermissionGuide()
+			s.pollTimer = nil
+			if s.permissionGuideInteractionActive() {
+				s.schedulePermissionGuidePoll(window, generation)
+				return
+			}
+			s.refreshPermissionGuideSnapshot()
 			s.schedulePermissionGuidePoll(window, generation)
 		})
 	})
@@ -355,26 +398,33 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 		s.stopPermissionGuideFollowing()
 		return
 	}
-	settings, found := permissionguide.SystemSettingsWindowSnapshot()
+	var settings permissionguide.WindowSnapshot
+	var found bool
+	if s.followActive {
+		settings, found = permissionguide.SystemSettingsWindowSnapshot()
+	} else {
+		// A covered window has geometry even before the user can see it.
+		settings, found = permissionguide.VisibleSystemSettingsWindow(0)
+	}
 	now := time.Now()
 	ready, expired := s.permissionGuideSettingsJoinReady(settings, found, now)
 	if !ready {
 		s.hidePermissionGuideIllustration()
 		if expired {
 			s.stopPermissionGuideFollowing()
+			s.stopPermissionGuideReadback()
 		} else {
-			s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
+			s.schedulePermissionGuideFollowTick(window, generation, s.permissionGuideSettingsFollowInterval())
 		}
 		return
 	}
 	initial := !s.followActive
 	settingsBounds := settings.Frame
 	display := permissionGuideSettingsDisplay(settingsBounds)
-	rightOnly := s.onboarding.permissionGuideOpened && s.settingsOpenedFor == 0
-	target, ok := permissionGuideSidecarBounds(settingsBounds, display.WorkArea, window.Bounds(), rightOnly)
+	target, ok := permissionGuideCompanionBounds(settingsBounds, display.WorkArea, window.Bounds())
 	if !ok {
 		s.followActive = false
-		s.schedulePermissionGuideFollowTick(window, generation, permissionGuideSettingsLookupInterval)
+		s.schedulePermissionGuideFollowTick(window, generation, s.permissionGuideSettingsFollowInterval())
 		return
 	}
 	current := window.Bounds()
@@ -391,6 +441,11 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	}
 	s.followActive = true
 	s.followWindowID = settings.ID
+	s.settingsExplicitJoinPending = false
+	if initial {
+		s.armPermissionGuideReadback(false)
+		s.schedulePermissionGuidePoll(window, generation)
+	}
 	pointerDown := permissionguide.PrimaryMouseButtonDown()
 	position, moving := s.nextPermissionGuideFollowFrame(target, time.Now(), s.reduceMotion || pointerDown)
 	s.followMoving = moving
@@ -406,6 +461,13 @@ func (s *shell) followPermissionGuideSettings(window *mygo.Window, generation ui
 	s.schedulePermissionGuideFollowTick(window, generation, permissionGuideFollowInterval)
 }
 
+func (s *permissionGuideState) permissionGuideSettingsFollowInterval() time.Duration {
+	if s.settingsExplicitJoinPending && s.settingsOpenedFor != 0 && s.settingsSearchUntil.IsZero() && s.settingsCandidate.ID == 0 {
+		return permissionGuidePollInterval
+	}
+	return permissionGuideSettingsLookupInterval
+}
+
 func (s *shell) schedulePermissionGuideFollowTick(window *mygo.Window, generation uint64, interval time.Duration) {
 	if window == nil || window.IsDestroyed() || !window.IsVisible() || s.guideWindow != window || s.generation != generation || s.closing || s.followManual {
 		return
@@ -413,8 +475,16 @@ func (s *shell) schedulePermissionGuideFollowTick(window *mygo.Window, generatio
 	if s.followTimer != nil {
 		s.followTimer.Stop()
 	}
+	s.followGeneration++
+	token := s.followGeneration
 	s.followTimer = time.AfterFunc(interval, func() {
-		mygo.RunOnMain(func() { s.followPermissionGuideSettings(window, generation) })
+		mygo.RunOnMain(func() {
+			if !permissionGuideTimerCurrent(token, s.followGeneration) {
+				return
+			}
+			s.followTimer = nil
+			s.followPermissionGuideSettings(window, generation)
+		})
 	})
 }
 
@@ -453,15 +523,8 @@ func permissionGuideCompanionBounds(settings permissionguide.Rect, workArea, cur
 	return mygo.Rectangle{X: x, Y: y, Width: current.Width, Height: current.Height}, true
 }
 
-func permissionGuideSidecarBounds(settings permissionguide.Rect, workArea, current mygo.Rectangle, rightOnly bool) (mygo.Rectangle, bool) {
-	target, ok := permissionGuideCompanionBounds(settings, workArea, current)
-	if rightOnly && target.X < int(math.Ceil(settings.X+settings.Width))+permissionGuideWindowGap {
-		return mygo.Rectangle{}, false
-	}
-	return target, ok
-}
-
 func (s *shell) stopPermissionGuidePolling() {
+	s.pollGeneration++
 	if s.pollTimer != nil {
 		s.pollTimer.Stop()
 		s.pollTimer = nil
@@ -469,6 +532,7 @@ func (s *shell) stopPermissionGuidePolling() {
 }
 
 func (s *shell) stopPermissionGuideFollowing() {
+	s.followGeneration++
 	if s.followTimer != nil {
 		s.followTimer.Stop()
 		s.followTimer = nil
@@ -484,6 +548,7 @@ func (s *shell) stopPermissionGuideFollowing() {
 func (s *shell) cancelPermissionGuideTimers() {
 	s.closePermissionGuideDrop()
 	s.stopPermissionGuidePolling()
+	s.stopPermissionGuideReadback()
 	s.stopPermissionGuideFollowing()
 }
 
@@ -491,36 +556,9 @@ func (s *shell) cancelPermissionGuideTimers() {
 // and the active device/audio owners. It does not acquire a device or start
 // audio, even in a packaged Dev app.
 func (s *shell) refreshPermissionGuide() {
-	if s.closing || s.guideWindow == nil || s.guideWindow.IsDestroyed() || !s.guideWindow.IsVisible() {
-		return
+	if s.refreshPermissionGuideSnapshot() {
+		s.schedulePermissionGuideReadback()
 	}
-	nextSnapshot := s.readPermissionGuideSnapshot()
-	changed := !samePermissionGuideSnapshot(s.snapshot, nextSnapshot)
-	closeOnboardingGuide, finishSettingsVisit := s.onboarding.completePermissionVisit(s.snapshot, nextSnapshot)
-	previousHeight := permissionGuideWindowHeight(s.snapshot)
-	s.snapshot = nextSnapshot
-	if attempt := s.repairAttempt; attempt != nil && !permissionGuideRepairPending(nextSnapshot, attempt.id) {
-		s.repairAttempt = nil
-	}
-	if nextHeight := permissionGuideWindowHeight(nextSnapshot); nextHeight != previousHeight {
-		s.guideWindow.SetSize(permissionGuideWidth, nextHeight)
-	}
-	s.updateOnboardingPermissions(nextSnapshot)
-	if changed && s.generalControls != nil {
-		s.syncGeneralControls()
-	}
-	if closeOnboardingGuide {
-		s.closePermissionGuide()
-		if finishSettingsVisit {
-			permissionguide.FinishSystemSettingsVisit()
-		}
-		return
-	}
-	s.advancePermissionGuide()
-	if changed {
-		s.checkPermissionGuideRepair()
-	}
-	s.guideWindow.Invalidate()
 }
 
 func permissionGuideWindowHeight(snapshot permissionGuideSnapshot) int {
@@ -571,7 +609,7 @@ func (s *shell) permissionGuideAppBundlePath() string {
 		return ""
 	}
 	bundleID, ok := permissionguide.MainBundleIdentifier()
-	if !ok || !permissionGuideBundleIdentityAllowed(bundleID, mygo.App.Name(), true) {
+	if !ok {
 		return ""
 	}
 	executable, err := mygo.App.Path(mygo.PathExe)
@@ -596,6 +634,9 @@ func (s *shell) permissionGuideAppBundlePath() string {
 	if err != nil || !infoPlist.Mode().IsRegular() {
 		return ""
 	}
+	if !permissionGuideBundleIdentityAllowed(bundleID, mygo.App.Name(), bundlePath, true) {
+		return ""
+	}
 	return bundlePath
 }
 
@@ -613,8 +654,26 @@ func permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothV
 	return ids
 }
 
-func permissionGuideBundleIdentityAllowed(bundleID, appName string, packaged bool) bool {
-	return packaged && ((bundleID == "dev.mimac.app" && appName == "MiMac") || (bundleID == "dev.mimac.app.dev" && appName == developmentAppName))
+func permissionGuideBundleIdentityAllowed(bundleID, appName, bundlePath string, packaged bool) bool {
+	if !packaged {
+		return false
+	}
+	if (bundleID == "dev.mimac.app" && appName == "MiMac") || (bundleID == "dev.mimac.app.dev" && appName == developmentAppName) {
+		return true
+	}
+	if !strings.HasPrefix(bundleID, "dev.mimac.verification.") || !strings.HasPrefix(appName, "MiMac ") ||
+		appName == developmentAppName || strings.ContainsRune(appName, '/') {
+		return false
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return false
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(cache, "MiMac"))
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(bundlePath, root+string(os.PathSeparator))
 }
 
 func permissionGuideRows(snapshot permissionGuideSnapshot) []permissionGuideRow {
@@ -857,12 +916,15 @@ func (s *shell) performPermissionGuideAction(id permissionGuideID) {
 	}
 	runPermissionGuideGrant(id, access, func(id permissionGuideID) {
 		switch id {
-		case permissionGuideInput:
-			_ = xiaomi.RequestListenAccess()
-		case permissionGuidePostEvent:
-			_ = keyoutput.RequestAccess()
 		case permissionGuideBluetooth:
-			_ = permissionguide.RequestBluetoothAccess()
+			generation := s.generation
+			s.armPermissionGuideReadback(true)
+			_ = permissionguide.RequestBluetoothAccessWithCallback(func() {
+				if s.closing || s.guideWindow == nil || s.guideWindow.IsDestroyed() || s.generation != generation {
+					return
+				}
+				s.refreshPermissionGuide()
+			})
 		}
 	}, func() permissionGuideAccess {
 		s.refreshPermissionGuide()
@@ -883,11 +945,14 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	}
 	// The row routes to Settings without reordering the visible guide.
 	permissionguide.YieldToSystemSettings()
+	if s.currentID != id {
+		s.cancelDragRegistrationPreparation()
+	}
 	s.currentID = id
 	s.phase = permissionGuideWaiting
 	s.settingsOpenedFor = id
+	s.settingsExplicitJoinPending = true
 	s.followManual = false
-	s.stopPermissionGuideFollowing()
 	switch id {
 	case permissionGuideInput:
 		s.openInputPermissionSettings()
@@ -896,7 +961,10 @@ func (s *shell) openPermissionGuideSettings(id permissionGuideID, force bool) {
 	case permissionGuideBluetooth:
 		_ = mygo.Shell.OpenExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth")
 	}
-	s.schedulePermissionGuideFollowing(s.guideWindow, s.generation)
+	if !s.followActive {
+		s.schedulePermissionGuideFollowing(s.guideWindow, s.generation)
+	}
+	s.prepareDragRegistration(id)
 	s.guideWindow.Invalidate()
 }
 
@@ -931,8 +999,9 @@ func runPermissionGuideGrant(id permissionGuideID, access permissionGuideAccess,
 	open(id)
 }
 
-// The initial join is bounded and waits for two identical native observations.
-// Ordinary following resumes only after that first stable window is known.
+// The initial join uses a bounded fast search, then a slower search only for an
+// explicitly opened route. Once a late window appears, the second stability
+// observation uses the fast cadence. Ordinary following resumes after joining.
 func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permissionguide.WindowSnapshot, found bool, now time.Time) (ready, expired bool) {
 	if s.followActive && found && settings.ID == s.followWindowID {
 		return true, false
@@ -942,9 +1011,18 @@ func (s *permissionGuideState) permissionGuideSettingsJoinReady(settings permiss
 		s.settingsSearchUntil = now.Add(permissionGuideSettingsSearchDuration)
 		s.settingsCandidate = permissionguide.WindowSnapshot{}
 	}
-	if s.settingsSearchUntil.IsZero() || !now.Before(s.settingsSearchUntil) {
-		s.settingsOpenedFor = 0
-		return false, true
+	if s.settingsSearchUntil.IsZero() {
+		if !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
+			s.settingsOpenedFor = 0
+			return false, true
+		}
+	} else if !now.Before(s.settingsSearchUntil) {
+		s.settingsSearchUntil = time.Time{}
+		s.settingsCandidate = permissionguide.WindowSnapshot{}
+		if !s.settingsExplicitJoinPending || s.settingsOpenedFor == 0 {
+			s.settingsOpenedFor = 0
+			return false, true
+		}
 	}
 	if !found {
 		s.settingsCandidate = permissionguide.WindowSnapshot{}

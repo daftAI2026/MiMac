@@ -2,16 +2,16 @@
 
 package permissionguide
 
-import (
-	"context"
-	"errors"
-	"time"
-)
+import "context"
 
-func ReadRegistrationEvidence(context.Context, string, RegistrationService, time.Time) RegistrationEvidence {
-	return RegistrationEvidence{}
+func PrepareDragRegistration(context.Context, string, RegistrationService) (*DragRegistrationProof, error) {
+	return nil, nil
 }
 
-func ResetOwnRegistration(context.Context, RegistrationService) error {
-	return errors.New("permission registration unavailable")
+func RepairDragRegistrationBeforeDelivery(context.Context, *DragRegistrationProof, RegistrationAccess) (bool, error) {
+	return false, nil
 }
+
+func DiscardDragRegistrationProof(*DragRegistrationProof) {}
+
+func CanProbeOwnRegistration(RegistrationService) bool { return false }

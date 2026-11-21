@@ -125,36 +125,57 @@ func bluetoothAccessFromNative(value int64) BluetoothAccess {
 	}
 }
 
-var pendingBluetoothRequest struct {
-	sync.Mutex
-	manager objc.ID
+var pendingBluetoothRequest bluetoothRequestObserver
+
+var bluetoothDelegateRegistration struct {
+	once  sync.Once
+	class objc.Class
+	err   error
 }
 
 // RequestBluetoothAccess creates one passive CBCentralManager only after an
 // explicit user action. It never scans, connects or reads a device. The
 // manager is held until a read observes a decision or the panel closes.
 func RequestBluetoothAccess() BluetoothAccess {
+	return RequestBluetoothAccessWithCallback(nil)
+}
+
+// RequestBluetoothAccessWithCallback preserves the no-argument API while
+// notifying the caller when this manager reports a CoreBluetooth state change.
+func RequestBluetoothAccessWithCallback(onStateUpdate func()) BluetoothAccess {
+	var state BluetoothAccess
+	mygo.RunOnMain(func() { state = requestBluetoothAccessOnMain(onStateUpdate) })
+	return state
+}
+
+func requestBluetoothAccessOnMain(onStateUpdate func()) BluetoothAccess {
 	state := readBluetoothAccess()
-	if state != BluetoothAccessNotDetermined {
+	if pendingBluetoothRequest.hasManager() {
+		pendingBluetoothRequest.updateHandler(onStateUpdate)
 		return state
 	}
-	if loadBluetoothFramework() != nil {
-		return BluetoothAccessUnknown
-	}
-	if hasPendingBluetoothRequest() {
+	if state != BluetoothAccessNotDetermined || loadBluetoothFramework() != nil || ensureBluetoothDelegate() != nil {
+		if state == BluetoothAccessNotDetermined {
+			return BluetoothAccessUnknown
+		}
 		return state
 	}
+
 	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	class := objc.GetClass("CBCentralManager")
 	if class == 0 {
-		runtime.UnlockOSThread()
+		return BluetoothAccessUnknown
+	}
+	delegate := objc.ID(bluetoothDelegateRegistration.class).Send(objc.RegisterName("new"))
+	if delegate == 0 {
 		return BluetoothAccessUnknown
 	}
 	managerClass := objc.ID(class)
 	alloc := objc.RegisterName("alloc")
 	init := objc.RegisterName("initWithDelegate:queue:options:")
 	if !objc.Send[bool](managerClass, objc.RegisterName("respondsToSelector:"), alloc) {
-		runtime.UnlockOSThread()
+		delegate.Send(objc.RegisterName("release"))
 		return BluetoothAccessUnknown
 	}
 	allocated := managerClass.Send(alloc)
@@ -162,48 +183,60 @@ func RequestBluetoothAccess() BluetoothAccess {
 		if allocated != 0 {
 			allocated.Send(objc.RegisterName("release"))
 		}
-		runtime.UnlockOSThread()
+		delegate.Send(objc.RegisterName("release"))
 		return BluetoothAccessUnknown
 	}
-	manager := objc.Send[objc.ID](allocated, init, objc.ID(0), objc.ID(0), objc.ID(0))
-	runtime.UnlockOSThread()
+	manager := objc.Send[objc.ID](allocated, init, delegate, objc.ID(0), objc.ID(0))
 	if manager == 0 {
+		delegate.Send(objc.RegisterName("release"))
 		return readBluetoothAccess()
 	}
-
-	pendingBluetoothRequest.Lock()
-	if pendingBluetoothRequest.manager != 0 {
-		pendingBluetoothRequest.Unlock()
-		releaseBluetoothManager(manager)
+	if !pendingBluetoothRequest.install(uintptr(manager), uintptr(delegate), onStateUpdate) {
+		releaseBluetoothRequestObject(manager)
+		delegate.Send(objc.RegisterName("release"))
 		return readBluetoothAccess()
 	}
-	pendingBluetoothRequest.manager = manager
-	pendingBluetoothRequest.Unlock()
 	return readBluetoothAccess()
 }
 
-func hasPendingBluetoothRequest() bool {
-	pendingBluetoothRequest.Lock()
-	pending := pendingBluetoothRequest.manager != 0
-	pendingBluetoothRequest.Unlock()
-	return pending
+func ensureBluetoothDelegate() error {
+	bluetoothDelegateRegistration.once.Do(func() {
+		bluetoothDelegateRegistration.class, bluetoothDelegateRegistration.err = objc.RegisterClass(
+			"MiMacPermissionGuideBluetoothDelegate", objc.GetClass("NSObject"), nil, nil,
+			[]objc.MethodDef{{Cmd: objc.RegisterName("centralManagerDidUpdateState:"), Fn: bluetoothCentralManagerDidUpdateState}},
+		)
+	})
+	return bluetoothDelegateRegistration.err
+}
+
+func bluetoothCentralManagerDidUpdateState(delegate objc.ID, _ objc.SEL, manager objc.ID) {
+	onStateUpdate := pendingBluetoothRequest.handlerFor(uintptr(manager), uintptr(delegate))
+	if onStateUpdate != nil {
+		// CoreBluetooth uses the main queue here. Queue the UI work from another
+		// goroutine so terminal refresh can release the manager after this callback.
+		go mygo.RunOnMain(onStateUpdate)
+	}
 }
 
 func CancelBluetoothRequest() {
 	mygo.RunOnMain(func() {
-		pendingBluetoothRequest.Lock()
-		manager := pendingBluetoothRequest.manager
-		pendingBluetoothRequest.manager = 0
-		pendingBluetoothRequest.Unlock()
-		if manager != 0 {
-			releaseBluetoothManager(manager)
+		managerID, delegateID := pendingBluetoothRequest.take()
+		if managerID != 0 {
+			manager := objc.ID(managerID)
+			if objc.Send[bool](manager, objc.RegisterName("respondsToSelector:"), objc.RegisterName("setDelegate:")) {
+				manager.Send(objc.RegisterName("setDelegate:"), objc.ID(0))
+			}
+			releaseBluetoothRequestObject(manager)
+		}
+		if delegateID != 0 {
+			releaseBluetoothRequestObject(objc.ID(delegateID))
 		}
 	})
 }
 
-func releaseBluetoothManager(manager objc.ID) {
+func releaseBluetoothRequestObject(object objc.ID) {
 	runtime.LockOSThread()
-	manager.Send(objc.RegisterName("release"))
+	object.Send(objc.RegisterName("release"))
 	runtime.UnlockOSThread()
 }
 
@@ -288,6 +321,7 @@ var windowListAPI struct {
 	boundsKey     uintptr
 	numberKey     uintptr
 	alphaKey      uintptr
+	nameKey       uintptr
 	err           error
 }
 
@@ -344,6 +378,7 @@ func loadWindowListAPI() error {
 			"kCGWindowBounds":   &windowListAPI.boundsKey,
 			"kCGWindowNumber":   &windowListAPI.numberKey,
 			"kCGWindowAlpha":    &windowListAPI.alphaKey,
+			"kCGWindowName":     &windowListAPI.nameKey,
 		} {
 			address, err := purego.Dlsym(graphics, name)
 			if err != nil {
@@ -369,9 +404,67 @@ func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) {
 	return systemSettingsWindow(0, false)
 }
 
-// SystemSettingsDropTarget keeps a drag attached to one visible window.
-func SystemSettingsDropTarget(id uint32) (WindowSnapshot, bool) {
+// VisibleSystemSettingsWindow uses the front-to-back list to exclude covered targets.
+func VisibleSystemSettingsWindow(id uint32) (WindowSnapshot, bool) {
 	return systemSettingsWindow(id, true)
+}
+
+// SettingsReceivesReleasedDrop checks the live receiver at file delivery. A
+// cached overlay hole can outlive its destination during native drag tracking.
+func SettingsReceivesReleasedDrop(id uint32, x, y int, input, routed bool) bool {
+	if id == 0 || loadWindowListAPI() != nil || PrimaryMouseButtonDown() {
+		return false
+	}
+	pid, ok := systemSettingsPID()
+	if !ok {
+		return false
+	}
+	workspace := objc.Send[objc.ID](objc.ID(objc.GetClass("NSWorkspace")), objc.RegisterName("sharedWorkspace"))
+	front := objc.Send[objc.ID](workspace, objc.RegisterName("frontmostApplication"))
+	if front == 0 || objc.Send[int32](front, objc.RegisterName("processIdentifier")) != pid {
+		return false
+	}
+	records, ok := readWindowRecords(0x11, 0)
+	if !ok || settingsHasAttachedDialog(records, pid) || !settingsReceivesPoint(records, id, pid, float64(x), float64(y)) {
+		return false
+	}
+	return registrationPageMatches(id, input, routed)
+}
+
+// The gesture still originates over the guide. Validate the selected system
+// pane itself before exposing the file, without testing the pointer as a drop.
+func SettingsReadyForControlDrag(routed bool) bool {
+	pid, ok := systemSettingsPID()
+	if !ok || loadWindowListAPI() != nil {
+		return false
+	}
+	records, ok := readWindowRecords(0x11, 0)
+	if !ok || settingsHasAttachedDialog(records, pid) {
+		return false
+	}
+	target, found := selectSettingsWindow(records, pid, 0)
+	if !found || !visibleSettingsTarget(records, target) {
+		return false
+	}
+	return registrationPageMatches(target.ID, false, routed)
+}
+
+func registrationPageMatches(id uint32, input, routed bool) bool {
+	// This field may be unavailable. Never request screen access to read it.
+	const includingWindow = 1 << 3
+	window := windowListAPI.windowList(includingWindow, id)
+	title := ""
+	if window != 0 {
+		defer windowListAPI.release(window)
+		if windowListAPI.arrayCount(window) == 1 {
+			entry := windowListAPI.arrayValue(window, 0)
+			value := windowListAPI.dictionaryGet(entry, windowListAPI.nameKey)
+			if value != 0 {
+				title = objc.Send[string](objc.ID(value), objc.RegisterName("UTF8String"))
+			}
+		}
+	}
+	return settingsDropMatchesPage(title, input, routed)
 }
 
 func systemSettingsWindow(id uint32, checkOcclusion bool) (WindowSnapshot, bool) {
@@ -387,11 +480,8 @@ func systemSettingsWindow(id uint32, checkOcclusion bool) (WindowSnapshot, bool)
 	if !ok {
 		return WindowSnapshot{}, false
 	}
-	if checkOcclusion {
-		above, ok := readWindowRecords(0x12, selected.ID)
-		if !ok || settingsWindowOcclusion(selected.Frame, above) >= .6 {
-			return WindowSnapshot{}, false
-		}
+	if checkOcclusion && !visibleSettingsTarget(records, selected) {
+		return WindowSnapshot{}, false
 	}
 	return selected, true
 }

@@ -127,7 +127,7 @@ func TestPermissionGuideRepairCopyHasSpaceBelowThePermissionRows(t *testing.T) {
 				s.navigationSymbols[symbolKey{name: row.icon, dark: palette, size: 18}] = nil
 			}
 		}
-		s.repairAttempt = &permissionGuideRepairAttempt{id: permissionGuidePostEvent, stale: true}
+		s.repairAttempt = &permissionGuideRepairAttempt{id: permissionGuidePostEvent, failed: true}
 		title, detail := s.permissionGuideRepairCopy(s.snapshot)
 		height := permissionGuideWindowHeight(s.snapshot) + 54
 		view := ui.NewTester(s.permissionGuideView, permissionGuideWidth, height)

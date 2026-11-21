@@ -9,6 +9,7 @@ import plistlib
 import signal
 import tempfile
 import live_acceptance
+from dev_bundle_path import legacy_development_bundle_path
 
 from live_acceptance import assess, check_fixture, route_ready, validate_audio_target, finish, assess_source_diagnostic
 from test_inspect_voice_report import report
@@ -64,6 +65,40 @@ class FixedDevTests(unittest.TestCase):
                 path.write_text(json.dumps(receipt))
                 with self.assertRaisesRegex(RuntimeError, "checkout's canonical bundle"):
                     live_acceptance.verify_fixed_dev(path)
+
+    def test_receipt_pins_stable_cache_bundle_for_protected_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            root = home / "Desktop" / "source"
+            with patch.object(live_acceptance.Path, "home", return_value=home), \
+                    patch.object(live_acceptance, "ROOT", root):
+                bundle = live_acceptance.fixed_dev_bundle("arm64")
+                bundle.mkdir(parents=True)
+                receipt = {"arch": "arm64", "bundle": str(bundle), "sha256": {"MacOS/MiMac Dev": "known"}}
+                receipt_path = home / "receipt.json"
+                receipt_path.write_text(json.dumps(receipt))
+                with patch.object(live_acceptance, "verify", return_value=receipt) as verify:
+                    self.assertEqual(live_acceptance.verify_fixed_dev(receipt_path), (bundle, "arm64"))
+                    verify.assert_called_once_with(bundle, "arm64", development=True, require_audio_installer=True)
+                with patch.object(live_acceptance, "verify", return_value={"sha256": {"MacOS/MiMac Dev": "different-bytes"}}):
+                    with self.assertRaisesRegex(RuntimeError, "differs from the verified receipt"):
+                        live_acceptance.verify_fixed_dev(receipt_path)
+
+    def test_pre_migration_receipt_can_verify_byte_identical_cache_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            root = home / "Desktop" / "source"
+            with patch.object(live_acceptance.Path, "home", return_value=home), \
+                    patch.object(live_acceptance, "ROOT", root):
+                bundle = live_acceptance.fixed_dev_bundle("arm64")
+                bundle.mkdir(parents=True)
+                old_path = legacy_development_bundle_path(root, "arm64")
+                receipt = {"arch": "arm64", "bundle": str(old_path), "sha256": {"MacOS/MiMac Dev": "same-bytes"}}
+                receipt_path = home / "receipt.json"
+                receipt_path.write_text(json.dumps(receipt))
+                with patch.object(live_acceptance, "verify", return_value=receipt) as verify:
+                    self.assertEqual(live_acceptance.verify_fixed_dev(receipt_path), (bundle, "arm64"))
+                    verify.assert_called_once_with(bundle, "arm64", development=True, require_audio_installer=True)
 
 
 class AcceptanceTests(unittest.TestCase):

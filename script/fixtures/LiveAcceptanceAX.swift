@@ -64,19 +64,42 @@ private func axChildren(_ element: AXUIElement) -> (AXError, [AXUIElement]) {
 }
 
 private func isOutputRole(_ role: String) -> Bool {
-    role == "AXWindow" || role == "AXButton" || role == "AXStaticText"
+    role == "AXWindow" || role == "AXGroup" || role == "AXButton" || role == "AXStaticText"
         || role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox"
 }
 
 private func record(_ element: AXUIElement, role: String) -> [String: Any] {
-    [
+    let bounds: Any
+    if let rect = axRect(element) {
+        bounds = ["x": Double(rect.minX), "y": Double(rect.minY),
+                  "width": Double(rect.width), "height": Double(rect.height)]
+    } else {
+        bounds = NSNull()
+    }
+    return [
         "role": role,
         "title": axJSONValue(element, "AXTitle"),
         "description": axJSONValue(element, "AXDescription"),
         "value": axJSONValue(element, "AXValue"),
         "identifier": axJSONValue(element, "AXIdentifier"),
-        "enabled": axJSONValue(element, "AXEnabled")
+        "enabled": axJSONValue(element, "AXEnabled"),
+        "bounds": bounds
     ]
+}
+
+private func axRect(_ element: AXUIElement) -> CGRect? {
+    let (positionError, positionValue) = axAttribute(element, "AXPosition")
+    let (sizeError, sizeValue) = axAttribute(element, "AXSize")
+    guard positionError == .success, sizeError == .success,
+          let positionValue, let sizeValue,
+          CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
+        return nil
+    }
+    var origin = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &origin),
+          AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
+    return CGRect(origin: origin, size: size)
 }
 
 private func collectWindowTree(_ windows: [AXUIElement]) -> Traversal {
@@ -176,14 +199,98 @@ private func press(pid: pid_t, role requestedRole: String, label: String) throws
             "enabled_error_code": enabledError.rawValue, "enabled": enabledValue as? NSNumber as Any? ?? NSNull()
         ])
     }
+    let startedAt = Date().timeIntervalSince1970
     let actionError = AXUIElementPerformAction(target, "AXPress" as CFString)
+    let completedAt = Date().timeIntervalSince1970
     guard actionError == .success else {
-        throw ToolFailure("ax_press", "AXPress failed", details: ["pid": Int(pid), "ax_error_code": actionError.rawValue])
+        throw ToolFailure("ax_press", "AXPress failed", details: [
+            "pid": Int(pid), "ax_error_code": actionError.rawValue,
+            "ax_press_started_at": startedAt, "ax_press_completed_at": completedAt
+        ])
     }
     return [
         "status": "ok", "action": "press", "pid": Int(pid), "ax_trusted": trusted,
-        "role": requestedRole, "label": label, "matched_count": 1, "enabled": true
+        "role": requestedRole, "label": label, "matched_count": 1, "enabled": true,
+        "ax_press_started_at": startedAt, "ax_press_completed_at": completedAt,
+        "ax_press_duration_ms": (completedAt - startedAt) * 1_000
     ]
+}
+
+private func pressPermissionRow(pid: pid_t, panelTitle: String, rowTitle: String, actionLabel: String) throws -> [String: Any] {
+    let trusted = AXIsProcessTrusted()
+    guard trusted else {
+        throw ToolFailure("ax_trust", "Accessibility is not trusted for this process", details: ["pid": Int(pid), "ax_trusted": false])
+    }
+    let application = try applicationElement(pid: pid)
+    let windows = try readWindows(from: application)
+    let panels = windows.filter { axString($0, "AXRole") == "AXWindow" && axString($0, "AXTitle") == panelTitle }
+    guard panels.count == 1, let panel = panels.first else {
+        throw ToolFailure("ax_scope", "the exact permission panel was not unique", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "panel_match_count": panels.count
+        ])
+    }
+    let traversal = collectWindowTree([panel])
+    guard !traversal.truncated, traversal.errors.isEmpty else {
+        throw ToolFailure("ax_tree_incomplete", "cannot prove the permission-row AX scope", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "visited_node_count": traversal.visitedCount,
+            "truncated": traversal.truncated, "traversal_errors": traversal.errors
+        ])
+    }
+    let rowAnchors = traversal.elements.filter {
+        axString($0, "AXRole") == "AXButton" &&
+        (axString($0, "AXTitle") == rowTitle || axString($0, "AXDescription") == rowTitle)
+    }
+    guard rowAnchors.count == 1, let rowAnchor = rowAnchors.first, let rowBounds = axRect(rowAnchor) else {
+        throw ToolFailure("ax_scope", "the permission-row title button was not unique or had no bounds", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "row_title": rowTitle,
+            "row_anchor_match_count": rowAnchors.count
+        ])
+    }
+    let candidates = traversal.elements.filter { element in
+        guard axString(element, "AXRole") == "AXButton",
+              axString(element, "AXTitle") == actionLabel || axString(element, "AXDescription") == actionLabel,
+              let bounds = axRect(element) else { return false }
+        let sameRow = abs(bounds.midY - rowBounds.midY) <= max(16, (bounds.height + rowBounds.height) / 2 + 4)
+        return sameRow && bounds.midX > rowBounds.midX
+    }
+    guard candidates.count == 1, let target = candidates.first else {
+        throw ToolFailure("ax_scope", "the right-side permission action was not unique in the selected panel row", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "row_title": rowTitle,
+            "action_label": actionLabel, "row_anchor_bounds": rectJSON(rowBounds),
+            "scoped_action_match_count": candidates.count
+        ])
+    }
+    let (enabledError, enabledValue) = axAttribute(target, "AXEnabled")
+    guard enabledError == .success, let enabled = enabledValue as? NSNumber, enabled.boolValue else {
+        throw ToolFailure("ax_disabled", "the unique scoped permission action is not confirmed enabled", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "row_title": rowTitle,
+            "action_label": actionLabel, "enabled_error_code": enabledError.rawValue
+        ])
+    }
+    let targetBounds = axRect(target)!
+    let startedAt = Date().timeIntervalSince1970
+    let actionError = AXUIElementPerformAction(target, "AXPress" as CFString)
+    let completedAt = Date().timeIntervalSince1970
+    guard actionError == .success else {
+        throw ToolFailure("ax_press", "AXPress failed for the unique permission-row action", details: [
+            "pid": Int(pid), "panel_title": panelTitle, "row_title": rowTitle,
+            "action_label": actionLabel, "ax_error_code": actionError.rawValue,
+            "ax_press_started_at": startedAt, "ax_press_completed_at": completedAt
+        ])
+    }
+    return [
+        "status": "ok", "action": "press_permission_row", "pid": Int(pid), "ax_trusted": trusted,
+        "panel_title": panelTitle, "row_title": rowTitle, "role": "AXButton",
+        "label": actionLabel, "matched_count": 1,
+        "row_anchor_bounds": rectJSON(rowBounds), "action_bounds": rectJSON(targetBounds),
+        "ax_press_started_at": startedAt, "ax_press_completed_at": completedAt,
+        "ax_press_duration_ms": (completedAt - startedAt) * 1_000
+    ]
+}
+
+private func rectJSON(_ rect: CGRect) -> [String: Double] {
+    ["x": Double(rect.minX), "y": Double(rect.minY),
+     "width": Double(rect.width), "height": Double(rect.height)]
 }
 
 private func audioAddress(_ selector: AudioObjectPropertySelector,
@@ -303,7 +410,7 @@ private func parsePID(_ value: String) throws -> pid_t {
 }
 
 private func usage() -> Never {
-    fputs("Usage: LiveAcceptanceAX PID snapshot | PID press ROLE LABEL | PID audio\n", stderr)
+    fputs("Usage: LiveAcceptanceAX PID snapshot | PID press ROLE LABEL | PID press-row PANEL ROW_TITLE ACTION_LABEL | PID audio\n", stderr)
     exit(2)
 }
 
@@ -328,6 +435,9 @@ do {
     case "press":
         guard arguments.count == 4 else { usage() }
         result = try press(pid: pid, role: arguments[2], label: arguments[3])
+    case "press-row":
+        guard arguments.count == 5 else { usage() }
+        result = try pressPermissionRow(pid: pid, panelTitle: arguments[2], rowTitle: arguments[3], actionLabel: arguments[4])
     case "audio":
         guard arguments.count == 2 else { usage() }
         result = try audioSnapshot(pid: pid)

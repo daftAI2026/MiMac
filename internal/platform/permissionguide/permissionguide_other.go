@@ -2,11 +2,12 @@
 
 package permissionguide
 
-func MainBundleIdentifier() (string, bool)     { return "", false }
-func ReadBluetoothAccess() BluetoothAccess     { return BluetoothAccessUnknown }
-func RequestBluetoothAccess() BluetoothAccess  { return BluetoothAccessUnknown }
-func CancelBluetoothRequest()                  {}
-func SystemSettingsWindowBounds() (Rect, bool) { return Rect{}, false }
+func MainBundleIdentifier() (string, bool)                      { return "", false }
+func ReadBluetoothAccess() BluetoothAccess                      { return BluetoothAccessUnknown }
+func RequestBluetoothAccess() BluetoothAccess                   { return BluetoothAccessUnknown }
+func RequestBluetoothAccessWithCallback(func()) BluetoothAccess { return BluetoothAccessUnknown }
+func CancelBluetoothRequest()                                   {}
+func SystemSettingsWindowBounds() (Rect, bool)                  { return Rect{}, false }
 
 func PrimaryMouseButtonDown() bool { return false }
 
@@ -14,4 +15,8 @@ func SystemSettingsWindowSnapshot() (WindowSnapshot, bool) { return WindowSnapsh
 
 func SystemSettingsRunning() bool { return false }
 
-func SystemSettingsDropTarget(id uint32) (WindowSnapshot, bool) { return WindowSnapshot{}, false }
+func VisibleSystemSettingsWindow(id uint32) (WindowSnapshot, bool) { return WindowSnapshot{}, false }
+
+func SettingsReceivesReleasedDrop(id uint32, x, y int, input, routed bool) bool { return false }
+
+func SettingsReadyForControlDrag(routed bool) bool { return false }

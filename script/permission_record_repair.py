@@ -8,6 +8,7 @@ import re
 import subprocess
 
 from dev_launch_registration import DEV_BUNDLE_IDENTIFIER, SystemLaunchServices
+from dev_bundle_path import development_bundle_path
 from verify_app_bundle import verify
 
 
@@ -80,7 +81,7 @@ def main():
     if platform.system() != "Darwin" or not arch:
         parser.error("requires macOS on arm64 or amd64")
     root = Path(__file__).resolve().parent.parent
-    bundle = root / ".mygo/dev" / f"darwin-{arch}" / "MiMac Dev.app"
+    bundle = development_bundle_path(root, arch)
     if bundle.resolve(strict=True) != bundle:
         raise RuntimeError("fixed Dev bundle must not traverse a symlink")
     verify(bundle, arch, development=True, require_audio_installer=True)

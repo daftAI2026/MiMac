@@ -20,7 +20,7 @@ Apple 语音识别是独立的可选插件，使用 macOS 26+ 的本机 SpeechTr
 go test ./...
 ```
 
-日用版本安装后，开发请运行 `./script/build_and_run.sh --dev`；Codex Run 也使用此入口。它构建独立的 `MiMac Dev.app`（`dev.mimac.app.dev`），配置位于 `~/Library/Application Support/MiMac Dev`，不会替换日用 App 或复制日用配置。开发版默认不接管遥控器、按键输出、系统输入法或音频通路，仍可调整界面、映射和插件配置。`--dev --verify` 执行后台启动与退出检查，`--dev --build-only` 只构建。需要开发版做真实设备验收时，先退出日用 MiMac，再使用 `--dev run -- --device-access --show-settings`；同一遥控器和系统输入源必须串行交接，不能同时接管。
+日用版本安装后，开发请运行 `./script/build_and_run.sh --dev`；Codex Run 也使用此入口。它构建独立的 `MiMac Dev.app`（`dev.mimac.app.dev`），配置位于 `~/Library/Application Support/MiMac Dev`，不会替换日用 App 或复制日用配置。源码位于 Desktop、Documents 或 Downloads 时，Dev App 固定输出到按 checkout 路径派生的 `~/Library/Caches/MiMac/dev-builds/.../.mygo/dev`，避开受保护源码目录；详见[构建与权限 SOP](script/README_permissions.md)。开发版默认不接管遥控器、按键输出、系统输入法或音频通路，仍可调整界面、映射和插件配置。`--dev --verify` 执行后台启动与退出检查，`--dev --build-only` 只构建。需要开发版做真实设备验收时，先退出日用 MiMac，再使用 `--dev run -- --device-access --show-settings`；同一遥控器和系统输入源必须串行交接，不能同时接管。
 
 可用 `MIMAC_GO=/path/to/go` 指定工具链，`MIMAC_SIGN_IDENTITY` 指定本机已有签名身份。`--verify` 执行有界的设置窗口启动与退出检查。
 

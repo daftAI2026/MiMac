@@ -45,7 +45,7 @@ func TestPermissionResumeRestoresOnlyTheRequestedRowRegardlessOfGrant(t *testing
 
 func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), permissionGuideResumeFile)
-	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, finishVisit: true, droppedAt: 1795104400}
+	want := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, finishVisit: true}
 	if err := savePermissionGuideResume(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestPermissionResumeRestoresOnboardingOnlyWhilePermissionsArePending(t *tes
 	if permissionGuideResumeTarget(restored, true, onboardingStepPermissions, snapshot) != 0 {
 		t.Fatal("setup should retain its summary without reopening a completed guide")
 	}
-	if err := os.WriteFile(path, []byte("onboarding:input-monitoring"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("onboarding:input-monitoring@1795104400"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := takePermissionGuideResume(path); err != nil || !got.onboarding || got.finishVisit {
@@ -140,5 +140,19 @@ func TestPermissionGuideResumeOnlyYieldsFirstFrameToLiveSettings(t *testing.T) {
 				t.Fatalf("inactive=%v queried Settings=%v, want %v and %v", got, queried, tc.want, tc.wantQuery)
 			}
 		})
+	}
+}
+
+func TestPermissionResumeReopensAnExplicitReviewOnPermissions(t *testing.T) {
+	completed := onboardingRecord{Version: onboardingRecordVersion, Started: true, Completed: true}
+	if shouldPresentOnboarding(completed, true, true, nil) {
+		t.Fatal("completed setup should not start again on ordinary launch")
+	}
+	continuation := permissionGuideContinuation{id: permissionGuideInput, onboarding: true, finishVisit: true}
+	if step := onboardingInitialStep(completed, false, continuation); step != onboardingStepPermissions {
+		t.Fatalf("relaunch after explicit permission visit opened step %v", step)
+	}
+	if step := onboardingInitialStep(completed, false, permissionGuideContinuation{id: permissionGuideInput}); step != onboardingStepWelcome {
+		t.Fatalf("ordinary settings continuation sent setup to step %v", step)
 	}
 }

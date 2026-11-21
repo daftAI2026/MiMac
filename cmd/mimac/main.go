@@ -19,6 +19,7 @@ import (
 	"mimac.local/mimac/internal/audiobackendprefs"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/platform/navigation"
+	"mimac.local/mimac/internal/platform/permissionguide"
 	nativeprefs "mimac.local/mimac/internal/platform/preferences"
 	"mimac.local/mimac/internal/platform/typography"
 	"mimac.local/mimac/internal/pluginrt"
@@ -190,8 +191,9 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 			s.showOnboarding()
 		} else {
 			continuation := readPermissionGuideResumeOnLaunch()
-			if s.shouldPresentInitialOnboarding() {
-				s.openOnboarding(true, continuation)
+			automaticFirstRun := s.shouldPresentInitialOnboarding()
+			if automaticFirstRun || continuation.onboarding {
+				s.openOnboarding(automaticFirstRun, continuation)
 			}
 			s.resumePermissionGuideOnLaunch(continuation)
 		}
@@ -239,6 +241,13 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == permissionguide.RegistrationProbeFlag {
+		if err := runPermissionRegistrationProbe(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	releaseVersion := initializeHostIdentity()
 	deviceAccess := flag.Bool("device-access", false, "development only: explicit serial device testing; quit daily MiMac first")
 	show := flag.Bool("show-settings", false, "open the settings window on launch")
@@ -383,7 +392,6 @@ func main() {
 	mygo.App.OnDidBecomeActive(func() {
 		if s.guideWindow != nil && s.guideWindow.IsVisible() {
 			s.refreshPermissionGuide()
-			s.checkPermissionGuideRepair()
 		} else {
 			if s.generalControls != nil {
 				s.syncGeneralControls()
@@ -397,7 +405,9 @@ func main() {
 		if s.report.Ready && !s.closing {
 			if s.guideWindow != nil {
 				s.refreshSetupAfterActivation()
-				s.guideWindow.ShowInactive()
+				if s.guideWindow != nil && !s.guideWindow.IsVisible() {
+					s.guideWindow.ShowInactive()
+				}
 				return
 			}
 			if s.onboarding.window != nil {
