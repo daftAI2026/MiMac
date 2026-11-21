@@ -10,11 +10,12 @@ import (
 // the immutable presentation contract. The shell knows neither a brand's
 // physical layout nor its list of buttons.
 type devicePlugin struct {
-	ModuleID      string
-	VoiceButtonID string
-	Profile       devices.Profile
-	Discover      func() (deviceDiscovery, error)
-	Artwork       func() (image.Image, error)
+	ModuleID           string
+	VoiceButtonID      string
+	UsesBluetoothAudio bool
+	Profile            devices.Profile
+	Discover           func() (deviceDiscovery, error)
+	Artwork            func() (image.Image, error)
 }
 
 type deviceDiscovery struct {

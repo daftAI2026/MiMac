@@ -45,7 +45,7 @@ func (s *shell) setupPluginsWith(start startHIDMonitor) error {
 	if err != nil {
 		return err
 	}
-	s.deviceProfiles = []devicePlugin{{ModuleID: xiaomiPlugin, VoiceButtonID: xiaomi.VoiceButtonID, Profile: profile, Artwork: xiaomi.Artwork, Discover: func() (deviceDiscovery, error) {
+	s.deviceProfiles = []devicePlugin{{ModuleID: xiaomiPlugin, VoiceButtonID: xiaomi.VoiceButtonID, UsesBluetoothAudio: true, Profile: profile, Artwork: xiaomi.Artwork, Discover: func() (deviceDiscovery, error) {
 		devices, err := xiaomi.DiscoverHID()
 		result := deviceDiscovery{Count: len(devices)}
 		if len(devices) == 1 {

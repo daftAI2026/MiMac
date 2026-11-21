@@ -50,7 +50,7 @@ flowchart TD
     device --> detected{"当前 HID 已发现可用设备？"}
     device -.->|缺输入监控时可去通用| generalPermissions["通用：各项权限分别显示状态"]
     menuPermissions["菜单：系统权限"] --> permissionGuide
-    generalPermissions -->|需要遥控器语音输入时显示蓝牙| bluetoothPermission[蓝牙管理打开同一小卡，按蓝牙授权后才请求系统权限]
+    generalPermissions -->|设备插件支持蓝牙音频即显示蓝牙| bluetoothPermission[蓝牙管理打开同一小卡，按蓝牙授权后才请求系统权限]
     bluetoothPermission --> permissionGuide
     generalPermissions -->|选择输入监控或设备控制| directPlacement{"已有可见的系统设置窗口？"}
     directPlacement -->|有且对应权限仍缺：首帧直接贴靠| permissionGuide

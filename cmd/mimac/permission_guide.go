@@ -600,8 +600,7 @@ func (s *shell) requiredPermissionGuideIDs() []permissionGuideID {
 	plugin := s.activeDevicePlugin()
 	hasSelectedDevice := plugin.ModuleID != "" && plugin.Profile.ID != ""
 	hasKeyOutput := hasSelectedDevice || (s.coordinator != nil && s.coordinator.hasExecutableMapping())
-	hasBluetoothVoiceRoute := s.audioRequested() && s.selectedAudioRouteTool() != nil
-	return permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothVoiceRoute)
+	return permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, plugin.UsesBluetoothAudio)
 }
 
 func (s *shell) permissionGuideAppBundlePath() string {
@@ -640,7 +639,7 @@ func (s *shell) permissionGuideAppBundlePath() string {
 	return bundlePath
 }
 
-func permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothVoiceRoute bool) []permissionGuideID {
+func permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, usesBluetoothAudio bool) []permissionGuideID {
 	ids := make([]permissionGuideID, 0, 3)
 	if hasSelectedDevice {
 		ids = append(ids, permissionGuideInput)
@@ -648,7 +647,7 @@ func permissionGuideCapabilityIDs(hasSelectedDevice, hasKeyOutput, hasBluetoothV
 	if hasKeyOutput {
 		ids = append(ids, permissionGuidePostEvent)
 	}
-	if hasBluetoothVoiceRoute {
+	if usesBluetoothAudio {
 		ids = append(ids, permissionGuideBluetooth)
 	}
 	return ids

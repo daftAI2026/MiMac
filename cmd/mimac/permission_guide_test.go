@@ -183,6 +183,20 @@ func TestPermissionGuideSelectedDeviceIncludesCaptureAndKeyOutputBeforeMappings(
 	}
 }
 
+func TestBluetoothVoiceDeviceOffersPermissionBeforeAudioStarts(t *testing.T) {
+	s := &shell{}
+	if err := s.setupPlugins(); err != nil {
+		t.Fatal(err)
+	}
+	if s.audioRequested() || s.currentVoiceTool != "" {
+		t.Fatal("expected a shell with no active audio route")
+	}
+	ids := s.requiredPermissionGuideIDs()
+	if len(ids) != 3 || ids[2] != permissionGuideBluetooth {
+		t.Fatalf("initial permissions for the Bluetooth voice device = %v", ids)
+	}
+}
+
 func TestPermissionGuideMissingAccessUsesOneGrantAction(t *testing.T) {
 	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent, permissionGuideBluetooth} {
 		for _, access := range []permissionGuideAccess{permissionGuideNotDetermined, permissionGuideNotGranted, permissionGuideDenied} {
