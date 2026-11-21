@@ -7,60 +7,64 @@ import (
 	"time"
 )
 
-func TestStaleRegistrationRequiresExactCurrentCodeAndLatestEvidence(t *testing.T) {
-	const header = "2026-11-20 00:07:32.104 Df tccd: "
+func TestRegistrationStreamPredicateUsesExactBundleAndService(t *testing.T) {
 	const bundle = "dev.mimac.app.dev"
-	old, current := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	observation := header + "Failed to match existing code requirement for subject " + bundle + " and service kTCCServiceListenEvent\n" +
-		"\tcdhash H\"" + old + "\"\n\tcdhash H\"" + current + "\"\n"
-	modify := header + "Publishing <TCCDEvent: type=Modify, service=kTCCServiceListenEvent, identifier_type=Bundle ID, identifier=" + bundle + ">\n"
-	update := header + "Update Access Record: kTCCServiceListenEvent for " + bundle + " to Allowed (System Set) (v1)\n" +
-		"\t CodeReq: cdhash H\"" + current + "\"\n"
 	for _, test := range []struct {
-		name       string
-		log        string
-		stale      bool
-		mutated    bool
-		currentSet bool
+		service RegistrationService
+		want    string
 	}{
-		{"exact old to current mismatch", observation, true, false, false},
-		{"same service changed after mismatch", observation + modify, false, true, false},
-		{"same service changed before mismatch", modify + observation, true, true, false},
-		{"new current record then stale preflight", update + modify + observation, true, true, true},
-		{"other service change", strings.ReplaceAll(modify, "ListenEvent", "Accessibility") + observation, true, false, false},
-		{"other service mismatch", strings.ReplaceAll(observation, "ListenEvent", "Accessibility"), false, false, false},
-		{"other app mismatch", strings.ReplaceAll(observation, bundle, "dev.mimac.app"), false, false, false},
-		{"current hash unknown", strings.ReplaceAll(observation, current, old), false, false, false},
-		{"generic denial", header + "denied", false, false, false},
+		{ListenRegistration, `composedMessage CONTAINS "kTCCServiceListenEvent"`},
+		{AccessibilityRegistration, `composedMessage CONTAINS "kTCCServiceAccessibility"`},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			got := registrationEvidence(test.log, bundle, ListenRegistration, current)
-			if got.Stale != test.stale || got.Mutated != test.mutated || got.CurrentWrite != test.currentSet {
-				t.Fatalf("evidence = %+v, want stale=%t mutated=%t currentWrite=%t", got, test.stale, test.mutated, test.currentSet)
-			}
-			if got.Stale && (got.StaleCodeHash != old || got.CurrentCodeHash != current) {
-				t.Fatalf("stale identity = %s -> %s, want %s -> %s", got.StaleCodeHash, got.CurrentCodeHash, old, current)
-			}
-		})
+		predicate, ok := registrationStreamPredicate(bundle, test.service)
+		if !ok || !strings.Contains(predicate, `composedMessage CONTAINS "`+bundle+`"`) || !strings.Contains(predicate, test.want) || !strings.Contains(predicate, `process == "tccd"`) {
+			t.Errorf("predicate for %s = %q, %t", test.service, predicate, ok)
+		}
+	}
+	if _, ok := registrationStreamPredicate(bundle, "Camera"); ok {
+		t.Fatal("unsupported TCC service received a registration stream")
+	}
+	if _, ok := registrationStreamPredicate("", ListenRegistration); ok {
+		t.Fatal("empty bundle ID received a registration stream")
 	}
 }
 
-func TestRegistrationEvidenceWindowRejectsPreviousProbeLogReplay(t *testing.T) {
+func TestListenRegistrationNDJSONUsesFreshExactCodeMismatch(t *testing.T) {
 	const bundle = "dev.mimac.app.dev"
 	old, current := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	mismatch := func(at string) string {
-		return at + " Df tccd: Failed to match existing code requirement for subject " + bundle + " and service kTCCServiceListenEvent\n" +
-			"\tcdhash H\"" + old + "\"\n\tcdhash H\"" + current + "\"\n"
+	const at = "2026-11-21 22:22:40.901984+0800"
+	message := "Failed to match existing code requirement for subject " + bundle + " and service kTCCServiceListenEvent\n" +
+		"\tcdhash H\"" + old + "\"\n\tcdhash H\"" + current + "\""
+	line, err := json.Marshal(map[string]string{"timestamp": at, "messageType": "Default", "eventMessage": message})
+	if err != nil {
+		t.Fatal(err)
 	}
-	log := mismatch("2026-11-20 00:07:31.900") + mismatch("2026-11-20 00:07:32.100")
-	since := time.Date(2026, 11, 20, 0, 7, 32, 0, time.Local)
-	got := registrationEvidenceBetween(log, bundle, ListenRegistration, current, since, since.Add(time.Second))
-	if !got.Stale || !got.StaleAt.Equal(time.Date(2026, 11, 20, 0, 7, 32, 100_000_000, time.Local)) {
-		t.Fatalf("fresh-window evidence = %+v", got)
+	gotAt, gotMessage, ok := parseRegistrationStreamRecord(string(line))
+	wantAt := time.Date(2026, 11, 21, 22, 22, 40, 901_984_000, time.FixedZone("UTC+8", 8*60*60))
+	if !ok || !gotAt.Equal(wantAt) || gotMessage != message {
+		t.Fatalf("parsed ListenEvent NDJSON = (%v, %q, %t), want (%v, %q, true)", gotAt, gotMessage, ok, wantAt, message)
 	}
-	oldOnly := registrationEvidenceBetween(mismatch("2026-11-20 00:07:31.900"), bundle, ListenRegistration, current, since, since.Add(time.Second))
-	if oldOnly.Stale {
-		t.Fatalf("previous probe evidence replayed: %+v", oldOnly)
+	evidence := registrationEvidenceFromStreamEvent(gotMessage, bundle, ListenRegistration, current, gotAt)
+	if !evidence.Stale || evidence.StaleAt != gotAt || evidence.StaleCodeHash != old || evidence.CurrentCodeHash != current {
+		t.Fatalf("exact ListenEvent mismatch = %+v", evidence)
+	}
+	for _, test := range []struct {
+		name    string
+		message string
+		bundle  string
+		service RegistrationService
+		hash    string
+	}{
+		{"wrong service", message, bundle, AccessibilityRegistration, current},
+		{"wrong bundle", message, "dev.mimac.app", ListenRegistration, current},
+		{"wrong current CDHash", message, bundle, ListenRegistration, old},
+		{"same old and current CDHash", strings.Replace(message, current, old, 1), bundle, ListenRegistration, old},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := registrationEvidenceFromStreamEvent(test.message, test.bundle, test.service, test.hash, gotAt); got.Stale {
+				t.Fatalf("mismatch proof accepted wrong identity: %+v", got)
+			}
+		})
 	}
 }
 
@@ -139,14 +143,18 @@ func TestRegistrationNDJSONStreamKeepsMutationAndCurrentWriteEvidence(t *testing
 	const bundle = "dev.mimac.app.dev"
 	current := strings.Repeat("b", 40)
 	at := time.Date(2026, 11, 21, 4, 28, 24, 9_495_000, time.FixedZone("UTC+8", 8*60*60))
-	mutation := "Publishing <TCCDEvent: type=Modify, service=kTCCServiceAccessibility, identifier_type=Bundle ID, identifier=" + bundle + ">"
-	if got := registrationEvidenceFromStreamEvent(mutation, bundle, AccessibilityRegistration, current, at); !got.Mutated || !got.Changed {
-		t.Fatalf("same-service mutation evidence = %+v", got)
-	}
-	update := "Update Access Record: kTCCServiceAccessibility for " + bundle + " to Allowed (System Set) (v1)\n" +
-		"\tCodeReq: cdhash H\"" + current + "\""
-	if got := registrationEvidenceFromStreamEvent(update, bundle, AccessibilityRegistration, current, at); !got.CurrentWrite {
-		t.Fatalf("current-code write evidence = %+v", got)
+	for _, service := range []RegistrationService{ListenRegistration, AccessibilityRegistration} {
+		t.Run(string(service), func(t *testing.T) {
+			mutation := "Publishing <TCCDEvent: type=Modify, service=kTCCService" + string(service) + ", identifier_type=Bundle ID, identifier=" + bundle + ">"
+			if got := registrationEvidenceFromStreamEvent(mutation, bundle, service, current, at); !got.Mutated || !got.Changed {
+				t.Fatalf("same-service mutation evidence = %+v", got)
+			}
+			update := "Update Access Record: kTCCService" + string(service) + " for " + bundle + " to Allowed (System Set) (v1)\n" +
+				"\tCodeReq: cdhash H\"" + current + "\""
+			if got := registrationEvidenceFromStreamEvent(update, bundle, service, current, at); !got.CurrentWrite {
+				t.Fatalf("current-code write evidence = %+v", got)
+			}
+		})
 	}
 }
 

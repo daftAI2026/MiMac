@@ -53,21 +53,19 @@ func PrepareDragRegistration(ctx context.Context, bundlePath string, service Reg
 		currentCodeHash: currentHash,
 		preparedAt:      time.Now(),
 	}
-	watcher, started := startRegistrationChangeWatcher(proof, currentHash)
-	if !started {
+	watcher := startRegistrationChangeWatcher(proof, currentHash)
+	if watcher == nil {
 		return nil, nil
 	}
-	if service == AccessibilityRegistration {
-		select {
-		case err := <-watcher.ready:
-			if err != nil {
-				DiscardDragRegistrationProof(proof)
-				return nil, nil
-			}
-		case <-ctx.Done():
+	select {
+	case err := <-watcher.ready:
+		if err != nil {
 			DiscardDragRegistrationProof(proof)
-			return nil, ctx.Err()
+			return nil, nil
 		}
+	case <-ctx.Done():
+		DiscardDragRegistrationProof(proof)
+		return nil, ctx.Err()
 	}
 
 	probe, err := runRegistrationProbe(ctx, runningBundle, service)
@@ -75,13 +73,8 @@ func PrepareDragRegistration(ctx context.Context, bundlePath string, service Reg
 		DiscardDragRegistrationProof(proof)
 		return nil, nil
 	}
-	var evidence RegistrationEvidence
-	if service == AccessibilityRegistration {
-		evidence = watcher.evidenceAfterFreshProbe(ctx, probe.startedAt)
-	} else {
-		evidence, err = readRegistrationEvidence(ctx, bundleID, service, currentHash, probe.startedAt)
-	}
-	if err != nil || evidence.Mutated || evidence.CurrentWrite || !evidence.Stale ||
+	evidence := watcher.evidenceAfterFreshProbe(ctx, probe.startedAt)
+	if evidence.Mutated || evidence.CurrentWrite || !evidence.Stale ||
 		!strings.EqualFold(evidence.CurrentCodeHash, currentHash) || evidence.StaleCodeHash == "" ||
 		strings.EqualFold(evidence.StaleCodeHash, evidence.CurrentCodeHash) || proof.invalidated.Load() {
 		DiscardDragRegistrationProof(proof)
@@ -157,6 +150,9 @@ func runRegistrationProbe(ctx context.Context, bundle string, service Registrati
 	receipt := filepath.Join(scratch, "result")
 	startedAt := time.Now().Truncate(time.Millisecond).Add(-time.Millisecond)
 	args := []string{"-n", "-g", "-W", "--stdout", receipt, bundle, "--args", RegistrationProbeFlag, string(service)}
+	// Keep -W: it waits for the fresh probe process to exit and close its
+	// stdout receipt before this read. A nonzero `open` result alone is
+	// inconclusive; the unique receipt must still contain one complete status.
 	if err := exec.CommandContext(ctx, "/usr/bin/open", args...).Run(); err != nil && ctx.Err() != nil {
 		return registrationProbe{}, ctx.Err()
 	}
@@ -184,18 +180,6 @@ func registrationBundleHash(ctx context.Context, bundle string) (string, error) 
 		return "", errors.New("permission registration app has no code directory hash")
 	}
 	return strings.ToLower(string(hash[1])), nil
-}
-
-func readRegistrationEvidence(ctx context.Context, bundleID string, service RegistrationService, currentHash string, since time.Time) (RegistrationEvidence, error) {
-	if since.IsZero() || time.Since(since) < 0 || time.Since(since) > 5*time.Second {
-		return RegistrationEvidence{}, errors.New("permission probe evidence expired")
-	}
-	predicate := `process == "tccd" AND eventMessage CONTAINS "` + bundleID + `" AND eventMessage CONTAINS "kTCCService` + string(service) + `"`
-	recent, err := exec.CommandContext(ctx, "/usr/bin/log", "show", "--info", "--start", since.Local().Format("2006-01-02 15:04:05"), "--style", "compact", "--predicate", predicate).Output()
-	if err != nil {
-		return RegistrationEvidence{}, err
-	}
-	return registrationEvidenceBetween(string(recent), bundleID, service, currentHash, since, time.Now()), nil
 }
 
 type registrationLogWatcher struct {
@@ -231,33 +215,26 @@ func (w *registrationLogWatcher) evidenceAfterFreshProbe(ctx context.Context, si
 	}
 }
 
-// startRegistrationChangeWatcher keeps the existing compact observer for
-// ListenEvent. Accessibility uses one NDJSON stream for both fresh mismatch
-// evidence and continued mutation invalidation.
-func startRegistrationChangeWatcher(proof *DragRegistrationProof, currentHash string) (*registrationLogWatcher, bool) {
-	if proof.service == AccessibilityRegistration {
-		return startAccessibilityRegistrationChangeWatcher(proof, currentHash)
+// startRegistrationChangeWatcher records this service's live TCC events before
+// the fresh probe and keeps observing until the proof is consumed or expires.
+func startRegistrationChangeWatcher(proof *DragRegistrationProof, currentHash string) *registrationLogWatcher {
+	predicate, ok := registrationStreamPredicate(proof.bundleID, proof.service)
+	if !ok {
+		proof.invalidated.Store(true)
+		return nil
 	}
-	if !startCompactRegistrationChangeWatcher(proof) {
-		return nil, false
-	}
-	return nil, true
-}
-
-func startAccessibilityRegistrationChangeWatcher(proof *DragRegistrationProof, currentHash string) (*registrationLogWatcher, bool) {
 	watchCtx, cancel := context.WithTimeout(context.Background(), dragRegistrationProofTTL)
-	predicate := `process == "tccd" AND composedMessage CONTAINS "` + proof.bundleID + `" AND composedMessage CONTAINS "kTCCService` + string(proof.service) + `"`
 	cmd := exec.CommandContext(watchCtx, "/usr/bin/log", "stream", "--level", "info", "--style", "ndjson", "--predicate", predicate)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
 		proof.invalidated.Store(true)
-		return nil, false
+		return nil
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		proof.invalidated.Store(true)
-		return nil, false
+		return nil
 	}
 	watcher := &registrationLogWatcher{
 		ready: make(chan error, 1), evidence: make(chan RegistrationEvidence, 32), done: make(chan struct{}),
@@ -309,46 +286,7 @@ func startAccessibilityRegistrationChangeWatcher(proof *DragRegistrationProof, c
 		invalidateRegistrationProofIfPending(proof)
 		close(watcher.done)
 	}()
-	return watcher, true
-}
-
-func startCompactRegistrationChangeWatcher(proof *DragRegistrationProof) bool {
-	watchCtx, cancel := context.WithTimeout(context.Background(), dragRegistrationProofTTL)
-	predicate := `process == "tccd" AND eventMessage CONTAINS "TCCDEvent" AND eventMessage CONTAINS "service=kTCCService` + string(proof.service) + `" AND eventMessage CONTAINS "identifier=` + proof.bundleID + `"`
-	cmd := exec.CommandContext(watchCtx, "/usr/bin/log", "stream", "--level", "info", "--style", "compact", "--predicate", predicate)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		proof.invalidated.Store(true)
-		return false
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		proof.invalidated.Store(true)
-		return false
-	}
-	proof.watcherCancel = cancel
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			if registrationChangeEvent(scanner.Text(), proof.bundleID, proof.service) {
-				proof.invalidated.Store(true)
-				cancel()
-				break
-			}
-		}
-		_ = cmd.Wait()
-		if watchCtx.Err() == nil && !proof.consumed.Load() {
-			proof.invalidated.Store(true)
-		}
-	}()
-	return true
-}
-
-func registrationChangeEvent(line, bundleID string, service RegistrationService) bool {
-	change := ", service=kTCCService" + string(service) + ", identifier_type=Bundle ID, identifier=" + bundleID + ">"
-	return strings.Contains(line, "TCCDEvent: type=") && strings.Contains(line, change) &&
-		(strings.Contains(line, "TCCDEvent: type=Insert,") || strings.Contains(line, "TCCDEvent: type=Modify,") || strings.Contains(line, "TCCDEvent: type=Delete,"))
+	return watcher
 }
 
 func CanProbeOwnRegistration(service RegistrationService) bool {

@@ -58,89 +58,23 @@ const (
 	AccessibilityRegistration RegistrationService = "Accessibility"
 )
 
-var registrationLogHeader = regexp.MustCompile(`^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.`)
 var registrationCodeHash = regexp.MustCompile(`cdhash H"([a-fA-F0-9]{40})"`)
-
-// registrationEvidence extracts only the exact bundle/service's stale code
-// requirement. Callers use registrationEvidenceBetween for time-bounded proof.
-func registrationEvidence(log, bundleID string, service RegistrationService, codeHash string) RegistrationEvidence {
-	return registrationEvidenceBetween(log, bundleID, service, codeHash, time.Time{}, time.Time{})
-}
-
-func registrationEvidenceBetween(log, bundleID string, service RegistrationService, codeHash string, since, until time.Time) RegistrationEvidence {
-	serviceName := "kTCCService" + string(service)
-	mismatch := "Failed to match existing code requirement for subject " + bundleID + " and service " + serviceName
-	update := "Update Access Record: " + serviceName + " for " + bundleID + " to "
-	change := ", service=" + serviceName + ", identifier_type=Bundle ID, identifier=" + bundleID + ">"
-	entries := registrationLogEntries(log, since, until)
-	var evidence RegistrationEvidence
-	for i := 0; i < len(entries); {
-		line := entries[i]
-		i++
-		if !registrationLogHeader.MatchString(line) {
-			continue
-		}
-		j := i
-		for j < len(entries) && !registrationLogHeader.MatchString(entries[j]) {
-			j++
-		}
-		entry := strings.Join(entries[i-1:j], "\n")
-		if strings.Contains(line, "TCCDEvent: type=") && strings.Contains(line, change) {
-			evidence.Mutated = true
-			evidence.Stale = false
-			evidence.StaleAt = time.Time{}
-			evidence.StaleCodeHash = ""
-			evidence.CurrentCodeHash = ""
-			evidence.Changed = strings.Contains(line, "TCCDEvent: type=Insert,") || strings.Contains(line, "TCCDEvent: type=Modify,")
-			if strings.Contains(line, "TCCDEvent: type=Delete,") {
-				evidence.CurrentWrite = false
-			}
-		}
-		if strings.Contains(line, update) {
-			hashes := registrationCodeHash.FindAllStringSubmatch(entry, 2)
-			evidence.CurrentWrite = len(hashes) == 1 && strings.EqualFold(hashes[0][1], codeHash)
-		}
-		if strings.Contains(line, mismatch) {
-			hashes := registrationCodeHash.FindAllStringSubmatch(entry, 3)
-			evidence.Stale = len(hashes) == 2 && strings.EqualFold(hashes[1][1], codeHash) && !strings.EqualFold(hashes[0][1], codeHash)
-			if evidence.Stale {
-				evidence.StaleAt = registrationEventTime(line)
-				evidence.StaleCodeHash = strings.ToLower(hashes[0][1])
-				evidence.CurrentCodeHash = strings.ToLower(hashes[1][1])
-			}
-		}
-		i = j
-	}
-	return evidence
-}
-
-func registrationLogEntries(log string, since, until time.Time) []string {
-	entries := strings.Split(log, "\n")
-	if since.IsZero() && until.IsZero() {
-		return entries
-	}
-	filtered := make([]string, 0, len(entries))
-	for i := 0; i < len(entries); {
-		if !registrationLogHeader.MatchString(entries[i]) {
-			i++
-			continue
-		}
-		start := i
-		i++
-		for i < len(entries) && !registrationLogHeader.MatchString(entries[i]) {
-			i++
-		}
-		observed := registrationEventTime(entries[start])
-		if observed.IsZero() || (!since.IsZero() && !observed.After(since)) || (!until.IsZero() && observed.After(until)) {
-			continue
-		}
-		filtered = append(filtered, entries[start:i]...)
-	}
-	return filtered
-}
 
 func validDragRegistrationService(service RegistrationService) bool {
 	return service == ListenRegistration || service == AccessibilityRegistration
+}
+
+func registrationStreamPredicate(bundleID string, service RegistrationService) (string, bool) {
+	if bundleID == "" || !validDragRegistrationService(service) {
+		return "", false
+	}
+	return `process == "tccd" AND composedMessage CONTAINS "` + bundleID + `" AND composedMessage CONTAINS "kTCCService` + string(service) + `"`, true
+}
+
+func registrationChangeEvent(line, bundleID string, service RegistrationService) bool {
+	change := ", service=kTCCService" + string(service) + ", identifier_type=Bundle ID, identifier=" + bundleID + ">"
+	return strings.Contains(line, "TCCDEvent: type=") && strings.Contains(line, change) &&
+		(strings.Contains(line, "TCCDEvent: type=Insert,") || strings.Contains(line, "TCCDEvent: type=Modify,") || strings.Contains(line, "TCCDEvent: type=Delete,"))
 }
 
 func (p *DragRegistrationProof) consume(now time.Time, bundlePath string, service RegistrationService, access RegistrationAccess) bool {
@@ -162,15 +96,6 @@ func invalidateRegistrationProofIfPending(proof *DragRegistrationProof) {
 	if proof != nil && !proof.consumed.Load() {
 		proof.invalidated.Store(true)
 	}
-}
-
-func registrationEventTime(line string) time.Time {
-	const compactTimestamp = "2006-01-02 15:04:05.000"
-	if len(line) < len(compactTimestamp) {
-		return time.Time{}
-	}
-	observed, _ := time.ParseInLocation(compactTimestamp, line[:len(compactTimestamp)], time.Local)
-	return observed
 }
 
 type registrationStreamRecord struct {

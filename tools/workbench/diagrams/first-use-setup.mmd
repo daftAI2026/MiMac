@@ -75,7 +75,7 @@ flowchart TD
     trackDrop -->|松开、取消、权限窗隐藏或关闭| endDrop["停止拖动跟踪，180ms淡出并隐藏本面板的遮罩窗口；关闭面板时统一释放"]
     endDrop --> guideRefresh["有效拖放后交还键盘焦点，并重查实际授权"]
     missing -->|否| complete["小卡与主卡显示已授权，主卡保留继续按钮"]
-    settings -.-> staleProof["按当前权限与 App 签名后台只读核实旧登记"]
+    settings -.-> staleProof["按本 App 与当前权限过滤 live tccd NDJSON；流就绪后用新进程只读查权，仅接受本次查询中的旧→当前 CDHash mismatch，并持续监听同服务变化以撤销凭据"]
     drag --> delivery["输入监控在系统列表接收时核实落点；设备控制在真实起拖、公布文件前核实设置页"]
     delivery -->|本项仍被拒且已证实旧签名| recoverEntry["仅重置本应用的这一项旧登记"]
     delivery -->|正常或无确切旧记录| nativeRebind["原生文件 URL 交给系统，系统负责登记和确认"]
