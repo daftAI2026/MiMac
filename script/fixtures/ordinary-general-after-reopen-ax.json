@@ -1,0 +1,170 @@
+[
+  {
+    "bounds": {
+      "height": 372,
+      "width": 880,
+      "x": 450,
+      "y": 30
+    },
+    "description": null,
+    "enabled": null,
+    "identifier": null,
+    "role": "AXWindow",
+    "title": "MiMac Dev 权限拖放引导",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 359,
+      "width": 500,
+      "x": 264,
+      "y": 144
+    },
+    "description": null,
+    "enabled": null,
+    "identifier": null,
+    "role": "AXWindow",
+    "title": "MiMac Dev 系统权限",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 680,
+      "width": 900,
+      "x": 510,
+      "y": 128
+    },
+    "description": null,
+    "enabled": null,
+    "identifier": null,
+    "role": "AXWindow",
+    "title": "MiMac Dev",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 18,
+      "width": 300,
+      "x": 343.5,
+      "y": 370.5
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": "在系统设置中管理输入监控",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 14.1328125,
+      "width": 35.75486373901367,
+      "x": 686.7451171875,
+      "y": 380.93359375
+    },
+    "description": "已授权",
+    "enabled": true,
+    "identifier": null,
+    "role": "AXStaticText",
+    "title": null,
+    "value": "已授权"
+  },
+  {
+    "bounds": {
+      "height": 18,
+      "width": 300,
+      "x": 343.5,
+      "y": 432.310546875
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": "在系统设置中管理设备控制和数据访问",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 24,
+      "width": 64,
+      "x": 667.5,
+      "y": 437.810546875
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": "授权…",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 36,
+      "width": 160,
+      "x": 522,
+      "y": 352
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": "通用",
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 16.125,
+      "width": 63.5,
+      "x": 1244,
+      "y": 523.375
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXStaticText",
+    "title": null,
+    "value": "已授权"
+  },
+  {
+    "bounds": {
+      "height": 24,
+      "width": 60.5,
+      "x": 1319.5,
+      "y": 519.5
+    },
+    "description": "管理输入监控",
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": null,
+    "value": null
+  },
+  {
+    "bounds": {
+      "height": 16,
+      "width": 39,
+      "x": 1268.5,
+      "y": 564.5
+    },
+    "description": null,
+    "enabled": true,
+    "identifier": null,
+    "role": "AXStaticText",
+    "title": null,
+    "value": "未授权"
+  },
+  {
+    "bounds": {
+      "height": 24,
+      "width": 60.5,
+      "x": 1319.5,
+      "y": 560.5
+    },
+    "description": "管理设备控制和数据访问",
+    "enabled": true,
+    "identifier": null,
+    "role": "AXButton",
+    "title": null,
+    "value": null
+  }
+]

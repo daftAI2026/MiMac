@@ -168,8 +168,8 @@ func (p *permissionGuideDragRegistrationPreparation) receive() {
 	p.ready = true
 }
 
-// Input Monitoring checks at file delivery. Device Control checks at the
-// confirmed start of the drag before AppKit can prefetch the file.
+// Both list permissions check the matching Settings page at the confirmed
+// native drag threshold, before AppKit can prefetch the file URL.
 func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool {
 	service, supported := permissionGuideRegistrationService(id)
 	preparation := s.dragRegistrationPreparation

@@ -17,6 +17,4 @@ func SystemSettingsRunning() bool { return false }
 
 func VisibleSystemSettingsWindow(id uint32) (WindowSnapshot, bool) { return WindowSnapshot{}, false }
 
-func SettingsReceivesReleasedDrop(id uint32, x, y int, input, routed bool) bool { return false }
-
-func SettingsReadyForControlDrag(routed bool) bool { return false }
+func SettingsReadyForPermissionDrag(input, routed bool) bool { return false }

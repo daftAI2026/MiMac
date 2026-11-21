@@ -104,22 +104,33 @@ private func axRect(_ element: AXUIElement) -> CGRect? {
 
 private func collectWindowTree(_ windows: [AXUIElement]) -> Traversal {
     var result = Traversal(rootWindowCount: windows.count)
-    var queue = windows.map { ($0, 0) }
+    var queue: [(AXUIElement, Int, Int, String?)] = windows.enumerated().map { item in
+        (item.element, 0, item.offset, axString(item.element, "AXTitle"))
+    }
     var cursor = 0
     while cursor < queue.count && result.visitedCount < maximumNodes {
-        let (element, depth) = queue[cursor]
+        let (element, depth, rootWindowIndex, rootWindowTitle) = queue[cursor]
         cursor += 1
         result.visitedCount += 1
         result.elements.append(element)
 
         if let role = axString(element, "AXRole"), isOutputRole(role) {
-            result.nodes.append(record(element, role: role))
+            var node = record(element, role: role)
+            node["root_window_index"] = rootWindowIndex
+            if let rootWindowTitle {
+                node["root_window_title"] = rootWindowTitle
+            } else {
+                node["root_window_title"] = NSNull()
+            }
+            result.nodes.append(node)
         }
 
         if depth < 64 {
             let (error, children) = axChildren(element)
             if error == .success {
-                queue.append(contentsOf: children.map { ($0, depth + 1) })
+                queue.append(contentsOf: children.map {
+                    ($0, depth + 1, rootWindowIndex, rootWindowTitle)
+                })
             } else if error != .noValue && error != .attributeUnsupported {
                 result.errors.append(["stage": "AXChildren", "error_code": error.rawValue, "depth": depth])
             }

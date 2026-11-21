@@ -5,7 +5,6 @@ import (
 	"image"
 	"image/png"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -54,21 +53,12 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				previousResumeID = s.resumeID
 				s.prepareDragRegistration(draggedPermission)
 				return permissionGuideFileOffer(draggedPermission, data, func() {
-					if draggedPermission == permissionGuidePostEvent {
-						if s.guideWindow == window && s.generation == generation && permissionguide.SettingsReadyForControlDrag(s.settingsOpenedFor == draggedPermission) {
-							s.repairDragRegistrationBeforeDelivery(draggedPermission)
-						}
-						return
-					}
-					d := s.dropGuide
 					if s.guideWindow != window || s.generation != generation || s.currentID != draggedPermission ||
-						!permissionGuideAllowsAppDrag(draggedPermission) || d == nil || !d.active {
+						!permissionGuideAllowsAppDrag(draggedPermission) {
 						return
 					}
-					p := mygo.Screen.CursorScreenPoint()
-					point := image.Pt(p.X, p.Y)
-					if d.acceptsRelease(point) && permissionguide.SettingsReceivesReleasedDrop(d.targetID, p.X, p.Y,
-						draggedPermission == permissionGuideInput, s.settingsOpenedFor == draggedPermission) {
+					input := draggedPermission == permissionGuideInput
+					if permissionguide.SettingsReadyForPermissionDrag(input, s.settingsOpenedFor == draggedPermission) {
 						s.repairDragRegistrationBeforeDelivery(draggedPermission)
 					}
 				})
@@ -140,22 +130,14 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 	}
 }
 
-// MyGo calls the drag source only after the drag threshold. Device Control
-// may read the file before AppKit reports Started. Input Monitoring can defer
-// its release check until the receiver reads either URL representation.
-func permissionGuideFileOffer(id permissionGuideID, file transfer.Data, beforeDelivery func()) transfer.Data {
-	if id == permissionGuidePostEvent {
-		beforeDelivery()
-		return file
+// MyGo requests drag data after the native drag threshold. macOS may prefetch
+// the file URL before mouse-up, so prepare both list permissions before the
+// ordinary file offer is returned to the native drag session.
+func permissionGuideFileOffer(id permissionGuideID, file transfer.Data, beforePublication func()) transfer.Data {
+	if permissionGuideAllowsAppDrag(id) && beforePublication != nil {
+		beforePublication()
 	}
-	deliver := sync.OnceFunc(beforeDelivery)
-	representation := func(format transfer.Format) transfer.Representation {
-		return transfer.Lazy(format, func() ([]byte, error) {
-			deliver()
-			return file.Read(format)
-		})
-	}
-	return transfer.New(transfer.NewItem(representation(transfer.FileList), representation(transfer.URIList)))
+	return file
 }
 
 // Supply only the icon pixels. The default native drag preview captures the

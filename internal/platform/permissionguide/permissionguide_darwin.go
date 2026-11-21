@@ -409,31 +409,9 @@ func VisibleSystemSettingsWindow(id uint32) (WindowSnapshot, bool) {
 	return systemSettingsWindow(id, true)
 }
 
-// SettingsReceivesReleasedDrop checks the live receiver at file delivery. A
-// cached overlay hole can outlive its destination during native drag tracking.
-func SettingsReceivesReleasedDrop(id uint32, x, y int, input, routed bool) bool {
-	if id == 0 || loadWindowListAPI() != nil || PrimaryMouseButtonDown() {
-		return false
-	}
-	pid, ok := systemSettingsPID()
-	if !ok {
-		return false
-	}
-	workspace := objc.Send[objc.ID](objc.ID(objc.GetClass("NSWorkspace")), objc.RegisterName("sharedWorkspace"))
-	front := objc.Send[objc.ID](workspace, objc.RegisterName("frontmostApplication"))
-	if front == 0 || objc.Send[int32](front, objc.RegisterName("processIdentifier")) != pid {
-		return false
-	}
-	records, ok := readWindowRecords(0x11, 0)
-	if !ok || settingsHasAttachedDialog(records, pid) || !settingsReceivesPoint(records, id, pid, float64(x), float64(y)) {
-		return false
-	}
-	return registrationPageMatches(id, input, routed)
-}
-
 // The gesture still originates over the guide. Validate the selected system
 // pane itself before exposing the file, without testing the pointer as a drop.
-func SettingsReadyForControlDrag(routed bool) bool {
+func SettingsReadyForPermissionDrag(input, routed bool) bool {
 	pid, ok := systemSettingsPID()
 	if !ok || loadWindowListAPI() != nil {
 		return false
@@ -446,7 +424,7 @@ func SettingsReadyForControlDrag(routed bool) bool {
 	if !found || !visibleSettingsTarget(records, target) {
 		return false
 	}
-	return registrationPageMatches(target.ID, false, routed)
+	return registrationPageMatches(target.ID, input, routed)
 }
 
 func registrationPageMatches(id uint32, input, routed bool) bool {

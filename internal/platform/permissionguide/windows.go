@@ -79,18 +79,6 @@ func settingsHasAttachedDialog(records []windowRecord, owner int32) bool {
 	return false
 }
 
-// CoreGraphics returns windows front to back. The pointer-transparent drag
-// image and spotlight panels use floating layers above ordinary windows.
-func settingsReceivesPoint(records []windowRecord, id uint32, owner int32, x, y float64) bool {
-	for _, w := range records {
-		r := w.frame
-		if w.layer == 0 && w.alpha > .05 && x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height {
-			return w.id == id && w.owner == owner
-		}
-	}
-	return false
-}
-
 func settingsDropMatchesPage(title string, input, routed bool) bool {
 	switch title {
 	case "Input Monitoring", "输入监控", "輸入監控":

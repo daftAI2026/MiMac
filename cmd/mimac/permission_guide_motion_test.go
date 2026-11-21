@@ -252,42 +252,37 @@ func TestPermissionGuideAnchorUpdatesDoNotStartAnotherFlight(t *testing.T) {
 	}
 }
 
-func TestPermissionFileDeliveryOncePerGesture(t *testing.T) {
+func TestPermissionFilePublicationPrecedesMacOSPrefetchOncePerGesture(t *testing.T) {
 	file, err := transfer.FileData("/Applications/Test App.app")
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
-	for gesture := 0; gesture < 2; gesture++ {
-		offer := permissionGuideFileOffer(permissionGuideInput, file, func() { count++ }).Snapshot()
-		if count != gesture {
-			t.Fatal("starting a drag consumed authorization evidence")
-		}
-		for _, format := range []transfer.Format{transfer.FileList, transfer.URIList, transfer.FileList} {
-			got, err := offer.Read(format)
-			want, _ := file.Read(format)
-			if err != nil || string(got) != string(want) || count != gesture+1 {
-				t.Fatal("delivery changed the URL or ran twice")
+	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
+		t.Run(permissionGuideIDString(id), func(t *testing.T) {
+			calls := 0
+			mouseDown := true
+			preparedWhileDragging := false
+			offer := permissionGuideFileOffer(id, file.Snapshot(), func() {
+				calls++
+				preparedWhileDragging = mouseDown
+			}).Snapshot()
+			if calls != 1 || !preparedWhileDragging {
+				t.Fatalf("native drag threshold did not prepare once before publication: calls=%d while-down=%t", calls, preparedWhileDragging)
 			}
-		}
-	}
-}
 
-func TestDeviceControlPreparesBeforeNativeFilePrefetch(t *testing.T) {
-	file, err := transfer.FileData("/Applications/Example.app")
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	offer := permissionGuideFileOffer(permissionGuidePostEvent, file, func() { calls++ })
-	if calls != 1 {
-		t.Fatalf("native file offer published before gesture preparation finished (calls=%d)", calls)
-	}
-	for _, format := range []transfer.Format{transfer.FileList, transfer.URIList, transfer.FileList} {
-		data, err := offer.Read(format)
-		want, _ := file.Read(format)
-		if err != nil || string(data) != string(want) || calls != 1 {
-			t.Fatalf("unexpected publication for %v, calls=%d", format, calls)
-		}
+			// System Settings may prefetch FileList while the native drag is
+			// still tracking and before the user releases the mouse button.
+			for _, format := range []transfer.Format{transfer.FileList, transfer.URIList, transfer.FileList} {
+				got, err := offer.Read(format)
+				want, wantErr := file.Read(format)
+				if err != nil || wantErr != nil || string(got) != string(want) || calls != 1 {
+					t.Fatalf("prefetch changed the URL or repeated preparation for %v (calls=%d)", format, calls)
+				}
+			}
+			mouseDown = false
+			if calls != 1 {
+				t.Fatalf("mouse-up repeated preparation (calls=%d)", calls)
+			}
+		})
 	}
 }

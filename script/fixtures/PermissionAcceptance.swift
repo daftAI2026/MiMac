@@ -43,6 +43,35 @@ func elements(_ roots: [AXUIElement]) -> [AXUIElement] {
     elementsByRoot(roots).flatMap { $0 }
 }
 
+func uniqueAXElements(_ values: [AXUIElement]) -> [AXUIElement] {
+    var unique: [AXUIElement] = []
+    for value in values where !unique.contains(where: { CFEqual($0, value) }) {
+        unique.append(value)
+    }
+    return unique
+}
+
+func sheets(in roots: [AXUIElement]) -> [AXUIElement] {
+    var queue = roots
+    var visited: [AXUIElement] = []
+    var found: [AXUIElement] = []
+    var cursor = 0
+    while cursor < queue.count && visited.count < 2000 {
+        let element = queue[cursor]
+        cursor += 1
+        if visited.contains(where: { CFEqual($0, element) }) { continue }
+        visited.append(element)
+        if property(element, "AXRole") == "AXSheet" {
+            found.append(element)
+        }
+        let attachedSheets = attribute(element, "AXSheets") as? [AXUIElement] ?? []
+        found.append(contentsOf: attachedSheets)
+        queue.append(contentsOf: attachedSheets)
+        queue.append(contentsOf: attribute(element, "AXChildren") as? [AXUIElement] ?? [])
+    }
+    return uniqueAXElements(found)
+}
+
 func windows(_ pid: Int32) -> [AXUIElement] {
     guard pid > 0 else { return [] }
     return attribute(AXUIElementCreateApplication(pid), "AXWindows") as? [AXUIElement] ?? []
@@ -72,8 +101,12 @@ func rect(_ element: AXUIElement) -> CGRect? {
 }
 
 let args = CommandLine.arguments
-guard args.count == 3, AXIsProcessTrusted() else { stop("AX is unavailable or the bundle path is missing") }
+guard args.count >= 3, AXIsProcessTrusted() else { stop("AX is unavailable or the bundle path is missing") }
 let operation = args[1]
+guard (operation == "cancel-auth" && args.count == 5) ||
+      (operation != "cancel-auth" && args.count == 3) else {
+    stop("unexpected arguments for permission operation")
+}
 let bundleURL = URL(fileURLWithPath: args[2]).resolvingSymlinksInPath()
 guard let bundle = Bundle(url: bundleURL), let id = bundle.bundleIdentifier,
       let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String,
@@ -280,6 +313,67 @@ let ordinaryOrder: [Int32] = scene.compactMap { row in
           row[kCGWindowLayer as String] as? Int == 0, let box = frame(row),
           box.width >= 400 && box.height >= 250 else { return nil }
     return pid
+}
+
+if operation == "cancel-auth" {
+    guard isDev else { stop("auth cancellation is restricted to the verified canonical Dev") }
+    guard let expectedAppPID = Int32(args[3]), let expectedSettingsPID = Int32(args[4]),
+          expectedAppPID > 0, expectedSettingsPID > 0,
+          apps.count == 1, candidates.count == 1, appPID == expectedAppPID,
+          settingsPID == expectedSettingsPID else {
+        stop("the expected frozen Dev and System Settings PIDs are not unique")
+    }
+    guard let page, inputPage.contains(title) else {
+        stop("the exact Input Monitoring page is not present in the expected Settings process")
+    }
+    guard restart.isEmpty else {
+        stop("a restart action is present; the password-sheet Cancel flow is not isolated")
+    }
+    let pageSheets = sheets(in: [page])
+    let otherWindowSheets = sheets(in: otherSettingsWindows)
+    let targetSheetRole = pageSheets.first.map { property($0, "AXRole") }
+    guard pageSheets.count == 1, let targetSheetRole, targetSheetRole == "AXSheet",
+          otherWindowSheets.isEmpty else {
+        stop("exactly one AXSheet must belong to the verified Input Monitoring page, with no sheet in another Settings window")
+    }
+    guard frontPID == settingsPID || credentialWindow else {
+        stop("frontmost app is not System Settings or its credential UI")
+    }
+    let sheetElements = elements(pageSheets)
+    let secureFields = sheetElements.filter {
+        property($0, "AXRole") == "AXSecureTextField" || property($0, "AXSubrole") == "AXSecureTextField"
+    }
+    let cancelButtons = sheetElements.filter { element in
+        property(element, "AXRole") == "AXButton" &&
+        attribute(element, "AXEnabled") as? Bool == true &&
+        [property(element, "AXTitle"), property(element, "AXDescription")]
+            .contains(where: { ["Cancel", "取消"].contains($0) })
+    }
+    guard secureFields.count == 1, cancelButtons.count == 1, let cancelButton = cancelButtons.first else {
+        stop("the exact Settings password sheet must contain one secure field and one enabled Cancel button")
+    }
+    let cancelLabel = [property(cancelButton, "AXTitle"), property(cancelButton, "AXDescription")]
+        .first(where: { ["Cancel", "取消"].contains($0) }) ?? ""
+    let startedAt = Date().timeIntervalSince1970
+    guard AXUIElementPerformAction(cancelButton, kAXPressAction as CFString) == .success else {
+        stop("AXPress on the exact Cancel button failed; no text was entered")
+    }
+    let completedAt = Date().timeIntervalSince1970
+    emit([
+        "status": "CANCELLED", "action": "AXPress Cancel",
+        "app": Int(expectedAppPID), "settings": Int(expectedSettingsPID),
+        "bundle_id": id, "bundle_path": bundleURL.path,
+        "authentication_bundle": front?.bundleIdentifier ?? "",
+        "frontmost_bundle_id": front?.bundleIdentifier ?? "",
+        "settings_page": title, "authentication_sheet_count": pageSheets.count,
+        "target_page_sheet_count": pageSheets.count, "target_sheet_role": targetSheetRole,
+        "target_sheet_source": "verified-page-subtree",
+        "other_window_sheet_count": otherWindowSheets.count,
+        "secure_field_count": secureFields.count, "cancel_button_count": cancelButtons.count,
+        "cancel_label": cancelLabel, "text_entered": false,
+        "press_started_at": startedAt, "press_completed_at": completedAt
+    ])
+    exit(0)
 }
 
 if operation == "probe" {

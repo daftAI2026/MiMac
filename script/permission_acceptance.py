@@ -24,8 +24,20 @@ CONTROL_ROW_TITLES = (
     "在系统设置中管理裝置控制與資料存取",
     "在系统设置中管理輔助使用",
 )
+CONTROL_PERMISSION_NAMES = tuple(title.removeprefix("在系统设置中管理") for title in CONTROL_ROW_TITLES)
+BLUETOOTH_PERMISSION_NAMES = ("蓝牙", "藍牙", "Bluetooth")
+BLUETOOTH_ROW_TITLES = tuple("在系统设置中管理" + name for name in BLUETOOTH_PERMISSION_NAMES)
+GENERAL_INPUT_MANAGE = "管理输入监控"
+GENERAL_CONTROL_MANAGE = tuple("管理" + title for title in CONTROL_PERMISSION_NAMES)
+GENERAL_BLUETOOTH_MANAGE = tuple("管理" + title for title in BLUETOOTH_PERMISSION_NAMES)
 PERMISSION_ACTION_LABEL = "授权…"
 DRAG_GEOMETRY_TIMEOUT = 12
+RESTART_FOCUS_RECOVERY_SECONDS = 4
+AUTH_PROMPT_BUNDLES = {
+    "com.apple.systempreferences",
+    "com.apple.SecurityAgent",
+    "com.apple.LocalAuthentication.UIAgent",
+}
 
 
 def capture(*command):
@@ -61,13 +73,20 @@ class Acceptance:
         self.identifier = info["CFBundleIdentifier"]
         self.fixed_dev = args.fixed_dev_receipt is not None
         self.existing_input = args.existing_input
+        self.general_permissions = args.general_permissions
         self.resume_input_drop = args.resume_input_drop
         self.drag_regressions_only = args.drag_regressions_only
-        selected_scopes = sum((self.existing_input, self.resume_input_drop, self.drag_regressions_only, args.finish))
+        self.cancel_reentry = getattr(args, "cancel_reentry", False)
+        selected_scopes = sum((self.existing_input, self.general_permissions, self.resume_input_drop,
+                               self.drag_regressions_only, self.cancel_reentry, args.finish))
         if selected_scopes > 1:
-            raise RuntimeError("--existing-input, --resume-input-drop, --drag-regressions-only and --finish are separate acceptance scopes")
+            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only and --finish are separate acceptance scopes")
         if self.existing_input and not self.fixed_dev:
             raise RuntimeError("--existing-input requires the verified canonical Dev receipt")
+        if self.general_permissions and not self.fixed_dev:
+            raise RuntimeError("--general-permissions requires the verified canonical Dev receipt")
+        if self.cancel_reentry and not self.fixed_dev:
+            raise RuntimeError("--cancel-reentry requires the verified canonical Dev receipt")
         if self.resume_input_drop and not self.fixed_dev:
             raise RuntimeError("--resume-input-drop requires the verified canonical Dev receipt")
         if self.drag_regressions_only and not self.fixed_dev:
@@ -91,7 +110,8 @@ class Acceptance:
         self.sha = args.sha256.lower()
         self.check_identity()
         self.config = Path.home() / "Library/Application Support" / self.name
-        if self.config.exists() and not (args.finish or self.existing_input or self.resume_input_drop or self.drag_regressions_only):
+        if self.config.exists() and not (args.finish or self.existing_input or self.general_permissions or
+                                         self.cancel_reentry or self.resume_input_drop or self.drag_regressions_only):
             raise RuntimeError("use a fresh verification identity with an unused configuration directory")
         self.output = args.output.resolve()
         if not self.output.is_relative_to(CACHE.resolve()):
@@ -113,11 +133,16 @@ class Acceptance:
             self.resume_input_args = resume_input_drop_args(entries, identity)
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
-        elif self.drag_regressions_only:
+        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry:
             self.output.mkdir()
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
-            self.record("identity", {**identity, "mode": "drag-regressions-only"})
+            mode = (
+                "drag-regressions-only" if self.drag_regressions_only else
+                "ordinary-cancel-reentry" if self.cancel_reentry else
+                "ordinary-general-permissions"
+            )
+            self.record("identity", {**identity, "mode": mode})
         else:
             self.output.mkdir()
             for name, destination in (("PermissionAcceptance.swift", self.driver), ("LiveAcceptanceAX.swift", self.ax)):
@@ -165,6 +190,346 @@ class Acceptance:
             })
             raise RuntimeError("preflight found an existing macOS security or Settings sheet; resolve it manually before this run")
         return state
+
+    def run_general_permissions(self):
+        state = self.preflight_no_existing_sheet("ordinary-general-permissions")
+        if not state["app"]:
+            subprocess.run([
+                "/usr/bin/open", "--stderr", str(self.output / "app-stderr.log"),
+                "-a", str(self.bundle), "--args", "--show-settings",
+            ], check=True)
+            state = wait_for(
+                lambda: (current if (current := self.probe()).get("app") else None),
+                "frozen Dev settings window",
+            )
+        pid = state["app"]
+        if not pid:
+            raise RuntimeError("--general-permissions could not find the frozen Dev process")
+
+        nodes = wait_for(
+            lambda: (current if ordinary_general_startup_ready(
+                pid, current := self.view_if_windows_available(pid), self.name
+            ) else None),
+            "the frozen Dev main window and visible General button",
+        )
+        if not ordinary_general_surface_ready(nodes, self.name):
+            self.press(pid, "通用")
+            nodes = wait_for(
+                lambda: (current if ordinary_general_surface_ready(current := self.view(pid), self.name) else None),
+                "the frozen Dev General settings page",
+            )
+        if not ordinary_permission_guide_card_present(nodes, self.name):
+            self.press(pid, "管理输入监控")
+
+        initial_nodes = wait_for(
+            lambda: (current if general_input_action_target(current := self.view(pid), self.name) else None),
+            "the ordinary permission guide with Input Monitoring pending and every optional row accounted for",
+        )
+        input_title = general_input_action_target(initial_nodes, self.name)
+        if input_title != INPUT_ROW_TITLE:
+            raise RuntimeError("--general-permissions requires Input Monitoring to be pending in the ordinary guide")
+        permission_rows = ordinary_permission_counts(initial_nodes, self.name)
+        if permission_rows is None:
+            raise RuntimeError("--general-permissions could not read every recognized permission row on both surfaces")
+        self.record("general_permissions_preflight", {
+            "app": pid, "settings": state["settings"], "front": state["front"],
+            "flow": "ordinary-general", "input_pending": True,
+            "device_control_pending": permission_rows["rows"].get("device_control") == "pending",
+            "permission_rows": permission_rows,
+            "onboarding_window_present": False,
+            "permission_row_action": INPUT_ROW_TITLE,
+        })
+
+        press = self.press_permission_row(pid, INPUT_ROW_TITLE)
+        self.record("permission_row_action", {
+            "app": pid, "permission": "input-monitoring",
+            "press_started_at": press["ax_press_started_at"],
+            "press_completed_at": press["ax_press_completed_at"],
+            "source": "right-side 授权…", "flow": "ordinary-general",
+        })
+        ready = self.wait_auth_or("input-monitoring Settings pane", ready_input)
+        settings_pid = ready["settings"]
+        self.record_window_latencies("input-monitoring", press)
+        self.record("input_ready", {**ready, "flow": "ordinary-general"})
+        self.record("native_drop", self.drag(
+            "drag-input", permission="input-monitoring", app_pid=pid,
+            settings_pid=settings_pid, pages=INPUT_PAGES,
+        ))
+
+        def input_granted_or_reopened(current):
+            if current.get("app", 0) == pid and current.get("restart") and current.get("front") == settings_pid:
+                return current
+            current_pid = current.get("app", 0)
+            if not current_pid or current.get("settings", 0) not in (0, settings_pid):
+                return None
+            try:
+                current_nodes = self.view_waiting_for_windows(
+                    current_pid, "the reopened Dev permission-window AX snapshot"
+                )
+            except RuntimeError:
+                if pid_exists(current_pid):
+                    raise
+                return None
+            if self.name + " 首次设置" in window_names(current_nodes):
+                return None
+            if (existing_input_target(current_nodes, self.name) or
+                    ordinary_permission_guide_complete(current_nodes, self.name)):
+                return current
+            return None
+
+        post_input = self.wait_auth_or("ordinary-general input-monitoring continuation", input_granted_or_reopened)
+        if post_input["app"] == pid and post_input.get("restart"):
+            restart = self.probe("restart")
+            self.record("system_restart", {**restart, "flow": "ordinary-general"})
+
+            def reopened_general():
+                current = self.probe()
+                if current.get("app", 0) in (0, pid):
+                    return None
+                if current.get("settings", 0) not in (0, settings_pid):
+                    return None
+                current_nodes = self.view_waiting_for_windows(
+                    current["app"], "the reopened Dev General-page AX snapshot"
+                )
+                if self.name + " 首次设置" in window_names(current_nodes):
+                    return None
+                if (existing_input_target(current_nodes, self.name) or
+                        ordinary_permission_guide_complete(current_nodes, self.name)):
+                    return current
+                return None
+
+            post_input = wait_for(reopened_general, "ordinary General permission guide after OS reopen")
+
+        self.record("GENERAL_INPUT_PASS", {
+            "scope": "ordinary-general-input-monitoring",
+            "initial_pid": pid, "final_pid": post_input["app"],
+            "settings_pid_before": settings_pid, "settings_pid_after": post_input["settings"],
+            "settings_reopened_app": post_input["app"] != pid,
+            "onboarding_window_present": False,
+        })
+        if ordinary_permission_guide_complete(self.view(post_input["app"]), self.name):
+            completed_nodes = self.view(post_input["app"])
+            permission_counts = ordinary_permission_counts(completed_nodes, self.name)
+            self.record("GENERAL_PERMISSIONS_PASS", {
+                "scope": "ordinary-general-input-monitoring",
+                "app": post_input["app"], "settings": post_input["settings"],
+                "input_granted": True, "device_control_granted_before_run": True,
+                "bluetooth_present": permission_counts["rows"].get("bluetooth") is not None,
+                "bluetooth_granted": permission_counts["rows"].get("bluetooth") == "granted",
+                "permission_rows": permission_counts,
+                "full_first_use_verified": False,
+            })
+            return post_input
+
+        if not existing_input_target(self.view(post_input["app"]), self.name):
+            raise RuntimeError("input grant did not restore the ordinary General guide with Device Control as the only pending row and any Bluetooth row granted")
+        final = self.run_existing_input()
+        final_nodes = self.view(final["app"])
+        permission_counts = ordinary_permission_counts(final_nodes, self.name)
+        if (permission_counts is None or
+            permission_counts["granted_row_count"] != permission_counts["row_count"]):
+            raise RuntimeError("ordinary permission completion did not retain all actual rows as granted")
+        self.record("GENERAL_PERMISSIONS_PASS", {
+            "scope": "ordinary-general-input-and-device-control",
+            "app": final["app"], "settings": final["settings"],
+            "input_granted": True, "device_control_granted": True,
+            "bluetooth_present": permission_counts["rows"].get("bluetooth") is not None,
+            "bluetooth_granted": permission_counts["rows"].get("bluetooth") == "granted",
+            "permission_rows": permission_counts,
+            "full_first_use_verified": False,
+        })
+        return final
+
+    def run_cancel_reentry(self):
+        state = self.preflight_no_existing_sheet("ordinary-cancel-reentry")
+        if not state.get("app"):
+            subprocess.run([
+                "/usr/bin/open", "--stderr", str(self.output / "app-stderr.log"),
+                "-a", str(self.bundle), "--args", "--show-settings",
+            ], check=True)
+            state = wait_for(
+                lambda: (current if (current := self.probe()).get("app") else None),
+                "the frozen Dev process",
+            )
+        pid = state.get("app", 0)
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            raise RuntimeError("--cancel-reentry could not identify the frozen Dev process")
+
+        nodes = wait_for(
+            lambda: (current if ordinary_general_startup_ready(
+                pid, current := self.view_if_windows_available(pid), self.name
+            ) else None),
+            "the frozen Dev main window and visible General button",
+        )
+        if not ordinary_general_surface_ready(nodes, self.name):
+            self.press(pid, "通用")
+            nodes = wait_for(
+                lambda: (current if ordinary_general_surface_ready(
+                    current := self.view_if_windows_available(pid), self.name
+                ) else None),
+                "the Dev General permission rows",
+            )
+        if not ordinary_permission_guide_card_present(nodes, self.name):
+            self.press(pid, GENERAL_INPUT_MANAGE)
+
+        def readable_baseline():
+            current = self.view_if_windows_available(pid)
+            counts = cancel_reentry_permission_counts(current, self.name)
+            return (current, counts) if counts is not None else None
+
+        _, baseline = wait_for(
+            readable_baseline,
+            "Input Monitoring pending with every non-target row readable",
+        )
+        self.record("cancel_reentry_preflight", {
+            "app": pid, "settings": state.get("settings"), "front": state.get("front"),
+            "flow": "ordinary-General", "target_permission": "input-monitoring",
+            "permission_rows_before": baseline,
+            "input_monitoring_pending": True,
+            "non_target_rows_are_baseline_driven": True,
+            "credential_input": "never automated",
+        })
+
+        press = self.press_permission_row(pid, INPUT_ROW_TITLE)
+        self.record("permission_row_action", {
+            "app": pid, "permission": "input-monitoring",
+            "press_started_at": press["ax_press_started_at"],
+            "press_completed_at": press["ax_press_completed_at"],
+            "source": "ordinary General permission card",
+        })
+        ready = self.wait_auth_or("input-monitoring Settings pane", ready_input)
+        settings_pid = ready["settings"]
+        self.record_window_latencies("input-monitoring", press)
+        self.record("input_ready", {**ready, "flow": "ordinary-cancel-reentry"})
+        self.record("native_drop", self.drag(
+            "drag-input", permission="input-monitoring", app_pid=pid,
+            settings_pid=settings_pid, pages=INPUT_PAGES,
+        ))
+
+        def password_prompt_visible():
+            current = self.probe()
+            if current.get("app") != pid or current.get("settings") != settings_pid:
+                raise RuntimeError("Dev or Settings identity changed before the Cancel action")
+            if current.get("page") not in INPUT_PAGES:
+                raise RuntimeError("Input Monitoring Settings page changed before the Cancel action")
+            if current.get("restart"):
+                raise RuntimeError("an unexpected restart prompt appeared; no authentication action was sent")
+            if current.get("password"):
+                return current
+            if current.get("system_sheet"):
+                raise RuntimeError("an unexpected non-password system sheet appeared; no authentication action was sent")
+            return None
+
+        prompt = wait_for(password_prompt_visible, "this Dev Input Monitoring password prompt", self.auth_timeout)
+        self.record("cancel_password_prompt_matched", {
+            "app": pid, "settings": settings_pid, "page": prompt["page"],
+            "password_detected_by": "fresh PermissionAcceptance probe",
+            "credential_input": "never automated",
+        })
+        try:
+            cancel_result = capture(
+                self.driver, "cancel-auth", self.bundle, str(pid), str(settings_pid)
+            )
+        except RuntimeError as error:
+            self.record("system_auth_cancel_failed", {
+                "app": pid, "settings": settings_pid,
+                "reason": concise_tool_error(error), "text_entered": False,
+            })
+            raise
+        if not verified_cancel_result(cancel_result, pid, settings_pid, self.bundle):
+            self.record("system_auth_cancel_failed", {
+                "app": pid, "settings": settings_pid,
+                "reason": "Cancel driver result did not prove the exact attached password sheet and unique Cancel action",
+                "result": cancel_result,
+                "text_entered": False,
+            })
+            raise RuntimeError("the exact Settings password dialog Cancel action was not proven")
+        self.record("system_auth_cancelled", cancel_result)
+
+        def cancelled_surface_ready():
+            current = self.probe()
+            if current.get("app") != pid or current.get("settings") != settings_pid:
+                raise RuntimeError("Dev or Settings identity changed after authentication Cancel")
+            if current.get("restart"):
+                raise RuntimeError("an unexpected restart prompt appeared after authentication Cancel")
+            if current.get("page") not in INPUT_PAGES or current.get("front") != settings_pid:
+                return None
+            if current.get("password") or current.get("system_sheet"):
+                return None
+            current_nodes = self.view_waiting_for_windows(
+                pid, "Dev permission rows after authentication Cancel"
+            )
+            current_rows = ordinary_permission_counts(current_nodes, self.name)
+            return (current, current_nodes, current_rows) if current_rows is not None else None
+
+        cancelled_state, cancelled_nodes, cancelled_rows = wait_for(
+            cancelled_surface_ready,
+            "the closed password dialog and actual General/permission-card row readback",
+        )
+        unchanged_after_cancel = permission_rows_unchanged(baseline, cancelled_rows)
+        self.record("cancel_permission_readback", {
+            "app": pid, "settings": settings_pid,
+            "front": cancelled_state["front"], "page": cancelled_state["page"],
+            "permission_rows_before": baseline,
+            "permission_rows_after_cancel": cancelled_rows,
+            "input_monitoring_still_pending": cancelled_rows["rows"].get("input") == "pending",
+            "non_target_rows_unchanged": non_target_permission_rows_unchanged(baseline, cancelled_rows),
+            "all_permission_rows_unchanged": unchanged_after_cancel,
+            "grant_success_expected": False,
+        })
+        if not unchanged_after_cancel:
+            raise RuntimeError("Cancel did not preserve the target and every non-target permission row")
+
+        self.press(pid, "关闭系统权限面板")
+
+        def card_closed():
+            current_nodes = self.view_waiting_for_windows(pid, "Dev AX windows after closing the permission card")
+            return not any(
+                item.get("role") == "AXWindow" and item.get("title") == self.name + " 系统权限"
+                for item in current_nodes
+            )
+
+        wait_for(card_closed, "the permission card to close after Cancel")
+        self.record("cancel_permission_card_closed", {
+            "app": pid, "input_monitoring_state": cancelled_rows["rows"]["input"],
+            "permission_rows": cancelled_rows,
+        })
+        self.press(pid, GENERAL_INPUT_MANAGE)
+
+        def card_reentered():
+            current_nodes = self.view_waiting_for_windows(pid, "Dev AX windows after reopening the permission card")
+            current_rows = ordinary_permission_counts(current_nodes, self.name)
+            if current_rows is None or "invalid" in current_rows["rows"].values():
+                return None
+            return current_nodes, current_rows
+
+        reentered_nodes, reentered_rows = wait_for(
+            card_reentered,
+            "the reopened permission card with every actual row readable",
+        )
+        unchanged_after_reentry = permission_rows_unchanged(baseline, reentered_rows)
+        self.record("cancel_permission_card_reentered", {
+            "app": pid,
+            "permission_rows_before": baseline,
+            "permission_rows_after_reentry": reentered_rows,
+            "input_monitoring_still_pending": reentered_rows["rows"].get("input") == "pending",
+            "non_target_rows_unchanged": non_target_permission_rows_unchanged(baseline, reentered_rows),
+            "all_permission_rows_unchanged": unchanged_after_reentry,
+        })
+        if not unchanged_after_reentry:
+            raise RuntimeError("permission-card re-entry changed the target or a non-target permission row")
+        self.record("CANCEL_REENTRY_PASS", {
+            "scope": "ordinary-cancel-reentry",
+            "app": pid, "settings": settings_pid,
+            "auth_dialog_cancelled": True,
+            "permission_card_closed_and_reopened": True,
+            "permission_rows_before": baseline,
+            "permission_rows_after_cancel": cancelled_rows,
+            "permission_rows_after_reentry": reentered_rows,
+            "input_monitoring_granted": False,
+            "business_grant_verified": False,
+            "non_target_rows_preserved": True,
+        })
 
     def drag(self, operation, *, permission=None, app_pid=None, settings_pid=None, pages=()):
         if permission is not None:
@@ -347,6 +712,19 @@ class Acceptance:
             raise RuntimeError("the AX snapshot is not from the verification app")
         return result["nodes"]
 
+    def view_if_windows_available(self, pid):
+        try:
+            nodes = self.view(pid)
+        except RuntimeError as error:
+            if is_transient_ax_windows_error(error, pid) and pid_exists(pid):
+                return None
+            raise
+        return nodes if nodes else None
+
+    def view_waiting_for_windows(self, pid, description):
+        """Retry only this PID's launch-time AXCannotComplete while its process remains alive."""
+        return wait_for(lambda: self.view_if_windows_available(pid), description)
+
     def press(self, pid, label):
         result = capture(self.ax, str(pid), "press", "AXButton", label)
         self.record("app_button", {
@@ -443,15 +821,19 @@ class Acceptance:
             pid = state["app"]
         if not pid:
             raise RuntimeError("--existing-input could not find the canonical Dev process")
-        nodes = wait_for(lambda: self.existing_input_panel(pid), "Dev permission window with Input Monitoring granted (1/2)")
+        nodes = wait_for(lambda: self.existing_input_panel(pid), "Dev permission guide with Input Monitoring granted, Device Control pending, and any Bluetooth row already granted")
+        full_first_use = self.name + " 首次设置" in window_names(nodes)
         control_title = existing_input_target(nodes, self.name)
         if control_title is None:
-            raise RuntimeError("--existing-input requires Input Monitoring granted (1/2) and only the device-control row pending")
-        full_first_use = self.name + " 首次设置" in window_names(nodes)
+            if full_first_use:
+                raise RuntimeError("--existing-input requires every recognized first-use permission row except Device Control to be granted, with the summary matching the actual row count")
+            raise RuntimeError("--existing-input requires the ordinary General page and permission card to show Input Monitoring granted, Device Control pending, and any Bluetooth row granted")
         self.record("existing_input_preflight", {
             "app": pid, "settings": state["settings"], "front": state["front"],
             "page_before": state["page"], "input_already_granted": True,
-            "granted_summary": "已授权 1/2", "target_row": control_title,
+            "granted_summary": permission_progress_summary(nodes, self.name),
+            "permission_rows": ordinary_permission_counts(nodes, self.name) if not full_first_use else None,
+            "target_row": control_title,
             "mode": "device-control segment only",
             "flow": "full-first-use" if full_first_use else "ordinary-settings",
         })
@@ -520,21 +902,128 @@ class Acceptance:
             "first_use_continue_visible": full_first_use,
             "settings_exited": state["settings"] == 0,
             "final_frontmost_pid": state["front"], "settings_pid_after": state["settings"],
-            "final_granted_summary": "全部已授权" if full_first_use else "已授权 2/2",
+            "final_granted_summary": (
+                "全部已授权" if full_first_use else permission_progress_summary(
+                    self.view(state["app"]), self.name
+                )
+            ),
+            "permission_rows": ordinary_permission_counts(
+                self.view(state["app"]), self.name
+            ) if not full_first_use else None,
             "restart_prompt_observed": restart_observed,
             "same_process_authorized_ui_verified": not restart_observed,
             "verified_after_original_pid_exit": restart_observed,
             "full_first_use_verified": False
         })
+        return state
 
     def existing_input_panel(self, pid):
         nodes = self.view(pid)
         return nodes if existing_input_target(nodes, self.name) else None
 
+    def wait_for_restart_prompt_focus(self, initial, app_pid, settings_pid):
+        """Wait for stable Settings ownership without activating either app."""
+        started = time.monotonic()
+        deadline = started + RESTART_FOCUS_RECOVERY_SECONDS
+        current = initial
+        consecutive_settings_samples = 0
+        observations = []
+        self.record("restart_prompt_observed", {
+            "app_pid": app_pid, "settings_pid": settings_pid,
+            "initial_frontmost_pid": initial.get("front"),
+            "restart_prompt_visible": initial.get("restart") is True,
+            "restart_action_performed": False,
+        })
+        while True:
+            summary = restart_focus_observation(current)
+            observations.append(summary)
+            if restart_prompt_focus_ready(current, app_pid, settings_pid):
+                consecutive_settings_samples += 1
+                if consecutive_settings_samples >= 2:
+                    self.record("restart_prompt_focus_recovered", {
+                        "app_pid": app_pid, "settings_pid": settings_pid,
+                        "consecutive_settings_samples": consecutive_settings_samples,
+                        "observations": observations,
+                        "restart_action_performed": False,
+                    })
+                    return current
+            else:
+                consecutive_settings_samples = 0
+                if (current.get("app", 0) not in (0, app_pid) and
+                    current.get("settings", 0) == settings_pid and not pid_exists(app_pid)):
+                    self.record("restart_completed_during_focus_wait", {
+                        "previous_app_pid": app_pid, "settings_pid": settings_pid,
+                        "reopened_app_pid": current.get("app"),
+                        "frontmost_pid": current.get("front"),
+                        "restart_action_performed_by_runner": False,
+                    })
+                    return current
+            if time.monotonic() >= deadline:
+                reason = (
+                    "restart_prompt_disappeared" if not current.get("restart") else
+                    "settings_did_not_regain_frontmost_ownership"
+                )
+                self.record("RESTART_FOCUS_INTERRUPTED", {
+                    "stage": "restart_prompt_before_click",
+                    "reason": reason,
+                    "last_observation": summary,
+                    "observations": observations,
+                    "observation_count": len(observations),
+                    "wait_seconds": RESTART_FOCUS_RECOVERY_SECONDS,
+                    "restart_action_performed": False,
+                    "resume_scope": "--resume-input-drop with this output directory after focus is resolved",
+                })
+                raise RuntimeError(
+                    "Settings did not regain stable frontmost ownership for the system restart prompt; "
+                    "no restart action was sent, and the run is resumable from its recorded input drop"
+                )
+            current = self.probe()
+            time.sleep(0.18)
+
+    def wait_for_resumed_settings_focus(self, initial, app_pid, settings_pid):
+        """Keep the resumed page's real Settings-front assertion, allowing transient focus to settle."""
+        started = time.monotonic()
+        deadline = started + RESTART_FOCUS_RECOVERY_SECONDS
+        current = initial
+        consecutive_settings_samples = 0
+        observations = []
+        while True:
+            summary = restart_focus_observation(current)
+            observations.append(summary)
+            if resumed_settings_focus_ready(current, app_pid, settings_pid):
+                consecutive_settings_samples += 1
+                if consecutive_settings_samples >= 2:
+                    self.record("restart_resumed_focus_verified", {
+                        "app_pid": app_pid, "settings_pid": settings_pid,
+                        "consecutive_settings_samples": consecutive_settings_samples,
+                        "observations": observations,
+                        "settings_frontmost": True, "settings_above_setup": True,
+                    })
+                    return current
+            else:
+                consecutive_settings_samples = 0
+            if time.monotonic() >= deadline:
+                self.record("RESTART_FOCUS_INTERRUPTED", {
+                    "stage": "resumed_permission_page",
+                    "reason": "settings_did_not_retain_frontmost_ownership_or_cover_order",
+                    "last_observation": summary,
+                    "observation_count": len(observations),
+                    "wait_seconds": RESTART_FOCUS_RECOVERY_SECONDS,
+                    "restart_action_performed": True,
+                    "resume_scope": "--resume-input-drop with this output directory after focus is resolved",
+                })
+                raise RuntimeError(
+                    "the resumed permission page did not regain stable Settings ownership; "
+                    "the run is resumable from its recorded input drop"
+                )
+            current = self.probe()
+            time.sleep(0.18)
+
     def wait_auth_or(self, stage, ready):
         deadline = time.monotonic() + 12
         password_announced = False
         sheet_announced = False
+        last_auth_kind = None
         last_auth_state = None
         while deadline is None or time.monotonic() < deadline:
             probe = self.probe()
@@ -545,29 +1034,39 @@ class Acceptance:
             password_visible = bool(probe["password"])
             recognized_restart = bool(probe.get("restart"))
             system_sheet = bool(probe.get("system_sheet"))
-            auth_visible = password_visible or (system_sheet and not recognized_restart)
+            auth_kind = (
+                "password" if password_visible else
+                "settings-sheet" if system_sheet and not recognized_restart else
+                None
+            )
             ready_result = None
-            if not password_visible and (not system_sheet or recognized_restart):
+            if auth_kind is None:
                 ready_result = ready(probe)
-            if probe["password"]:
-                if not password_announced:
+            if auth_kind is not None and auth_kind != last_auth_kind:
+                # Each visible authentication edge gets its own configured
+                # interaction window. Reopened prompts must not inherit the
+                # deadline from an earlier prompt.
+                deadline = None if self.auth_timeout == 0 else time.monotonic() + self.auth_timeout
+                if auth_kind == "password":
                     self.record("NEEDS_PASSWORD", {"permission": stage})
-                    print("请只在 macOS 系统窗口输入密码，脚本会自动继续。", file=sys.stderr, flush=True)
-                    password_announced = True
-                    deadline = None if self.auth_timeout == 0 else time.monotonic() + self.auth_timeout
-            elif system_sheet and not recognized_restart:
-                if not sheet_announced:
+                    if not password_announced:
+                        print("请只在 macOS 系统窗口输入密码，脚本会自动继续。", file=sys.stderr, flush=True)
+                        password_announced = True
+                elif not sheet_announced:
                     self.record("SYSTEM_SHEET_WAIT", {"permission": stage})
                     print(f"等待 macOS 的 {stage} 系统确认窗口完成。", file=sys.stderr, flush=True)
                     sheet_announced = True
-                    deadline = None if self.auth_timeout == 0 else time.monotonic() + self.auth_timeout
-            elif not auth_visible and (password_announced or sheet_announced) and deadline is None:
-                # An unbounded wait is only for the visible authentication UI.
-                # After it closes, wait briefly for the expected OS feedback and
-                # report cancellation instead of polling forever.
+                else:
+                    self.record("SYSTEM_SHEET_WAIT", {"permission": stage})
+            elif auth_kind is None and last_auth_kind is not None and not ready_result:
+                # Once the UI disappears, keep the existing 12-second window
+                # for the OS feedback. A later prompt edge starts a fresh
+                # configured authentication window above.
                 deadline = time.monotonic() + 12
+
             if ready_result:
                 return ready_result
+            last_auth_kind = auth_kind
             time.sleep(0.18)
         self.record("AUTH_WAIT_TIMEOUT", {"permission": stage, "last_state": last_auth_state})
         raise RuntimeError(f"{stage}: expected system confirmation did not arrive")
@@ -588,6 +1087,14 @@ class Acceptance:
                  has_button(self.view(pid), "授权…"), "permission summary")
         self.press(pid, "授权…")
         wait_for(lambda: self.permission_row_available(pid, INPUT_ROW_TITLE), "input-monitoring permission row")
+        initial_permission_nodes = self.view(pid)
+        if first_use_input_target(initial_permission_nodes, self.name) != INPUT_ROW_TITLE:
+            summary = first_use_progress_summary(initial_permission_nodes)
+            self.record("BLOCKED_PERMISSION_ROWS", {
+                "scope": "full-first-use", "permission_summary": summary[2] if summary else None,
+                "reason": "Input Monitoring and Device Control must be the only pending rows; optional Bluetooth must already be granted",
+            })
+            raise RuntimeError("full-first-use requires Input Monitoring and Device Control as the only pending permission rows; pregrant Bluetooth in this Dev before starting")
         input_press = self.press_permission_row(pid, INPUT_ROW_TITLE)
         self.record("permission_row_action", {
             "app": pid, "permission": "input-monitoring", "press_started_at": input_press["ax_press_started_at"],
@@ -625,8 +1132,8 @@ class Acceptance:
 
         state = self.wait_auth_or("input-monitoring", restart_available)
         if state["app"] == pid:
-            if state["front"] != settings_pid:
-                raise RuntimeError("the system restart prompt lost frontmost ownership")
+            state = self.wait_for_restart_prompt_focus(state, pid, settings_pid)
+        if state["app"] == pid:
             self.record("system_restart", self.probe("restart"))
         else:
             if not any(entry.get("stage") == "reopened_between_probes" and
@@ -640,13 +1147,13 @@ class Acceptance:
             if state["app"] in (pid, 0) or state["settings"] != settings_pid or state["page"] not in CONTROL_PAGES:
                 return None
             nodes = self.view(state["app"])
-            if (has_label(nodes, "已授权") and has_label(nodes, "已授权 1/2") and
-                has_button(nodes, "在系统设置中管理设备控制和数据访问")):
+            if first_use_existing_input_target(nodes, self.name):
                 return state
             return None
 
         state = wait_for(resumed, "new PID with input monitoring granted and device control open")
         resumed_pid = state["app"]
+        state = self.wait_for_resumed_settings_focus(state, resumed_pid, settings_pid)
         if not any(entry.get("stage") == "resumed" and entry.get("app") == resumed_pid and
                    entry.get("settings") == settings_pid for entry in entries):
             self.record("resumed", state)
@@ -659,9 +1166,9 @@ class Acceptance:
             })
         if state["front"] != settings_pid or not state["settings_above_setup"]:
             raise RuntimeError("the first-use window took frontmost ownership or covered Settings")
-        control_title = next((title for title in CONTROL_ROW_TITLES if has_button(self.view(resumed_pid), title)), None)
+        control_title = first_use_existing_input_target(self.view(resumed_pid), self.name)
         if control_title is None:
-            raise RuntimeError("the resumed permissions panel has no unique device-control title entry")
+            raise RuntimeError("the resumed first-use guide does not show the only pending Device Control row with all other recognized rows granted")
         control_press = self.press_permission_row(resumed_pid, control_title)
         self.record("permission_row_action", {
             "app": resumed_pid, "permission": "device-control", "press_started_at": control_press["ax_press_started_at"],
@@ -854,8 +1361,7 @@ def existing_input_segment_granted(state, initial_pid, settings_pid, restart_obs
     if full_first_use:
         authorization_view = complete_permission_view(nodes, name)
     else:
-        authorization_view = (name + " 系统权限" in window_names(nodes) and
-                              has_label(nodes, "已授权 2/2"))
+        authorization_view = ordinary_permission_guide_complete(nodes, name)
     return process_verified and authorization_view
 
 
@@ -882,18 +1388,503 @@ def existing_input_process_verified(state, initial_pid, settings_pid, restart_ob
 
 
 def existing_input_target(nodes, name):
-    if name + " 系统权限" not in window_names(nodes) or not has_label(nodes, "已授权 1/2"):
+    names = window_names(nodes)
+    if name + " 首次设置" in names:
+        return first_use_existing_input_target(nodes, name)
+    return ordinary_existing_input_target(nodes, name)
+
+
+def first_use_existing_input_target(nodes, name):
+    """Target Device Control after every other recognized first-use row is granted."""
+    names = window_names(nodes)
+    panel_title = name + " 系统权限"
+    if names.count(name + " 首次设置") != 1 or names.count(panel_title) != 1:
         return None
-    route_titles = {
-        label for node in nodes if node.get("role") == "AXButton"
+    panel_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == panel_title)
+    card = nodes_in_window(nodes, panel_window)
+    rows = permission_route_rows(card) if card is not None else None
+    summary = first_use_progress_summary(nodes, len(rows) if rows is not None else None)
+    if rows is None or summary is None or set(rows) not in (
+        {"input", "device_control"}, {"input", "device_control", "bluetooth"}
+    ):
+        return None
+    states = {kind: permission_row_state(card, row) for kind, row in rows.items()}
+    granted_count = sum(state == "granted" for state in states.values())
+    pending_control = states.get("device_control") == "pending"
+    bluetooth_ready = "bluetooth" not in states or states["bluetooth"] == "granted"
+    summary_granted, summary_total, _ = summary
+    if (states.get("input") != "granted" or not pending_control or not bluetooth_ready or
+        any(state not in ("granted", "pending") for state in states.values()) or
+        sum(state == "pending" for state in states.values()) != 1 or
+        exact_button_count(card, PERMISSION_ACTION_LABEL) != 1 or
+        (summary_granted, summary_total) != (granted_count, len(rows))):
+        return None
+    return rows["device_control"]["route_title"]
+
+
+def first_use_input_target(nodes, name):
+    """Allow the initial full-first-use drop only when Bluetooth is an already-granted optional row."""
+    names = window_names(nodes)
+    panel_title = name + " 系统权限"
+    if names.count(name + " 首次设置") != 1 or names.count(panel_title) != 1:
+        return None
+    panel_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == panel_title)
+    card = nodes_in_window(nodes, panel_window)
+    rows = permission_route_rows(card) if card is not None else None
+    allowed = ({"input", "device_control"}, {"input", "device_control", "bluetooth"})
+    if rows is None or set(rows) not in allowed:
+        return None
+    states = {kind: permission_row_state(card, row) for kind, row in rows.items()}
+    granted_count = sum(state == "granted" for state in states.values())
+    summary = first_use_progress_summary(nodes, len(rows))
+    bluetooth_ready = "bluetooth" not in states or states["bluetooth"] == "granted"
+    if (states.get("input") != "pending" or states.get("device_control") != "pending" or
+        not bluetooth_ready or any(state not in ("granted", "pending") for state in states.values()) or
+        sum(state == "pending" for state in states.values()) != 2 or
+        exact_button_count(card, PERMISSION_ACTION_LABEL) != 2 or summary is None or
+        (summary[0], summary[1]) != (granted_count, len(rows))):
+        return None
+    return rows["input"]["route_title"]
+
+
+def ordinary_general_surface_ready(nodes, name):
+    surfaces = ordinary_general_nodes(nodes, name)
+    return surfaces is not None
+
+
+def ordinary_general_startup_ready(app_pid, nodes, name):
+    """Wait for the real ordinary window and visible General navigation, independent of launch focus."""
+    if not isinstance(app_pid, int) or isinstance(app_pid, bool) or app_pid <= 0:
+        return False
+    names = window_names(nodes)
+    if name + " 首次设置" in names or names.count(name) != 1:
+        return False
+    main_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == name)
+    main_nodes = nodes_in_window(nodes, main_window)
+    return main_nodes is not None and exact_button_count(main_nodes, "通用") == 1
+
+
+def ordinary_permission_guide_card_present(nodes, name):
+    surfaces = ordinary_permission_surfaces(nodes, name)
+    return surfaces is not None
+
+
+def ordinary_permission_guide_complete(nodes, name):
+    surfaces = ordinary_permission_surfaces(nodes, name)
+    if surfaces is None:
+        return False
+    general, card, general_rows, card_rows = surfaces
+    if set(general_rows) != set(card_rows):
+        return False
+    states = ordinary_permission_row_states(general, card, general_rows, card_rows)
+    return (states is not None and all(state == "granted" for state in states.values()) and
+            exact_button_count(card, PERMISSION_ACTION_LABEL) == 0)
+
+
+def general_input_action_target(nodes, name):
+    """Return the Input Monitoring row only for a readable ordinary cold-flow state."""
+    surfaces = ordinary_permission_surfaces(nodes, name)
+    if surfaces is None:
+        return None
+    general, card, general_rows, card_rows = surfaces
+    states = ordinary_permission_row_states(general, card, general_rows, card_rows)
+    if states is None or states.get("input") != "pending":
+        return None
+    if states.get("device_control") not in ("granted", "pending"):
+        return None
+    if "bluetooth" in states and states["bluetooth"] != "granted":
+        return None
+    expected_actions = sum(state == "pending" for state in states.values())
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != expected_actions:
+        return None
+    return INPUT_ROW_TITLE
+
+
+def ordinary_existing_input_target(nodes, name):
+    surfaces = ordinary_permission_surfaces(nodes, name)
+    if surfaces is None:
+        return None
+    general, card, general_rows, card_rows = surfaces
+    states = ordinary_permission_row_states(general, card, general_rows, card_rows)
+    if states is None or states.get("input") != "granted" or states.get("device_control") != "pending":
+        return None
+    if "bluetooth" in states and states["bluetooth"] != "granted":
+        return None
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != 1:
+        return None
+    return card_rows["device_control"]["route_title"]
+
+
+def ordinary_general_nodes(nodes, name):
+    names = window_names(nodes)
+    if name + " 首次设置" in names or names.count(name) != 1:
+        return None
+    general_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == name)
+    general = nodes_in_window(nodes, general_window)
+    if general is None or general_manage_rows(general) is None:
+        return None
+    return general, general_window
+
+
+def ordinary_permission_surfaces(nodes, name):
+    general_result = ordinary_general_nodes(nodes, name)
+    names = window_names(nodes)
+    panel_title = name + " 系统权限"
+    if general_result is None or names.count(panel_title) != 1:
+        return None
+    general, general_window = general_result
+    panel_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == panel_title)
+    card = nodes_in_window(nodes, panel_window)
+    if card is None:
+        return None
+    general_rows = general_manage_rows(general)
+    card_rows = permission_route_rows(card)
+    required = {"input", "device_control"}
+    if (general_rows is None or card_rows is None or
+        not required.issubset(general_rows) or not required.issubset(card_rows) or
+        set(general_rows) != set(card_rows)):
+        return None
+    return (
+        general, card, general_rows, card_rows,
+    )
+
+
+def general_manage_kind(label):
+    if label == GENERAL_INPUT_MANAGE:
+        return "input"
+    if label in GENERAL_CONTROL_MANAGE:
+        return "device_control"
+    if label in GENERAL_BLUETOOTH_MANAGE:
+        return "bluetooth"
+    return None
+
+
+def general_manage_rows(general):
+    rows = {}
+    for button in (item for item in general if item.get("role") == "AXButton"):
+        kinds = {general_manage_kind(label) for label in (button.get("title"), button.get("description"))}
+        kinds.discard(None)
+        if not kinds:
+            continue
+        if len(kinds) != 1:
+            return None
+        kind = next(iter(kinds))
+        if kind in rows:
+            return None
+        rows[kind] = button
+    required = {"input", "device_control"}
+    return rows if required.issubset(rows) and set(rows).issubset(required | {"bluetooth"}) else None
+
+
+def permission_route_kind(label):
+    if label == INPUT_ROW_TITLE:
+        return "input"
+    if label in CONTROL_ROW_TITLES:
+        return "device_control"
+    if label in BLUETOOTH_ROW_TITLES:
+        return "bluetooth"
+    return None
+
+
+def permission_route_rows(card):
+    rows = {}
+    route_nodes = [node for node in card if node.get("role") == "AXButton" and any(
+        isinstance(label, str) and label.startswith("在系统设置中管理")
         for label in (node.get("title"), node.get("description"))
-        if isinstance(label, str) and label.startswith("在系统设置中管理")
-    }
-    candidates = [title for title in CONTROL_ROW_TITLES if title in route_titles]
-    if (len(route_titles) != 2 or INPUT_ROW_TITLE not in route_titles or len(candidates) != 1 or
-        not has_button(nodes, PERMISSION_ACTION_LABEL)):
+    )]
+    for button in route_nodes:
+        labels = [label for label in (button.get("title"), button.get("description"))
+                  if isinstance(label, str) and label.startswith("在系统设置中管理")]
+        kinds = {permission_route_kind(label) for label in labels}
+        if None in kinds or len(kinds) != 1:
+            return None
+        kind = next(iter(kinds))
+        if kind in rows:
+            return None
+        route_title = next(label for label in labels if permission_route_kind(label) == kind)
+        rows[kind] = {**button, "route_title": route_title}
+    required = {"input", "device_control"}
+    return rows if required.issubset(rows) and set(rows).issubset(required | {"bluetooth"}) else None
+
+
+def permission_row_state(card, row):
+    granted = row_exact_label_count(card, "已授权", row) == 1
+    actions = row_action_count(card, row["route_title"])
+    if granted and actions == 0:
+        return "granted"
+    if not granted and actions == 1:
+        return "pending"
+    return "invalid"
+
+
+def ordinary_permission_row_states(general, card, general_rows, card_rows):
+    if set(general_rows) != set(card_rows):
         return None
-    return candidates[0]
+    states = {}
+    for kind, card_row in card_rows.items():
+        general_granted = row_exact_label_count(general, "已授权", general_rows[kind]) == 1
+        card_state = permission_row_state(card, card_row)
+        if card_state == "granted" and general_granted:
+            states[kind] = "granted"
+        elif card_state == "pending" and not general_granted:
+            states[kind] = "pending"
+        else:
+            states[kind] = "invalid"
+    expected_actions = sum(state == "pending" for state in states.values())
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != expected_actions:
+        return None
+    return states
+
+
+def first_use_progress_summary(nodes, total=None):
+    summaries = []
+    for node in nodes:
+        for value in (node.get("title"), node.get("value"), node.get("description")):
+            if isinstance(value, str) and re.fullmatch(r"已授权\s*(\d+)\s*/\s*(\d+)", value):
+                match = re.fullmatch(r"已授权\s*(\d+)\s*/\s*(\d+)", value)
+                summaries.append((int(match.group(1)), int(match.group(2)), value))
+    unique = list(dict.fromkeys(summaries))
+    if len(unique) == 1:
+        return unique[0]
+    if total is not None:
+        not_yet_authorized = [
+            value for node in nodes
+            for value in (node.get("title"), node.get("value"), node.get("description"))
+            if value == "尚未授权"
+        ]
+        if len(set(not_yet_authorized)) == 1:
+            return 0, total, "尚未授权"
+    return None
+
+
+def ordinary_permission_counts(nodes, name):
+    surfaces = ordinary_permission_surfaces(nodes, name)
+    if surfaces is None:
+        return None
+    general, card, general_rows, card_rows = surfaces
+    states = ordinary_permission_row_states(general, card, general_rows, card_rows)
+    if states is None:
+        return None
+    return {
+        "row_count": len(states),
+        "granted_row_count": sum(state == "granted" for state in states.values()),
+        "rows": {kind: states[kind] for kind in sorted(states)},
+    }
+
+
+def cancel_reentry_permission_counts(nodes, name):
+    """Accept a readable ordinary 2/3-row baseline with Input Monitoring pending."""
+    counts = ordinary_permission_counts(nodes, name)
+    if counts is None or counts["rows"].get("input") != "pending":
+        return None
+    if any(state not in ("pending", "granted") for state in counts["rows"].values()):
+        return None
+    return counts
+
+
+def permission_rows_unchanged(before, after):
+    return (
+        isinstance(before, dict) and isinstance(after, dict) and
+        before.get("row_count") == after.get("row_count") and
+        before.get("rows") == after.get("rows") and
+        before.get("granted_row_count") == after.get("granted_row_count")
+    )
+
+
+def non_target_permission_rows_unchanged(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    before_rows, after_rows = before.get("rows"), after.get("rows")
+    if not isinstance(before_rows, dict) or not isinstance(after_rows, dict):
+        return False
+    if set(before_rows) != set(after_rows):
+        return False
+    return all(before_rows[kind] == after_rows[kind] for kind in before_rows if kind != "input")
+
+
+def verified_cancel_result(result, app_pid, settings_pid, bundle):
+    if not isinstance(result, dict):
+        return False
+    try:
+        bundle_path = str(Path(bundle).resolve())
+    except (OSError, TypeError, ValueError):
+        return False
+    frontmost_bundle = result.get("frontmost_bundle_id", result.get("authentication_bundle"))
+    unique_sheet_controls = all(
+        type(result.get(key)) is int and result.get(key) == 1
+        for key in ("authentication_sheet_count", "secure_field_count", "cancel_button_count")
+    )
+    page_sheet_provenance = (
+        type(result.get("target_page_sheet_count")) is int and
+        result.get("target_page_sheet_count") == 1 and
+        result.get("target_sheet_role") == "AXSheet" and
+        result.get("target_sheet_source") == "verified-page-subtree" and
+        type(result.get("other_window_sheet_count")) is int and
+        result.get("other_window_sheet_count") == 0
+    )
+    return (
+        result.get("status") == "CANCELLED" and
+        result.get("action") == "AXPress Cancel" and
+        result.get("app") == app_pid and isinstance(result.get("app"), int) and
+        not isinstance(result.get("app"), bool) and
+        result.get("settings") == settings_pid and isinstance(result.get("settings"), int) and
+        not isinstance(result.get("settings"), bool) and
+        result.get("bundle_id") == "dev.mimac.app.dev" and
+        result.get("bundle_path") == bundle_path and
+        result.get("settings_page") in INPUT_PAGES and
+        frontmost_bundle in AUTH_PROMPT_BUNDLES and
+        unique_sheet_controls and
+        page_sheet_provenance and
+        result.get("cancel_label") in ("Cancel", "取消") and
+        result.get("text_entered") is False
+    )
+
+
+def concise_tool_error(error):
+    detail = error.args[0] if isinstance(error, RuntimeError) and error.args else None
+    if isinstance(detail, dict) and isinstance(detail.get("error"), str):
+        return detail["error"][:240]
+    return "native Cancel action could not be verified"
+
+
+def permission_progress_summary(nodes, name):
+    if name + " 首次设置" in window_names(nodes):
+        summary = first_use_progress_summary(nodes)
+        return summary[2] if summary else None
+    counts = ordinary_permission_counts(nodes, name)
+    if counts is None:
+        return None
+    return f"{counts['granted_row_count']}/{counts['row_count']} 行在通用页与权限小卡显示已授权"
+
+
+def restart_focus_observation(state):
+    if not isinstance(state, dict):
+        return {"state_available": False}
+    return {
+        "state_available": True,
+        "app_pid": state.get("app"),
+        "settings_pid": state.get("settings"),
+        "frontmost_pid": state.get("front"),
+        "settings_page": state.get("page"),
+        "restart_prompt_visible": state.get("restart") is True,
+        "security_popup_visible": state.get("system_sheet") is True,
+        "password_prompt_visible": state.get("password") is True,
+        "settings_above_setup": state.get("settings_above_setup"),
+    }
+
+
+def restart_prompt_focus_ready(state, app_pid, settings_pid):
+    return (
+        isinstance(state, dict) and state.get("app") == app_pid and
+        state.get("settings") == settings_pid and state.get("front") == settings_pid and
+        state.get("restart") is True and not state.get("system_sheet") and
+        not state.get("password")
+    )
+
+
+def resumed_settings_focus_ready(state, app_pid, settings_pid):
+    return (
+        isinstance(state, dict) and state.get("app") == app_pid and
+        state.get("settings") == settings_pid and state.get("front") == settings_pid and
+        state.get("page") in CONTROL_PAGES and state.get("settings_above_setup") is True and
+        not state.get("restart") and not state.get("system_sheet") and not state.get("password")
+    )
+
+
+def nodes_in_window(nodes, window):
+    if not isinstance(nodes, (list, tuple)) or not isinstance(window, dict):
+        return None
+    if "root_window_index" in window:
+        owner_index = window.get("root_window_index")
+        if not isinstance(owner_index, int) or isinstance(owner_index, bool) or owner_index < 0:
+            return None
+        root_title = window.get("root_window_title")
+        window_title = window.get("title")
+        if isinstance(root_title, str) and isinstance(window_title, str) and root_title != window_title:
+            return None
+        return [
+            node for node in nodes
+            if isinstance(node.get("root_window_index"), int) and
+            not isinstance(node.get("root_window_index"), bool) and
+            node.get("root_window_index") == owner_index
+        ]
+    if any("root_window_index" in node for node in nodes):
+        # A partially tagged snapshot must not fall back to geometry and mix roots.
+        return None
+    bounds = ax_bounds(window)
+    if bounds is None:
+        return None
+    return [node for node in nodes if node_center_in_bounds(node, bounds)]
+
+
+def ax_bounds(node):
+    value = node.get("bounds") if isinstance(node, dict) else None
+    if (not isinstance(value, dict) or
+        any(not isinstance(value.get(key), (int, float)) or isinstance(value.get(key), bool)
+            for key in ("x", "y", "width", "height"))):
+        return None
+    x, y, width, height = (float(value[key]) for key in ("x", "y", "width", "height"))
+    if width <= 0 or height <= 0:
+        return None
+    return x, y, width, height
+
+
+def node_center_in_bounds(node, bounds):
+    rect = ax_bounds(node)
+    if rect is None:
+        return False
+    x, y, width, height = rect
+    wx, wy, wwidth, wheight = bounds
+    center_x, center_y = x + width / 2, y + height / 2
+    return wx <= center_x <= wx + wwidth and wy <= center_y <= wy + wheight
+
+
+def exact_button_nodes(nodes, label):
+    return [node for node in nodes if node.get("role") == "AXButton" and
+            label in (node.get("title"), node.get("description")) and node.get("enabled") is True]
+
+
+def exact_button_count(nodes, label):
+    return len(exact_button_nodes(nodes, label))
+
+
+def exact_label_nodes(nodes, label):
+    return [node for node in nodes if label in (node.get("title"), node.get("value"), node.get("description"))]
+
+
+def scoped_exact_label_count(nodes, label):
+    return len(exact_label_nodes(nodes, label))
+
+
+def same_ax_row(first, second):
+    first_bounds = ax_bounds(first)
+    second_bounds = ax_bounds(second)
+    if first_bounds is None or second_bounds is None:
+        return False
+    first_y = first_bounds[1] + first_bounds[3] / 2
+    second_y = second_bounds[1] + second_bounds[3] / 2
+    return abs(first_y - second_y) <= max(16, (first_bounds[3] + second_bounds[3]) / 2 + 4)
+
+
+def row_exact_label_count(nodes, label, anchor):
+    return sum(1 for node in exact_label_nodes(nodes, label) if same_ax_row(node, anchor))
+
+
+def row_action_count(card, row_title):
+    anchors = exact_button_nodes(card, row_title)
+    if len(anchors) != 1:
+        return 0
+    anchor = anchors[0]
+    anchor_bounds = ax_bounds(anchor)
+    if anchor_bounds is None:
+        return 0
+    anchor_mid_x = anchor_bounds[0] + anchor_bounds[2] / 2
+    return sum(
+        1 for action in exact_button_nodes(card, PERMISSION_ACTION_LABEL)
+        if same_ax_row(action, anchor) and
+        (action_bounds := ax_bounds(action)) is not None and
+        action_bounds[0] + action_bounds[2] / 2 > anchor_mid_x
+    )
 
 
 def drag_regressions_snapshot_ready(state):
@@ -1007,6 +1998,16 @@ def pid_exists(pid):
     return True
 
 
+def is_transient_ax_windows_error(error, pid):
+    detail = error.args[0] if isinstance(error, RuntimeError) and error.args else None
+    return (
+        isinstance(detail, dict) and detail.get("stage") == "ax_windows" and
+        detail.get("error") == "could not read root AXWindows" and
+        detail.get("status") == "error" and detail.get("ax_error_code") == -25204 and
+        detail.get("target_pid") == pid
+    )
+
+
 def ready_input(state):
     if state["page"] in INPUT_PAGES and state["settings"] and state["front"] == state["settings"] and not state["password"]:
         return state
@@ -1020,15 +2021,25 @@ def ready_control(state):
 
 
 def has_button(nodes, label):
-    return any(node["role"] == "AXButton" and label in (node["title"], node["description"]) and node["enabled"] for node in nodes)
+    return isinstance(nodes, (list, tuple)) and any(
+        isinstance(node, dict) and node.get("role") == "AXButton" and
+        label in (node.get("title"), node.get("description")) and node.get("enabled")
+        for node in nodes
+    )
 
 
 def has_label(nodes, label):
-    return any(label in (node["title"], node["value"], node["description"]) for node in nodes)
+    return isinstance(nodes, (list, tuple)) and any(
+        isinstance(node, dict) and label in (node.get("title"), node.get("value"), node.get("description"))
+        for node in nodes
+    )
 
 
 def window_names(nodes):
-    return [node["title"] for node in nodes if node["role"] == "AXWindow"]
+    if not isinstance(nodes, (list, tuple)):
+        return []
+    return [node.get("title") for node in nodes
+            if isinstance(node, dict) and node.get("role") == "AXWindow"]
 
 
 def main():
@@ -1042,7 +2053,11 @@ def main():
     parser.add_argument("--interact", required=True, action="store_true",
                         help="allow the isolated flow to use system settings and the pointer")
     parser.add_argument("--existing-input", action="store_true",
-                        help="verify device control on a Dev with input monitoring already granted")
+                        help="verify device control with input monitoring already granted; any Bluetooth row must also be granted")
+    parser.add_argument("--general-permissions", action="store_true",
+                        help="cold-enter ordinary General settings and grant Input Monitoring, with any Bluetooth row already granted")
+    parser.add_argument("--cancel-reentry", action="store_true",
+                        help="drop Input Monitoring once from the ordinary permission card, cancel its exact system password sheet, then verify every actual permission row and card re-entry are unchanged")
     parser.add_argument("--drag-regressions-only", action="store_true",
                         help="run only the non-granting native drag regressions on an already open Dev/Settings pair")
     parser.add_argument("--resume-input-drop", action="store_true",
@@ -1055,6 +2070,10 @@ def main():
         with acceptance.observe_feedback():
             if args.existing_input:
                 acceptance.run_existing_input()
+            elif args.general_permissions:
+                acceptance.run_general_permissions()
+            elif args.cancel_reentry:
+                acceptance.run_cancel_reentry()
             elif args.drag_regressions_only:
                 acceptance.run_drag_regressions_only()
             elif args.resume_input_drop:

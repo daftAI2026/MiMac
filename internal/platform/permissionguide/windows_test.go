@@ -72,24 +72,15 @@ func TestSettingsAttachedRestartDialogDefersPermissionRecovery(t *testing.T) {
 	}
 }
 
-func TestPermissionDropRequiresItsUncoveredNativeWindow(t *testing.T) {
-	target := windowRecord{id: 3, owner: 18, frame: Rect{Width: 500, Height: 600}, alpha: 1}
-	panel := windowRecord{id: 4, owner: 19, layer: 16, frame: target.frame, alpha: 1}
-	other := windowRecord{id: 5, owner: 20, frame: Rect{Width: 50, Height: 50}, alpha: 1}
-	windows := []windowRecord{panel, other, target}
-	if settingsReceivesPoint(windows, 3, 18, 20, 20) || !settingsReceivesPoint(windows, 3, 18, 250, 270) ||
-		settingsReceivesPoint(windows, 3, 18, 510, 270) || settingsReceivesPoint(windows, 3, 20, 250, 270) {
-		t.Fatal("wrong receiver at drop point")
-	}
-}
-
-func TestPermissionDropMatchesPageEvenIfUserNavigated(t *testing.T) {
-	if settingsDropMatchesPage("Input Monitoring", false, true) ||
+func TestPermissionDragMatchesPageEvenIfUserNavigated(t *testing.T) {
+	if !settingsDropMatchesPage("Input Monitoring", true, false) ||
+		settingsDropMatchesPage("Input Monitoring", false, true) ||
 		settingsDropMatchesPage("Bluetooth", true, true) ||
 		settingsDropMatchesPage("", true, false) ||
+		!settingsDropMatchesPage("Device Control and Data Access", false, false) ||
 		!settingsDropMatchesPage("设备控制和数据访问", false, false) ||
 		!settingsDropMatchesPage("", true, true) {
-		t.Fatal("drop route did not respect the observed destination")
+		t.Fatal("permission drag did not respect the selected Settings page")
 	}
 }
 

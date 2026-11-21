@@ -1,0 +1,113 @@
+[
+  {
+    "role": "AXWindow",
+    "title": "MiMac Dev 系统权限",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "bounds": {"x": 960, "y": 178, "width": 500, "height": 420}
+  },
+  {
+    "role": "AXWindow",
+    "title": "MiMac Dev",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "bounds": {"x": 510, "y": 128, "width": 900, "height": 680}
+  },
+  {
+    "role": "AXButton",
+    "title": "在系统设置中管理输入监控",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1039.5, "y": 404.5, "width": 300, "height": 18}
+  },
+  {
+    "role": "AXButton",
+    "title": "授权…",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1363.5, "y": 410, "width": 64, "height": 24}
+  },
+  {
+    "role": "AXButton",
+    "title": "在系统设置中管理设备控制和数据访问",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1039.5, "y": 466.310546875, "width": 300, "height": 18}
+  },
+  {
+    "role": "AXButton",
+    "title": "授权…",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1363.5, "y": 471.810546875, "width": 64, "height": 24}
+  },
+  {
+    "role": "AXButton",
+    "title": "在系统设置中管理蓝牙",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1039.5, "y": 528.12109375, "width": 300, "height": 18}
+  },
+  {
+    "role": "AXStaticText",
+    "value": "已授权",
+    "description": "已授权",
+    "root_window_index": 0,
+    "root_window_title": "MiMac Dev 系统权限",
+    "enabled": true,
+    "bounds": {"x": 1382.7451171875, "y": 538.5546875, "width": 35.75486373901367, "height": 14.1328125}
+  },
+  {
+    "role": "AXButton",
+    "description": "管理输入监控",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1319.5, "y": 519.5, "width": 60.5, "height": 24}
+  },
+  {
+    "role": "AXStaticText",
+    "value": "未授权",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1268.5, "y": 523.5, "width": 39, "height": 16}
+  },
+  {
+    "role": "AXButton",
+    "description": "管理设备控制和数据访问",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1319.5, "y": 560.5, "width": 60.5, "height": 24}
+  },
+  {
+    "role": "AXStaticText",
+    "value": "未授权",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1268.5, "y": 564.5, "width": 39, "height": 16}
+  },
+  {
+    "role": "AXButton",
+    "description": "管理蓝牙",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1319.5, "y": 601.5, "width": 60.5, "height": 24}
+  },
+  {
+    "role": "AXStaticText",
+    "value": "已授权",
+    "root_window_index": 1,
+    "root_window_title": "MiMac Dev",
+    "enabled": true,
+    "bounds": {"x": 1244, "y": 605.375, "width": 63.5, "height": 16.125}
+  }
+]
