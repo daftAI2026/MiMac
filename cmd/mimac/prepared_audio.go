@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 
 	"mimac.local/mimac/internal/audiosession"
@@ -17,6 +18,14 @@ var (
 	errPreparedAudioInvalidToken = errors.New("prepared audio session token is invalid")
 	errPreparedAudioPrepareNil   = errors.New("prepared audio factory is nil")
 )
+
+type preparedAudioSourcePrepareError struct{ cause error }
+
+func (e *preparedAudioSourcePrepareError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *preparedAudioSourcePrepareError) Unwrap() error { return e.cause }
 
 type preparedAudioState uint8
 
@@ -55,6 +64,7 @@ type preparedAudioOwner struct {
 	cleanupDone chan struct{}
 	cleanupErr  error
 	lastErr     error
+	sourceFault error
 }
 
 func newPreparedAudioOwner(prepare func(context.Context) (audiosession.Resources, error)) (*preparedAudioOwner, error) {
@@ -133,7 +143,8 @@ func (o *preparedAudioOwner) Error() error {
 		return errPreparedAudioNil
 	}
 	o.mu.Lock()
-	generation, source, err := o.generation, o.current.Source, o.lastErr
+	generation, source := o.generation, o.current.Source
+	err := preparedAudioError(o.lastErr, o.sourceFault)
 	checkSource := !o.closed && !o.sourceFaultRecorded && source != nil && o.state == preparedAudioReady
 	o.mu.Unlock()
 	if checkSource {
@@ -142,11 +153,30 @@ func (o *preparedAudioOwner) Error() error {
 		}
 		o.mu.Lock()
 		if o.generation == generation {
-			err = o.lastErr
+			err = preparedAudioError(o.lastErr, o.sourceFault)
 		}
 		o.mu.Unlock()
 	}
 	return err
+}
+
+// sourceFailure reports a source-owned fault for the lifetime of this route.
+// Unlike Error, it excludes sink and route setup errors so the host can apply
+// the bounded source recovery path without retrying unrelated failures.
+func (o *preparedAudioOwner) sourceFailure() error {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.sourceFault
+}
+
+func preparedAudioError(lastErr, sourceFault error) error {
+	if lastErr != nil {
+		return lastErr
+	}
+	return sourceFault
 }
 
 // Take transfers the one ready resource group to Runtime exactly once.
@@ -222,6 +252,10 @@ func (o *preparedAudioOwner) recordSourceError(generation uint64, err error) {
 		o.lastErr = errors.Join(o.lastErr, err)
 		changed = true
 	}
+	if !errors.Is(o.sourceFault, err) {
+		o.sourceFault = errors.Join(o.sourceFault, err)
+		changed = true
+	}
 	if o.state == preparedAudioReady {
 		o.state = preparedAudioFailed
 		changed = true
@@ -277,6 +311,11 @@ func (o *preparedAudioOwner) runPrepare(ctx context.Context, generation uint64, 
 	if ctx.Err() != nil {
 		err = errors.Join(err, ctx.Err())
 	}
+	var sourcePrepareErr *preparedAudioSourcePrepareError
+	var sourceFault error
+	if ctx.Err() == nil && errors.As(err, &sourcePrepareErr) {
+		sourceFault = sourcePrepareErr.cause
+	}
 
 	o.mu.Lock()
 	if o.generation == generation {
@@ -288,6 +327,10 @@ func (o *preparedAudioOwner) runPrepare(ctx context.Context, generation uint64, 
 		o.prepareCancel = nil
 		o.prepareDone = nil
 		o.lastErr = err
+		if sourceFault != nil && !errors.Is(o.sourceFault, sourceFault) {
+			o.sourceFault = errors.Join(o.sourceFault, sourceFault)
+			o.sourceFaultRecorded = true
+		}
 		if err == nil && !o.closed {
 			o.setStateLocked(preparedAudioReady)
 		} else if o.closed {
@@ -483,15 +526,29 @@ type preparedAudioSource struct {
 }
 
 func (s preparedAudioSource) Read(ctx context.Context, pcm []int16) (int, error) {
-	return s.inner.Read(ctx, pcm)
+	n, err := s.inner.Read(ctx, pcm)
+	if err != nil && !errors.Is(err, io.EOF) && (ctx == nil || ctx.Err() == nil) && s.owner != nil {
+		s.owner.recordSourceError(s.generation, err)
+	}
+	return n, err
 }
 
-func (s preparedAudioSource) Stop(ctx context.Context) error { return s.inner.Stop(ctx) }
+func (s preparedAudioSource) Stop(ctx context.Context) error {
+	err := s.inner.Stop(ctx)
+	if err != nil && (ctx == nil || ctx.Err() == nil) && s.owner != nil {
+		s.owner.recordSourceError(s.generation, err)
+	}
+	return err
+}
 
 // Preserve asynchronous source health across the ownership wrapper.
 func (s preparedAudioSource) Err() error {
 	if health, ok := s.inner.(interface{ Err() error }); ok {
-		return health.Err()
+		err := health.Err()
+		if err != nil && s.owner != nil {
+			s.owner.recordSourceError(s.generation, err)
+		}
+		return err
 	}
 	return nil
 }

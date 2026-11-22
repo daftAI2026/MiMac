@@ -164,6 +164,7 @@ type compatRouteTestSource struct {
 	mu         sync.Mutex
 	closeCalls int
 	readyErr   error
+	err        error
 	eventLog   *[]string
 	logMu      *sync.Mutex
 }
@@ -191,7 +192,16 @@ func (s *compatRouteTestSource) Close() error {
 func (s *compatRouteTestSource) Ready(context.Context) (int, error) {
 	return compatAudioSampleRate, s.readyErr
 }
-func (*compatRouteTestSource) Err() error { return nil }
+func (s *compatRouteTestSource) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+func (s *compatRouteTestSource) setErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
+}
 func (s *compatRouteTestSource) closes() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -342,6 +352,35 @@ func compatRouteTestFixtureForTarget(t *testing.T, target compatAudioRouteTarget
 func openCompatRouteForTest(t *testing.T, saved *string) (*compatLiveAudioRoute, *compatRouteTestInspector, *compatRouteTestIdentity, *compatRouteTestOwner, *compatRouteTestRequest, *compatRouteTestSource, *compatRouteTestSink) {
 	t.Helper()
 	return compatRouteTestFixture(t, saved)
+}
+
+func TestLiveAudioConnectionReadsSourceFailureFromConstructedCompatRoute(t *testing.T) {
+	route, _, _, _, _, source, _ := openCompatRouteForTest(t, nil)
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+		return route, nil
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := connection.Close(ctx); err != nil {
+			t.Errorf("close production-shaped compatibility route: %v", err)
+		}
+	})
+	select {
+	case <-connection.Done():
+	case <-time.After(time.Second):
+		t.Fatal("compatibility route did not start")
+	}
+	waitXiaomiRoute(t, connection.Ready)
+
+	fault := errors.New("constructed route source failed")
+	source.setErr(fault)
+	if connection.Ready() {
+		t.Fatal("compatibility connection remained ready after its prepared source failed")
+	}
+	if err := connection.sourceFailure(); !errors.Is(err, fault) {
+		t.Fatalf("connection source failure = %v, want %v", err, fault)
+	}
 }
 
 func TestOpenLiveXiaomiRouteDefersMiMacSelectionUntilBeforeStart(t *testing.T) {

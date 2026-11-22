@@ -17,13 +17,21 @@ type preparedAudioTestSource struct {
 	mu         sync.Mutex
 	closeCalls int
 	closeErrs  []error
+	readErr    error
 	err        error
 	errCalls   int
 	freshErr   bool
 }
 
-func (*preparedAudioTestSource) Read(context.Context, []int16) (int, error) { return 0, io.EOF }
-func (*preparedAudioTestSource) Stop(context.Context) error                 { return nil }
+func (s *preparedAudioTestSource) Read(context.Context, []int16) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readErr != nil {
+		return 0, s.readErr
+	}
+	return 0, io.EOF
+}
+func (*preparedAudioTestSource) Stop(context.Context) error { return nil }
 func (s *preparedAudioTestSource) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -52,6 +60,11 @@ func (s *preparedAudioTestSource) Err() error {
 func (s *preparedAudioTestSource) setErr(err error) {
 	s.mu.Lock()
 	s.err = err
+	s.mu.Unlock()
+}
+func (s *preparedAudioTestSource) setReadErr(err error) {
+	s.mu.Lock()
+	s.readErr = err
 	s.mu.Unlock()
 }
 func (s *preparedAudioTestSource) setFreshErr(err error) {
@@ -622,5 +635,56 @@ func TestPreparedAudioLeasePreservesLiveSourceHealth(t *testing.T) {
 	source.setErr(fault)
 	if err := health.Err(); !errors.Is(err, fault) {
 		t.Fatalf("lease source health=%v", err)
+	}
+	if err := owner.sourceFailure(); !errors.Is(err, fault) {
+		t.Fatalf("leased source fault was not retained: %v", err)
+	}
+	if err := owner.Error(); !errors.Is(err, fault) {
+		t.Fatalf("owner Error() dropped the leased source fault: %v", err)
+	}
+}
+
+func TestPreparedAudioLeaseRecordsSourceReadFailure(t *testing.T) {
+	source, sink := &preparedAudioTestSource{}, &preparedAudioTestSink{}
+	owner, err := newPreparedAudioOwner(func(context.Context) (audiosession.Resources, error) {
+		return audiosession.Resources{Source: source, Sink: sink, SampleRate: 16000}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitPreparedAudio(t, owner.Ready)
+	resources, err := owner.Take(preparedAudioToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = resources.Source.Close()
+		_ = resources.Sink.Close()
+		closePreparedAudio(t, owner)
+	}()
+	drainedChanges := false
+	for !drainedChanges {
+		select {
+		case <-owner.Changes():
+		default:
+			drainedChanges = true
+		}
+	}
+
+	fault := errors.New("source read failed after lease transfer")
+	source.setReadErr(fault)
+	if _, err := resources.Source.Read(context.Background(), make([]int16, 8)); !errors.Is(err, fault) {
+		t.Fatalf("leased source Read() = %v, want source fault", err)
+	}
+	if err := owner.sourceFailure(); !errors.Is(err, fault) {
+		t.Fatalf("leased source read fault was not retained: %v", err)
+	}
+	select {
+	case <-owner.Changes():
+	default:
+		t.Fatal("leased source read fault did not notify the host")
 	}
 }

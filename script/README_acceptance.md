@@ -33,6 +33,16 @@ Apple 本机识别不用 `--audio-backend` 或 `--target-pid`。已核验的固�
 
 每个 `prepare/finish` run 只允许一个会话；`finish` 会关闭 App 和自有输入窗口。一个批次若安排完整句和短句，应分别准备两个 run，不能把两次按键放进一个 run。连续输入、同窗口前缀保留和旧结果隔离使用专门的连续会话实验，不能由两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
 
+### 日用收音故障日志
+
+在「控制台」选中当前 Mac，以类别 `remote-audio` 和应用的 Bundle ID 筛选。终端可查询最近十分钟的日用记录，独立 Dev 将子系统改为 `dev.mimac.app.dev`。
+
+```sh
+/usr/bin/log show --last 10m --style compact --predicate 'subsystem == "dev.mimac.app" AND category == "remote-audio"'
+```
+
+同一连接依次记录订阅就绪、遥控器开始发送、首个音频包和停止时收到的字节数。出现传输错误时记录数值错误码。日志只包含事件与计数；判断插件读入和整句结果仍用上面的现场流程。
+
 ### Verify the ordinary-launch audio route
 
 A session driven by an explicit backend argument verifies only that diagnostic launch. Check the ordinary launch with the same packaged identity, current tool, and installed audio endpoint before a Beta handoff. With a missing backend sidecar, a verified compatibility endpoint and a supported current tool select the existing route automatically. A saved or one-run empty value preserves shortcut-only mode. The independent restart verifier needs the expected automatic route for the fixed test machine. Confirm real source, target consumption and text in the live acceptance flow.

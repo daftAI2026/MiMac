@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,8 +322,36 @@ func TestXiaomiAudioRouteChecksFaultedPrewarmedSourceBeforeTake(t *testing.T) {
 	if err := route.Error(); !errors.Is(err, sourceFault) {
 		t.Fatalf("route Error() = %v, want source fault", err)
 	}
+	if err := route.sourceFailure(); !errors.Is(err, sourceFault) {
+		t.Fatalf("route sourceFailure() = %v, want source fault", err)
+	}
 	if _, err := route.Prepare(context.Background(), xiaomiRouteSessionToken(t, 43)); !errors.Is(err, sourceFault) {
 		t.Fatalf("Prepare with source fault = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := route.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestXiaomiAudioRouteReportsSourcePreparationFailure(t *testing.T) {
+	config := audiooutput.Config{DeviceUID: "selected-test-route", SampleRate: 16000}
+	sourceFault := errors.New("ATVV source preparation failed")
+	var sinkOpens atomic.Int32
+	route := newXiaomiRouteTest(t, 45, config,
+		func(context.Context, atvv.StreamKey) (audiosession.Source, error) { return nil, sourceFault },
+		func() error { return nil },
+		func(audiooutput.Config) (xiaomiPreparedSink, error) {
+			sinkOpens.Add(1)
+			return &xiaomiRouteTestSink{}, nil
+		})
+	waitXiaomiRoute(t, func() bool { return route.Error() != nil })
+	if err := route.sourceFailure(); !errors.Is(err, sourceFault) {
+		t.Fatalf("source preparation fault = %v, want %v", err, sourceFault)
+	}
+	if sinkOpens.Load() != 0 {
+		t.Fatalf("source preparation failure opened sink %d times", sinkOpens.Load())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

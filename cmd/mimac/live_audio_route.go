@@ -564,6 +564,13 @@ func (r *compatLiveAudioRoute) Error() error {
 	return r.route.Error()
 }
 
+func (r *compatLiveAudioRoute) sourceFailure() error {
+	if r == nil || r.route == nil {
+		return nil
+	}
+	return r.route.sourceFailure()
+}
+
 func (r *compatLiveAudioRoute) Changes() <-chan struct{} {
 	if r == nil || r.route == nil {
 		return nil

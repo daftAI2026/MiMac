@@ -33,6 +33,7 @@ type liveAudioState struct {
 	toolID, appPath        string
 	generation             uint64
 	retiring               bool
+	recoveryAttempted      bool
 	audioFailure           error
 	componentStatus        audioComponentAvailability
 	componentInspector     func() (audioComponentInspector, error)
@@ -74,6 +75,8 @@ func (s *shell) refreshLiveAudio() {
 		if tool == nil || tool.id != s.liveAudio.toolID || tool.snapshot.AppPath != s.liveAudio.appPath ||
 			s.coordinator.core.Snapshot().Generation != s.liveAudio.generation {
 			s.retireLiveAudio()
+		} else {
+			s.recoverFailedLiveAudio(connection)
 		}
 		return
 	}
@@ -118,7 +121,7 @@ func (s *shell) refreshLiveAudio() {
 	s.audioResources = connection.Prepare
 	s.audioResourcesReady = func() bool {
 		return !s.liveAudio.retiring && s.liveAudio.connection == connection && s.currentVoiceTool == tool.id && tool.active &&
-			s.remoteHasReservation() && s.coordinator.core.Snapshot().Generation == generation && connection.Ready()
+			s.remoteHasReservation() && s.coordinator.core.Snapshot().Generation == generation && connection.Ready() && connection.Err() == nil
 	}
 	s.audioResourcesClose = connection.Close
 	s.audioResourcesBeforeStart = connection.BeforeStart
@@ -158,6 +161,7 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 				s.report.AudioError = ""
 			}
 			log.Printf("audio route: ready=%t error=%v", ready, err)
+			s.recoverFailedLiveAudio(connection)
 			s.invalidateDeviceView()
 		})
 	}
@@ -173,6 +177,55 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 			}
 			update()
 		}
+	}
+}
+
+// recoverFailedLiveAudio rebuilds only an explicitly faulted Source, through
+// the existing audio-session owner. One attempt is allowed between successful
+// audio sessions; the same persistent failure cannot create a retry loop.
+func (s *shell) recoverFailedLiveAudio(connection *liveAudioConnection) bool {
+	if s == nil || connection == nil || s.liveAudio.connection != connection || s.liveAudio.recoveryAttempted ||
+		s.liveAudio.retiring || s.audioSession == nil || s.plugins == nil || !s.plugins.Active(audioSessionPlugin) ||
+		s.plugins.Failure(audioSessionPlugin) != nil || s.report.AudioCleanupFailed ||
+		s.closing || !s.audioRequested() || s.coordinator == nil || s.coordinator.core == nil {
+		return false
+	}
+	if !recoverableLiveAudioSourceFailure(connection.sourceFailure()) {
+		return false
+	}
+	if _, _, blocked := s.audioRetryBlocked(); blocked || !s.remoteHasReservation() {
+		return false
+	}
+	snapshot := s.coordinator.core.Snapshot()
+	if snapshot.Generation == 0 || snapshot.Generation != s.liveAudio.generation ||
+		s.remoteState.reservationGeneration != snapshot.Generation || len(snapshot.RecoveryKeys) != 0 {
+		return false
+	}
+	tool := s.desiredLiveAudioTool()
+	if tool == nil || tool.id != s.liveAudio.toolID || tool.snapshot.AppPath != s.liveAudio.appPath {
+		return false
+	}
+	s.liveAudio.recoveryAttempted = true
+	s.retireLiveAudio()
+	return s.liveAudio.retiring
+}
+
+func recoverableLiveAudioSourceFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// These errors describe user-controlled availability or a revoked runtime
+	// request. Rebuilding immediately cannot fix them and could prompt/retry in
+	// a loop. A later explicit user action or normal route refresh can retry.
+	switch {
+	case errors.Is(err, atvv.ErrBluetoothPermission),
+		errors.Is(err, atvv.ErrBluetoothPoweredOff),
+		errors.Is(err, atvv.ErrRemoteNotConnected),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded):
+		return false
+	default:
+		return true
 	}
 }
 

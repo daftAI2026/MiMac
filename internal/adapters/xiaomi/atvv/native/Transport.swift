@@ -1,5 +1,6 @@
 import CoreBluetooth
 import Foundation
+import OSLog
 
 // MiMacATVVTransportCreate starts an already-connected-device GATT transport.
 // It never scans, pairs, or opens the microphone. Callback byte pointers are
@@ -110,6 +111,9 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
     private var capabilitiesRequested = false
     private var pendingWrite: WriteKind?
     private var queuedCloseStream: UInt8?
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.mimac.app", category: "remote-audio")
+    private var audioBytes: UInt64 = 0
+    private var lastLoggedFailure: Int32?
     private var activeStreamID: UInt8?
     private var remoteStopObserved = false
     private var closeRequestedForStream: UInt8?
@@ -299,6 +303,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
     private func notifyReadyIfComplete() {
         guard !readySent, controlNotifying, audioNotifying, mayAcceptWork, !closing else { return }
         readySent = true
+        Self.logger.notice("Audio notifications ready connection=\(self.handle)")
         // READY means both subscriptions are confirmed. Go still parses the
         // subsequent Control CAPS value before it can arm its ATVV Source.
         emit(.ready)
@@ -323,6 +328,12 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
             observeControlBoundaries(data)
             emit(.controlValue, bytes: data)
         } else if characteristic === audio {
+            if activeStreamID != nil && !remoteStopObserved && !data.isEmpty {
+                if audioBytes == 0 {
+                    Self.logger.notice("First audio packet connection=\(self.handle)")
+                }
+                audioBytes &+= UInt64(data.count)
+            }
             emit(.audioValue, bytes: data)
         }
     }
@@ -330,6 +341,9 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
     private func observeControlBoundaries(_ data: Data) {
         guard let opcode = data.first else { return }
         if opcode == 0x00 {
+            if activeStreamID != nil && !remoteStopObserved {
+                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes)")
+            }
             remoteStopObserved = true
             return
         }
@@ -337,6 +351,8 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
         // remains responsible for parsing and validating the full protocol.
         guard opcode == 0x04, data.count >= 4 else { return }
         activeStreamID = data[3]
+        audioBytes = 0
+        Self.logger.notice("Remote audio started connection=\(self.handle)")
         remoteStopObserved = false
         closeRequestedForStream = nil
         closeSentForStream = nil
@@ -493,6 +509,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
         }
 
         closeDoneSent = true
+        Self.logger.notice("Audio connection closed connection=\(self.handle)")
         let finalCallback = callback
         callback = nil
         let keepAlive = self
@@ -503,6 +520,10 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
 
     private func emit(_ event: TransportEvent, status: Int32 = TransportStatus.ok, bytes: Data? = nil) {
         guard let callback else { return }
+        if event == .failure && lastLoggedFailure != status {
+            lastLoggedFailure = status
+            Self.logger.error("Audio transport failure connection=\(self.handle) status=\(status)")
+        }
         guard let bytes, !bytes.isEmpty else {
             callback(context, event.rawValue, status, nil, 0)
             return

@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/keyoutput"
 	"mimac.local/mimac/internal/adapters/xiaomi"
+	"mimac.local/mimac/internal/devices"
 )
 
 // The host owns the monitor lifetime, independently of disposable settings
@@ -100,6 +101,17 @@ func (s *shell) handleDeviceEvent(event xiaomi.MonitorEvent) {
 	}
 	if !accepted {
 		return
+	}
+	// A source fault can arrive while a physical press is active. The route
+	// watcher leaves recovery deferred until Core has observed a matching
+	// release; reconsider only then, without touching HID.
+	for _, edge := range event.Edges {
+		if edge.Kind == devices.EdgeUp {
+			if connection := s.liveAudio.connection; connection != nil {
+				s.recoverFailedLiveAudio(connection)
+			}
+			break
+		}
 	}
 	if len(event.Edges) == 0 {
 		if s.report.MonitorStates == nil {

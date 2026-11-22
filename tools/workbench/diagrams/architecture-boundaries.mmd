@@ -9,7 +9,8 @@ flowchart LR
     keys["系统按键输出适配器"]
     audio["音频会话与路由适配器"]
     routeFactory["工具注册的 audioRouteFactory 能力"]
-    routeOwner["liveAudioConnection + audio-session Runtime\n连接 owner 与会话 source/sink owner 分层"]
+    routeOwner["liveAudioConnection + Runtime + preparedAudioOwner\n连接、预备资源与会话 source/sink owner 分层"]
+    sourceRecovery["source 故障按实际音频会话限次恢复\nCore 空闲且无按键时 retire / close / 重建音频 owner\n仅成功 SourceDrained 后重新开放一次；权限/状态拒绝不自动重试\n不重启 HID、不补发按键"]
     tools["语音工具发现与动作快照"]
     text["辅助功能文本输出适配器"]
     prefs["show_voice_overlay 持久偏好"]
@@ -31,6 +32,8 @@ flowchart LR
     routeFactory --> routeOwner
     routeFactory --> contracts["Apple / 豆包 / WeType 薄适配\n按工具处理身份、输入源与偏好协议"]
     contracts --> routeOwner
+    routeOwner -. source fault .-> sourceRecovery
+    sourceRecovery -->|same tool and device generation| routeFactory
     routeOwner --> audio
     shell --> tools
     shell --> text

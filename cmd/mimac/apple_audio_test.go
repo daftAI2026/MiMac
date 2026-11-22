@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
+	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/devices"
 )
@@ -38,6 +40,46 @@ func TestLocalAudioVoiceDoesNotRequireKeyOutputSink(t *testing.T) {
 	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeUp)
 	if got := countEffectName(audio.effects, "StopSourceEffect"); got != 1 {
 		t.Fatalf("local voice release StopSource count = %d, want 1", got)
+	}
+}
+
+func TestLiveAudioConnectionReadsSourceFailureFromConstructedAppleRoute(t *testing.T) {
+	source := &preparedAudioTestSource{}
+	route, err := newAppleAudioRoute(17,
+		func(context.Context, atvv.StreamKey) (audiosession.Source, error) { return source, nil },
+		func() error { return nil },
+		func(context.Context) (localRecognizer, error) {
+			return &appleRecognizerTestStub{hostPCMSink: newHostPCMSink()}, nil
+		},
+		func() (transcriptTarget, error) { return &transcriptTargetTestStub{}, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+		return route, nil
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := connection.Close(ctx); err != nil {
+			t.Errorf("close production-shaped Apple route: %v", err)
+		}
+	})
+	select {
+	case <-connection.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Apple route did not start")
+	}
+	waitXiaomiRoute(t, connection.Ready)
+
+	fault := errors.New("Apple route source failed")
+	source.setErr(fault)
+	if connection.Ready() {
+		t.Fatal("Apple connection remained ready after its prepared source failed")
+	}
+	if err := connection.sourceFailure(); !errors.Is(err, fault) {
+		t.Fatalf("Apple connection source failure = %v, want %v", err, fault)
 	}
 }
 

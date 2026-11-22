@@ -168,6 +168,27 @@ func (c *liveAudioConnection) Err() error {
 	return route.Error()
 }
 
+// sourceFailure distinguishes an audio source fault from route setup, target,
+// or sink failures. A caller may retire and rebuild the audio owner only for
+// this explicit signal; it never restarts the HID connection.
+func (c *liveAudioConnection) sourceFailure() error {
+	if c == nil {
+		return nil
+	}
+	select {
+	case <-c.done:
+	default:
+		return nil
+	}
+	c.stateMu.Lock()
+	route := c.route
+	c.stateMu.Unlock()
+	if source, ok := route.(interface{ sourceFailure() error }); ok {
+		return source.sourceFailure()
+	}
+	return nil
+}
+
 // BeforeStart runs a target adapter's start preflight after Core has
 // admitted a new physical press, but before its first target key is posted.
 // It never waits for construction or competes with native cleanup. Context

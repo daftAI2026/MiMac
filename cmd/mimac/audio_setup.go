@@ -156,6 +156,8 @@ func (s *shell) retryAudioSetup() error {
 			nextStep: "仅保存的音频来源会在日用版使用",
 		}
 	}
+	// A user-initiated retry opens one fresh automatic-recovery allowance.
+	s.liveAudio.recoveryAttempted = false
 	if s.liveAudio.connection == nil && s.audioSession == nil {
 		if s.selectedAudioRouteTool() == nil {
 			return &audioSetupFailure{message: "当前工具不支持遥控器音频", nextStep: "选择支持的语音工具或使用该工具的Mac麦克风"}

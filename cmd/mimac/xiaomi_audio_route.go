@@ -163,6 +163,13 @@ func (r *xiaomiAudioRoute) Error() error {
 	return r.resources.Error()
 }
 
+func (r *xiaomiAudioRoute) sourceFailure() error {
+	if r == nil || r.resources == nil {
+		return nil
+	}
+	return r.resources.sourceFailure()
+}
+
 // Prepare adapts to audiosession.Prepare. The already-armed source and the
 // prepared sink are transferred together; no fresh source is opened here.
 func (r *xiaomiAudioRoute) Prepare(ctx context.Context, token bridge.SessionToken) (audiosession.Resources, error) {
@@ -188,10 +195,10 @@ func (r *xiaomiAudioRoute) prepareResources(ctx context.Context) (audiosession.R
 		resources.Source = &xiaomiRateCheckedSource{inner: source, expectedRate: r.sampleRate}
 	}
 	if err != nil {
-		return resources, err
+		return resources, &preparedAudioSourcePrepareError{cause: err}
 	}
 	if source == nil {
-		return resources, errXiaomiAudioSourceNil
+		return resources, &preparedAudioSourcePrepareError{cause: errXiaomiAudioSourceNil}
 	}
 
 	sink, err := r.newSink(ctx)

@@ -17,11 +17,13 @@ type liveAudioConnectionTestRoute struct {
 
 	startErr    error
 	currentErr  error
+	sourceFault error
 	ready       bool
 	changes     chan struct{}
 	closeErrors []error
 	closeEnter  chan struct{}
 	closeBlock  <-chan struct{}
+	resources   audiosession.Resources
 
 	startCalls   int
 	prepareCalls int
@@ -54,13 +56,23 @@ func (r *liveAudioConnectionTestRoute) Error() error {
 	return r.currentErr
 }
 
+func (r *liveAudioConnectionTestRoute) sourceFailure() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sourceFault
+}
+
 func (r *liveAudioConnectionTestRoute) Changes() <-chan struct{} { return r.changes }
 
 func (r *liveAudioConnectionTestRoute) Prepare(context.Context, bridge.SessionToken) (audiosession.Resources, error) {
 	r.mu.Lock()
 	r.prepareCalls++
+	resources := r.resources
 	r.mu.Unlock()
-	return audiosession.Resources{SampleRate: 16000}, nil
+	if resources.SampleRate == 0 {
+		resources.SampleRate = 16000
+	}
+	return resources, nil
 }
 
 func (r *liveAudioConnectionTestRoute) Close(context.Context) error {

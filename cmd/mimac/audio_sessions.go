@@ -238,10 +238,13 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					return
 				}
 				s.logAudioCompletion(completion.Event, completion.CleanupFailed, completion.Err)
+				before := s.coordinator.core.Snapshot()
+				successfulAudioDrain := completion.Err == nil && !completion.CleanupFailed && before.HasSession &&
+					before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio &&
+					completion.Event == bridge.SourceDrained(before.Session.Token)
 				var deliveryErr error
 				if result := completion.Transcript; result != nil {
-					snapshot := s.coordinator.core.Snapshot()
-					if snapshot.HasSession && snapshot.Session.Token == result.Token && snapshot.Session.Phase == bridge.PhaseDraining && snapshot.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
+					if before.HasSession && before.Session.Token == result.Token && before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
 						deliveryErr = host.deliver(result.Token, result.Text)
 						if deliveryErr != nil {
 							s.outputNeedsPermission = errors.Is(deliveryErr, textoutput.ErrPermissionDenied)
@@ -249,13 +252,26 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 						}
 					}
 				}
-				err := errors.Join(deliveryErr, s.coordinator.step(completion.Event))
+				stepErr := s.coordinator.step(completion.Event)
+				err := errors.Join(deliveryErr, stepErr)
 				if completion.CleanupFailed {
 					err = errors.Join(err, s.coordinator.step(bridge.RouteAvailable(false)))
 					s.report.AudioCleanupFailed = true
 				}
 				if err = errors.Join(completion.Err, err); err != nil {
 					s.report.AudioError = err.Error()
+				}
+				after := s.coordinator.core.Snapshot()
+				if connection := s.liveAudio.connection; connection != nil {
+					// A ready route does not rearm recovery. Only a matching,
+					// successfully drained audio session proves that the rebuilt
+					// source worked; a later independent source failure gets one
+					// fresh recovery attempt.
+					if successfulAudioDrain && stepErr == nil && !after.HasSession && after.Generation == before.Generation &&
+						s.liveAudio.generation == before.Generation && connection.sourceFailure() == nil {
+						s.liveAudio.recoveryAttempted = false
+					}
+					s.recoverFailedLiveAudio(connection)
 				}
 				s.report.Core = s.coordinator.report()
 				s.invalidateDeviceView()

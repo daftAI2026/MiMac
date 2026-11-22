@@ -2,7 +2,7 @@
   {
     "id": "architecture-boundaries",
     "title": "架构边界",
-    "summary": "MyGo 负责主线程、事件循环、菜单与窗口；cmd/mimac 作组合根。Core 持有唯一设备动作和语音会话状态，pluginrt 与设备/工具/音频/文本/显示适配分开。此前固定包 WeType 两轮真实遥控会话通过；2026-11-03 豆包固定包两轮通过。WeType 冷态首轮、外部麦克风变化和异常恢复仍待验；Pro 2 精确型号/协议仍待握手；Siri 实时随声未验。 后端选择在宿主启动前解析；保存选择不安装组件、不启用遥控器，也不等于路由就绪。 正式 App 的默认、保存、当次覆盖、覆盖后重开与清除五种配置情形已独立通过；音频准备和真实收音另验。 豆包控制服务在现有资源 worker 内、Sink.Prepare 后准备：原生应用启动完成及一次 UUID 配置应答，身份复核后才发布资源 Ready。不是录音/选路 ACK；Core、MyGo 主循环与实际 PID/UID 门保持。独立冷暖合成范围与正式 App 验收分别记录。 豆包与微信共用应用身份装饰器，将尚未注册音频的唯一应用识别为准备前空闲；原生查询错误继续拒绝。",
+    "summary": "MyGo 负责主线程、事件循环、菜单与窗口；cmd/mimac 作组合根。Core 持有唯一设备动作和语音会话状态，pluginrt 与设备/工具/音频/文本/显示适配分开。此前固定包 WeType 两轮真实遥控会话通过；2026-11-03 豆包固定包两轮通过。WeType 冷态首轮、外部麦克风变化和异常恢复仍待验；Pro 2 精确型号/协议仍待握手；Siri 实时随声未验。 后端选择在宿主启动前解析；保存选择不安装组件、不启用遥控器，也不等于路由就绪。 正式 App 的默认、保存、当次覆盖、覆盖后重开与清除五种配置情形已独立通过；音频准备和真实收音另验。 豆包控制服务在现有资源 worker 内、Sink.Prepare 后准备：原生应用启动完成及一次 UUID 配置应答，身份复核后才发布资源 Ready。不是录音/选路 ACK；Core、MyGo 主循环与实际 PID/UID 门保持。独立冷暖合成范围与正式 App 验收分别记录。 豆包与微信共用应用身份装饰器，将尚未注册音频的唯一应用识别为准备前空闲；原生查询错误继续拒绝。Source 明确故障且 Core 空闲、无按键时，宿主沿既有音频 owner retire/close/rebuild 一次；成功完成匹配的实际音频会话后重新开放一次独立恢复；权限、蓝牙状态与取消/超时不自动重试。不重启 HID、不补发按键，清理失败与持续故障保持保护。",
     "sourcePaths": [
       "cmd/mimac/main.go",
       "cmd/mimac/plugins.go",
@@ -12,6 +12,8 @@
       "cmd/mimac/live_audio_connection.go",
       "cmd/mimac/live_audio_route.go",
       "cmd/mimac/audio_sessions.go",
+      "cmd/mimac/xiaomi_audio_route.go",
+      "cmd/mimac/prepared_audio.go",
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
       "cmd/mimac/voice_overlay_view.go",
