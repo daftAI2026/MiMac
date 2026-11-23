@@ -322,10 +322,15 @@ func main() {
 	if mygo.App.Name() == developmentAppName && !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
-	backend := startup.Backend
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &shell{releaseVersion: releaseVersion, cancel: cancel, liveAudio: liveAudioState{backend: backend, selectInstalledBackend: !development && mygo.App.IsPackaged() && !startup.Explicit}}
+	s := &shell{
+		releaseVersion:      releaseVersion,
+		cancel:              cancel,
+		development:         development,
+		isolatedDevelopment: development && !*deviceAccess,
+	}
+	s.configureAudioBackend(startup, mygo.App.IsPackaged())
 	s.onboarding.showOnboardingOnLaunch = *showOnboarding
 	sourceCheckLibrary := ""
 	if *sourceCheckPath != "" {
@@ -359,7 +364,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "source check: model_ready=true locale=zh-CN install_assets=false")
 	}
 
-	s.report.AudioBackend = backend
+	s.report.AudioBackend = s.liveAudio.backend
 	s.remoteState.reportRecovery = *reportPath != ""
 	trace, traceFile, err := openVoiceOverlayTrace(*voiceReportPath)
 	if err != nil {
@@ -367,8 +372,6 @@ func main() {
 		os.Exit(2)
 	}
 	s.voiceOverlay.meter.trace = trace
-	s.development = development
-	s.isolatedDevelopment = development && !*deviceAccess
 	s.report.ProcessID = os.Getpid()
 	s.report.Executable, _ = os.Executable()
 	s.report.AppName = mygo.App.Name()

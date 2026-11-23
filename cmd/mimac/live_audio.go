@@ -41,6 +41,13 @@ type liveAudioState struct {
 	factory func(context.Context, uint64, string) (liveAudioRoute, error)
 }
 
+// A packaged host with device access can adopt the installed component.
+// Explicit shortcut-only preferences and isolated UI development stay silent.
+func (s *shell) configureAudioBackend(startup audiobackendprefs.Startup, packaged bool) {
+	s.liveAudio.backend = startup.Backend
+	s.liveAudio.selectInstalledBackend = packaged && !s.isolatedDevelopment && !startup.Explicit
+}
+
 func validateAudioBackend(backend string) error {
 	return audiobackendprefs.Validate(backend)
 }

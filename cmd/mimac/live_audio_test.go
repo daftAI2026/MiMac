@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"mimac.local/mimac/internal/audiobackendprefs"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/devices"
 	"mimac.local/mimac/internal/pluginrt"
 	"mimac.local/mimac/internal/voicetools"
-	"sync/atomic"
-	"testing"
-	"time"
 )
 
 func liveHostFixture(t *testing.T, outputStartErr error) (*shell, chan func()) {
@@ -349,5 +351,34 @@ func TestLiveAudioOrdinaryLaunchUsesVerifiedInstalledBackendForSelectedTool(t *t
 	s.liveAudio.selectInstalledBackend = false
 	if s.audioRequested() || s.desiredLiveAudioTool() != nil {
 		t.Fatal("an explicit disabled preference was overridden")
+	}
+}
+
+func TestPackagedAudioSelectionFollowsDeviceAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name                              string
+		dev, isolated, packaged, explicit bool
+		want                              string
+	}{
+		{"preview", false, false, true, false, compatibilityAudioBackend},
+		{"hardware-dev", true, false, true, false, compatibilityAudioBackend},
+		{"isolated-dev", true, true, true, false, ""},
+		{"explicit-shortcut-only", true, false, true, true, ""},
+		{"unpackaged", false, false, false, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &shell{development: tc.dev, isolatedDevelopment: tc.isolated}
+			s.currentVoiceTool = "voice-doubao"
+			s.tools = builtInVoiceTools()
+			s.configureAudioBackend(audiobackendprefs.Startup{Explicit: tc.explicit}, tc.packaged)
+			s.liveAudio.componentStatus = audioComponentAvailable
+			if got := s.effectiveAudioBackend(); got != tc.want {
+				t.Fatalf("backend = %q, want %q", got, tc.want)
+			}
+			s.liveAudio.componentStatus = audioComponentMissing
+			if got := s.effectiveAudioBackend(); got != "" {
+				t.Fatalf("missing component selected %q", got)
+			}
+		})
 	}
 }
