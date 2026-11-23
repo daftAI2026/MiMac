@@ -25,6 +25,9 @@ func (s *shell) permissionGuideInteractionActive() bool {
 }
 
 func (s *shell) publishPermissionGuideSnapshot(next permissionGuideSnapshot) (guideChanged, onboardingChanged bool) {
+	for _, change := range permissionGuideAccessTransitions(s.snapshot, next) {
+		permissionGuideTrace(permissionGuideTracePermissionChange, change.id, permissionGuideTraceChanged, change.to, change.from)
+	}
 	guideChanged = !samePermissionGuideSnapshot(s.snapshot, next)
 	s.snapshot = next
 	if s.onboarding.step == onboardingStepPermissions {

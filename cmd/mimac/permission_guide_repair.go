@@ -140,9 +140,14 @@ func (s *shell) prepareDragRegistration(id permissionGuideID) {
 	go func() {
 		proof, err := permissionguide.PrepareDragRegistration(ctx, bundle, service)
 		cancel()
+		preflightResult := permissionGuideTraceNoProof
 		if err != nil {
+			preflightResult = permissionGuideTraceErrorResult(err)
 			log.Printf("permission registration preflight %s: %v", service, err)
+		} else if proof != nil {
+			preflightResult = permissionGuideTraceProofReady
 		}
+		permissionGuideTrace(permissionGuideTracePreflight, id, preflightResult, permissionGuideUnknown, permissionGuideUnknown)
 		// Publish to the gesture before queuing UI work. AppKit may be
 		// preparing its file offer on the main thread right now.
 		preparation.result <- proof
@@ -176,11 +181,15 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 	if !supported || s.closing || preparation == nil || preparation.id != id ||
 		preparation.generation != s.generation || preparation.bundle != s.snapshot.appBundlePath ||
 		preparation.consumed || !permissionGuideMayRepair(s.snapshot, id) {
+		status, _ := permissionGuideAccessForID(s.snapshot, id)
+		permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceSkipped, status, permissionGuideUnknown)
 		return false
 	}
 	preparation.receive()
 	proof, taken := preparation.take(time.Now(), id, s.generation, s.snapshot.appBundlePath)
 	if !taken {
+		status, _ := permissionGuideAccessForID(s.snapshot, id)
+		permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceUnavailable, status, permissionGuideUnknown)
 		return false
 	}
 	defer permissionguide.DiscardDragRegistrationProof(proof)
@@ -203,12 +212,14 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 			}
 		}
 	}
+	permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceObserved, permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	reset, err := permissionguide.RepairDragRegistrationBeforeDelivery(ctx, proof, access)
 	if err != nil {
 		log.Printf("permission registration pre-delivery repair %s: %v", service, err)
+		permissionGuideTrace(permissionGuideTraceRegistrationReset, id, permissionGuideTraceErrorResult(err), permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
 		if permissionGuideRepairPending(s.snapshot, id) {
 			s.repairAttempt = &permissionGuideRepairAttempt{id: id, failed: true}
 			if s.guideWindow != nil && !s.guideWindow.IsDestroyed() {
@@ -217,9 +228,12 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 		}
 		return false
 	}
+	resetResult := permissionGuideTraceNoReset
 	if reset {
 		log.Printf("permission registration %s: stale identity cleared before delivery", service)
+		resetResult = permissionGuideTraceReset
 	}
+	permissionGuideTrace(permissionGuideTraceRegistrationReset, id, resetResult, permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
 	return reset
 }
 

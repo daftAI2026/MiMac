@@ -51,6 +51,8 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 			icon.DragDataFrom(func() transfer.Data {
 				draggedPermission = s.currentID
 				previousResumeID = s.resumeID
+				status, _ := permissionGuideAccessForID(s.snapshot, draggedPermission)
+				permissionGuideTrace(permissionGuideTraceDragThreshold, draggedPermission, permissionGuideTraceStarted, status, permissionGuideUnknown)
 				s.prepareDragRegistration(draggedPermission)
 				return permissionGuideFileOffer(draggedPermission, data, func() {
 					if s.guideWindow != window || s.generation != generation || s.currentID != draggedPermission ||
@@ -58,7 +60,14 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 						return
 					}
 					input := draggedPermission == permissionGuideInput
-					if permissionguide.SettingsReadyForPermissionDrag(input, s.settingsOpenedFor == draggedPermission) {
+					settingsReady := permissionguide.SettingsReadyForPermissionDrag(input, s.settingsOpenedFor == draggedPermission)
+					status, _ := permissionGuideAccessForID(s.snapshot, draggedPermission)
+					settingsResult := permissionGuideTraceNotReady
+					if settingsReady {
+						settingsResult = permissionGuideTraceReady
+					}
+					permissionGuideTrace(permissionGuideTraceSettingsCheck, draggedPermission, settingsResult, status, permissionGuideUnknown)
+					if settingsReady {
 						s.repairDragRegistrationBeforeDelivery(draggedPermission)
 					}
 				})
@@ -71,11 +80,23 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				}
 			}, Operations: transfer.Copy, Preview: s.iconDragPreview, Hotspot: image.Pt(96, 96), PreviewScale: 2, Done: func(result transfer.Result) {
 				if s.guideWindow != window || s.generation != generation {
+					permissionGuideTrace(permissionGuideTraceNativeDrop, draggedPermission, permissionGuideTraceStale, permissionGuideUnknown, permissionGuideUnknown)
 					return
 				}
 				d := s.dropGuide
 				submitted := d != nil && permissionGuideAllowsAppDrag(draggedPermission) && result.Err == nil &&
 					!result.Canceled && result.Operation == transfer.Copy && d.acceptsRelease(result.Point)
+				status, _ := permissionGuideAccessForID(s.snapshot, draggedPermission)
+				dropResult := permissionGuideTraceRejected
+				switch {
+				case result.Canceled:
+					dropResult = permissionGuideTraceCanceled
+				case result.Err != nil:
+					dropResult = permissionGuideTraceFailed
+				case submitted:
+					dropResult = permissionGuideTraceSubmitted
+				}
+				permissionGuideTrace(permissionGuideTraceNativeDrop, draggedPermission, dropResult, status, permissionGuideUnknown)
 				if submitted {
 					s.resumeID = draggedPermission
 				} else {

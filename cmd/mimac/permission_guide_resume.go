@@ -62,32 +62,47 @@ func permissionGuideCanRestore(id permissionGuideID, snapshot permissionGuideSna
 // An orderly OS restart can happen before the running process sees a grant.
 // Save the guide independently of the onboarding page's existing progress.
 func (s *shell) savePendingPermissionGuide() {
-	if s.resumeID == 0 || s.guideWindow == nil || !s.guideWindow.IsVisible() {
+	id := s.resumeID
+	if id == 0 || s.guideWindow == nil || !s.guideWindow.IsVisible() {
+		permissionGuideTrace(permissionGuideTraceResumeSave, id, permissionGuideTraceSkipped, permissionGuideUnknown, permissionGuideUnknown)
 		return
 	}
 	path, err := hostDataPath(permissionGuideResumeFile)
-	if err == nil {
-		continuation := permissionGuideContinuation{
-			id:          s.resumeID,
-			onboarding:  s.onboarding.permissionGuideOpened,
-			finishVisit: s.onboarding.permissionGuideOpened && s.onboarding.permissionActionTaken,
-		}
-		err = savePermissionGuideResume(path, continuation)
-	}
 	if err != nil {
 		log.Printf("permission guide resume: %v", err)
+		permissionGuideTrace(permissionGuideTraceResumeSave, id, permissionGuideTraceError, permissionGuideUnknown, permissionGuideUnknown)
+		return
 	}
+	continuation := permissionGuideContinuation{
+		id:          id,
+		onboarding:  s.onboarding.permissionGuideOpened,
+		finishVisit: s.onboarding.permissionGuideOpened && s.onboarding.permissionActionTaken,
+	}
+	err = savePermissionGuideResume(path, continuation)
+	if err != nil {
+		log.Printf("permission guide resume: %v", err)
+		permissionGuideTrace(permissionGuideTraceResumeSave, id, permissionGuideTraceError, permissionGuideUnknown, permissionGuideUnknown)
+		return
+	}
+	permissionGuideTrace(permissionGuideTraceResumeSave, id, permissionGuideTraceSaved, permissionGuideUnknown, permissionGuideUnknown)
 }
 
 func readPermissionGuideResumeOnLaunch() permissionGuideContinuation {
 	path, err := hostDataPath(permissionGuideResumeFile)
 	if err != nil {
+		permissionGuideTrace(permissionGuideTraceResumeConsume, 0, permissionGuideTraceError, permissionGuideUnknown, permissionGuideUnknown)
 		return permissionGuideContinuation{}
 	}
 	continuation, err := takePermissionGuideResume(path)
 	if err != nil {
 		log.Printf("permission guide resume: %v", err)
+		permissionGuideTrace(permissionGuideTraceResumeConsume, 0, permissionGuideTraceError, permissionGuideUnknown, permissionGuideUnknown)
 		return permissionGuideContinuation{}
+	}
+	if continuation.id == 0 {
+		permissionGuideTrace(permissionGuideTraceResumeConsume, 0, permissionGuideTraceEmpty, permissionGuideUnknown, permissionGuideUnknown)
+	} else {
+		permissionGuideTrace(permissionGuideTraceResumeConsume, continuation.id, permissionGuideTraceConsumed, permissionGuideUnknown, permissionGuideUnknown)
 	}
 	return continuation
 }
@@ -101,6 +116,12 @@ func (s *shell) resumePermissionGuideOnLaunch(continuation permissionGuideContin
 	onboardingVisible := s.onboarding.window != nil
 	target := permissionGuideResumeTarget(continuation, onboardingVisible, s.onboarding.step, snapshot)
 	finishVisit := permissionGuideResumesOnboardingVisit(continuation, onboardingVisible, s.onboarding.step, snapshot)
+	status, _ := permissionGuideAccessForID(snapshot, continuation.id)
+	restoreResult := permissionGuideTraceNotRestored
+	if target != 0 {
+		restoreResult = permissionGuideTraceRestored
+	}
+	permissionGuideTrace(permissionGuideTraceResumeRestore, continuation.id, restoreResult, status, permissionGuideUnknown)
 	if target == 0 {
 		if finishVisit && summarizeOnboardingPermissions(snapshot.rows).allGranted() {
 			permissionguide.FinishSystemSettingsVisit()
