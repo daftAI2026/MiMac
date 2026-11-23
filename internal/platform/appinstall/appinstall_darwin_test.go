@@ -184,6 +184,36 @@ func TestExecutePlanSameVersionAndBuildKeepsInstalledFixture(t *testing.T) {
 	assertEventOrder(t, fixture.events, "running", "launch", "wait-running", "schedule-exit")
 }
 
+func TestExecutePlanUpgradesLegacyDateBundleToFirstUnifiedRelease(t *testing.T) {
+	const version = "0.2026.11.23.00.00.00"
+	fixture := newInstallFixture(t, version, version, "unified")
+	fixture.plan.TargetExists = true
+	makeFixtureBundle(t, fixture.plan.TargetPath, "2026.11.23", "61", "legacy")
+	if _, err := executePlan(context.Background(), fixture.plan, fixtureHooks(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFixturePayload(t, fixture.plan.TargetPath); got != "unified" {
+		t.Fatalf("installed %q, want unified release", got)
+	}
+}
+
+func TestInstalledBuildOrderAcrossReleaseFormats(t *testing.T) {
+	legacy := func(version string) bundleMetadata { return bundleMetadata{Version: version, Build: "61"} }
+	unified := func(version string) bundleMetadata { return bundleMetadata{Version: version, Build: version} }
+	versions := []bundleMetadata{
+		legacy("2026.11.22"), legacy("2026.11.23"), unified("0.2026.11.23.00.00.00"),
+		unified("0.2026.11.23.00.00.09"), unified("0.2026.11.23.00.00.10"),
+		unified("0.2026.11.23.00.01.00"), legacy("2026.11.24"),
+	}
+	for i, target := range versions {
+		for j, source := range versions {
+			if got := installedBuildIsNewer(target, source); got != (i > j) {
+				t.Errorf("installed %s newer than %s = %v", target.Version, source.Version, got)
+			}
+		}
+	}
+}
+
 func TestExecutePlanUsesBuildNumberWhenMarketingVersionMatches(t *testing.T) {
 	fixture := newInstallFixture(t, "2.1.0", "10", "new-build")
 	fixture.plan.TargetExists = true

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from release_version import apply_versions
+from release_version import apply_release_identity, apply_versions, bundle_version
 from verify_app_bundle import REQUIRED, SIRI
 from verify_release import SIRI_ABI_HOST_GATE, verify_build_info, verify_release, verify_source, verify_versions
 
@@ -101,18 +101,23 @@ def set_build_setting(info: dict, key: str, value: str) -> None:
     info["Settings"].append({"Key": key, "Value": value})
 
 
-def make_bundle(root: Path, include_siri: bool, arch: str = "arm64") -> Path:
+def make_bundle(root: Path, include_siri: bool, arch: str = "arm64", *,
+                version: str = RELEASE_DATE, build_number: str = BUILD_NUMBER,
+                release_identity: str | None = None) -> Path:
     bundle = root / "MiMac.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
     (contents / "MacOS").mkdir(parents=True)
     resources.mkdir(parents=True)
-    (contents / "Info.plist").write_bytes(plistlib.dumps({
+    info = {
         "CFBundleIdentifier": "dev.mimac.app",
         "CFBundleExecutable": "MiMac",
-        "CFBundleShortVersionString": RELEASE_DATE,
-        "CFBundleVersion": BUILD_NUMBER,
-    }))
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": build_number,
+    }
+    if release_identity is not None:
+        info["MiMacReleaseVersion"] = release_identity
+    (contents / "Info.plist").write_bytes(plistlib.dumps(info))
     (contents / "MacOS" / "MiMac").write_bytes(b"fixture executable")
     for name in REQUIRED:
         (resources / name).write_bytes(("fixture " + name).encode())
@@ -128,7 +133,8 @@ def make_bundle(root: Path, include_siri: bool, arch: str = "arm64") -> Path:
     return bundle
 
 
-def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = None, *, native_compatible: bool = True) -> dict:
+def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = None, *,
+                   native_compatible: bool = True, release_identity: str | None = None) -> dict:
     def fake_check_output(command, text=None):
         if command[:3] == ["go", "version", "-m"]:
             return json.dumps(build_info(arch))
@@ -175,16 +181,50 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
         return {"abi_version": 1, "compatible": True,
                 "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest()}
 
-    with patch("verify_release.verify_source", return_value={"revision": REVISION, "embedded_source": False}), \
+    with patch("verify_release.verify_source", return_value={"revision": REVISION, "embedded_source": False,
+                                                            "release_identity": release_identity}), \
          patch("verify_release.current_siri_abi_host", return_value=host), \
          patch("verify_release.inspect_library", side_effect=fake_inspect_library), \
          patch("verify_app_bundle.verify_product_package", side_effect=fake_verify_product_package), \
          patch("verify_release.subprocess.check_output", side_effect=fake_check_output), \
          patch("verify_release.subprocess.run", side_effect=fake_run):
-        return verify_release(bundle, arch, Path(bundle.parent), REVISION, RELEASE_DATE, BUILD_NUMBER, profile)
+        if release_identity is None:
+            return verify_release(bundle, arch, Path(bundle.parent), REVISION, RELEASE_DATE, BUILD_NUMBER, profile)
+        version = bundle_version(release_identity)
+        return verify_release(bundle, arch, Path(bundle.parent), REVISION, version, version, profile,
+                              release_identity=release_identity)
 
 
 class VerifyReleaseTests(unittest.TestCase):
+    def test_new_identity_produces_equal_bundle_versions_and_manifest_fields(self):
+        identity = "v0.2026.11.01.08.17.preview_04"
+        numeric = bundle_version(identity)
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = make_bundle(Path(directory), False, version=numeric, build_number=numeric,
+                                 release_identity=identity)
+            receipt = verify_fixture(bundle, "arm64", "core-only", release_identity=identity)
+            self.assertEqual(receipt["version"], numeric)
+            self.assertEqual(receipt["build_number"], numeric)
+            self.assertEqual(receipt["release_identity"], identity)
+
+        verify_versions({"CFBundleShortVersionString": numeric, "CFBundleVersion": numeric},
+                        numeric, numeric, identity)
+        with self.assertRaisesRegex(ValueError, "CFBundleVersion"):
+            verify_versions({"CFBundleShortVersionString": numeric, "CFBundleVersion": "42"},
+                            numeric, numeric, identity)
+
+    def test_old_date_release_config_and_record_remain_accepted(self):
+        legacy_identity = "v2026.11.01.preview_04"
+        with tempfile.TemporaryDirectory() as directory:
+            repo, config_path, revision = make_repo(Path(directory) / "repo")
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            prepared = apply_versions(config, RELEASE_DATE, BUILD_NUMBER, revision, legacy_identity)
+            write_json(config_path, prepared)
+            source = verify_source(repo, revision, RELEASE_DATE, BUILD_NUMBER)
+            self.assertEqual(source["release_identity"], legacy_identity)
+            verify_versions({"CFBundleShortVersionString": RELEASE_DATE,
+                             "CFBundleVersion": BUILD_NUMBER}, RELEASE_DATE, BUILD_NUMBER)
+
     def test_manifest_records_explicit_profiles_and_component_hashes(self):
         cases = (
             ("core-only", "arm64", False, None),

@@ -24,6 +24,8 @@ go test ./...
 
 可用 `MIMAC_GO=/path/to/go` 指定工具链，`MIMAC_SIGN_IDENTITY` 指定本机已有签名身份。`--verify` 执行有界的设置窗口启动与退出检查。
 
+Preview DMG 由干净、已提交的源码构建。运行 `script/package_preview.sh` 默认写入 Downloads；用 `script/package_preview.sh --output DIRECTORY` 指定输出根目录。批次使用上海时间的分钟值，候选目录不覆盖已有内容。`MIMAC_RELEASE_TRAIN=YYYY.MM.DD.HH.MM` 可复现批次；候选由现有目录递增。发布标识 `v0.YYYY.MM.DD.HH.MM.channel_NN` 派生两个相同的系统数字版本 `0.YYYY.MM.DD.HH.MM.NN`，没有独立构建号。权限验收、私有组件 profile 和 Stable 规划见[构建与权限 SOP](script/README_permissions.md)。
+
 现场语音验收使用 `python3 script/live_acceptance.py prepare --help` 所示入口，统一执行构建、身份冻结、当次连接检查、输入窗口准备和被动取证；只有输出 `READY` 才开始按键测试。完成后使用 `python3 script/live_acceptance.py finish <结果目录>` 核对文字、音频桥交付与清理。需要刷新权限时先结束原运行，刷新后加 `--reuse-build --previous-run <上次结果目录>` 按原 SHA 复用同一二进制，避免重新构建使刚刷新的权限失效。 定位无字时可显式加 `--source-check`：同一源音频仅在有界内存中镜像，退出后交本机 Apple 模型复核，报告次级文字、统计和源摘要；不保存 PCM 文件，不把次级结果写进输入框。该诊断默认关闭，模型未就绪时阻止准备，不自动下载。
 
 可选音频兼容组件使用 macOS HAL 和固定版本的 libASPL，独立于普通 App 构建。运行 `python3 script/build_audio_compat.py --package` 可构建、测试并生成本机验收安装包；脚本不会安装组件或重启音频服务。已安装并验证组件的开发环境可用 `./script/build_and_run.sh run -- --audio-backend mimac-compat --show-settings` 验收小米到所选兼容工具的接线；仍需在 App 内启用遥控器和相应语音插件。此入口不安装组件、不更改系统默认音频设备。

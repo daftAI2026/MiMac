@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -331,7 +332,26 @@ func requireInstallHooks(hooks installHooks) error {
 	return nil
 }
 
+var unifiedReleaseVersion = regexp.MustCompile(`^0\.([0-9]{4}\.[0-9]{2}\.[0-9]{2})(\.[0-9]{2}){3}$`)
+var legacyReleaseDay = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$`)
+
+func unifiedReleaseDay(bundle bundleMetadata) string {
+	if bundle.Version == bundle.Build {
+		if match := unifiedReleaseVersion.FindStringSubmatch(bundle.Version); match != nil {
+			return match[1]
+		}
+	}
+	return ""
+}
+
 func installedBuildIsNewer(target, source bundleMetadata) bool {
+	// A minute-stamped release succeeds every legacy build on the same day.
+	if day := unifiedReleaseDay(target); day != "" && legacyReleaseDay.MatchString(source.Version) {
+		return day >= source.Version
+	}
+	if day := unifiedReleaseDay(source); day != "" && legacyReleaseDay.MatchString(target.Version) {
+		return target.Version > day
+	}
 	version := compareVersions(target.Version, source.Version)
 	if version != 0 {
 		return version > 0

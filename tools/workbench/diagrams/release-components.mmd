@@ -1,7 +1,14 @@
 flowchart LR
-    source["冻结源码与日期版本"] --> lane{"日用或开发入口"}
-    lane -->|日用| daily["MiMac / dev.mimac.app / MiMac 配置目录"]
-    lane -->|开发| dev["MiMac Dev / dev.mimac.app.dev / MiMac Dev 配置目录"]
+    source["冻结源码与上海分钟批次"] --> identity["v0.YYYY.MM.DD.HH.MM.channel_NN"]
+    identity --> numeric["两个系统版本字段同为 0.YYYY.MM.DD.HH.MM.NN"]
+    identity --> lane{"渠道与构建入口"}
+    lane -->|Dev| devRelease["dev_00；只生成本地 Dev"]
+    lane -->|Preview| previewCandidate["递增候选并原子预留目录"]
+    lane -->|Stable| stablePlan["检查标签与 Release；只读规划"]
+    stablePlan --> legacy["旧日期发布记录仍参与顺序校验"]
+    previewCandidate --> previewBuild["复用唯一 Preview CI 或本地入口"]
+    devRelease --> dev["MiMac Dev / dev.mimac.app.dev / MiMac Dev 配置目录"]
+    previewBuild --> daily["MiMac / dev.mimac.app / MiMac 配置目录"]
     daily --> profile{"显式组件方案"}
     dev --> profile
     dev --> isolated["默认不接管设备、按键输出、系统输入法和音频"]

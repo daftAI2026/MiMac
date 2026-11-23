@@ -14,7 +14,7 @@ class DevelopmentBuildIsolation(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         original = json.loads((root / "mygo.json").read_text())
         saved = copy.deepcopy(original)
-        with patch.dict(build_dev.os.environ, {"MIMAC_VERSION_DATE": "2026.11.20"}):
+        with patch.dict(build_dev.os.environ, {"MIMAC_RELEASE_TRAIN": "2026.11.20.08.17"}):
             dev = build_dev.development_config(original, root)
         self.assertEqual(original, saved)
         self.assertEqual(dev["identifier"], "dev.mimac.app.dev")
@@ -22,11 +22,11 @@ class DevelopmentBuildIsolation(unittest.TestCase):
         self.assertEqual(dev["out"], str(development_output_root(root)))
         self.assertEqual(Path(dev["main"]).resolve(), (root / original["main"]).resolve())
         self.assertTrue(all(Path(item).is_file() for item in dev["resources"]))
-        self.assertEqual(dev["version"], "2026.11.20")
+        self.assertEqual(dev["version"], "0.2026.11.20.08.17.00")
         self.assertEqual(dev["macos"]["infoPlist"], {
             **original["macos"]["infoPlist"],
-            "CFBundleVersion": "1",
-            "MiMacReleaseVersion": "2026.11.20",
+            "CFBundleVersion": "0.2026.11.20.08.17.00",
+            "MiMacReleaseVersion": "v0.2026.11.20.08.17.dev_00",
         })
 
     def test_protected_desktop_source_uses_stable_cache_output_and_bundle_tail(self):

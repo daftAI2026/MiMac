@@ -12,7 +12,14 @@ import platform
 import re
 import subprocess
 
-from release_version import apply_versions, validate_build_number, validate_date
+from release_version import (
+    apply_release_identity,
+    apply_versions,
+    bundle_version,
+    validate_build_number,
+    validate_date,
+    validate_release_id,
+)
 from check_native_display import inspect_library
 from package_audio_component import PackageError
 from verify_app_bundle import SIRI, verify
@@ -30,9 +37,23 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True)
 
 
-def verify_source(repo: Path, revision: str, version: str, build_number: str) -> dict:
-    version = validate_date(version)
-    build_number = str(validate_build_number(build_number))
+def verify_source(
+    repo: Path,
+    revision: str,
+    version: str | None = None,
+    build_number: str | None = None,
+    release_identity: str | None = None,
+) -> dict:
+    planned_release_identity = release_identity
+    if release_identity is None:
+        if version is None or build_number is None:
+            raise ValueError("legacy release verification requires both date version and build number")
+        version = validate_date(version)
+        build_number = str(validate_build_number(build_number))
+    else:
+        release_identity = validate_release_id(release_identity)
+        version = bundle_version(release_identity)
+        build_number = version
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision):
         raise ValueError("expected a full Git source commit")
     if git(repo, "rev-parse", "HEAD").strip() != revision:
@@ -52,8 +73,15 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
     if not isinstance(info, dict):
         raise ValueError("prepared mygo.json must contain macOS bundle metadata")
     embeds_source = any(key in info for key in ("MiMacBuildCommit", "MiMacBuildDirty"))
-    release_identity = info.get("MiMacReleaseVersion")
-    expected = apply_versions(baseline, version, build_number, revision if embeds_source else None, release_identity)
+    embedded_release_identity = info.get("MiMacReleaseVersion")
+    if planned_release_identity is None:
+        expected = apply_versions(baseline, version, build_number, revision if embeds_source else None,
+                                  embedded_release_identity)
+    else:
+        if embedded_release_identity != planned_release_identity:
+            raise ValueError("prepared mygo.json release identity does not match the release plan")
+        expected = apply_release_identity(baseline, planned_release_identity,
+                                          revision if embeds_source else None)
     # Compare JSON types as well as values (Python otherwise treats True == 1).
     if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
         raise ValueError("prepared mygo.json differs from the planned version-only update")
@@ -63,15 +91,25 @@ def verify_source(repo: Path, revision: str, version: str, build_number: str) ->
         "allowed_modified_paths": sorted(changed),
         "embedded_source": embeds_source,
         "product_version": product_version,
-        "release_identity": release_identity,
+        "release_identity": embedded_release_identity,
     }
 
 
-def verify_versions(info: dict, version: str, build_number: str) -> None:
-    expected = {
-        "CFBundleShortVersionString": validate_date(version),
-        "CFBundleVersion": str(validate_build_number(build_number)),
-    }
+def verify_versions(info: dict, version: str, build_number: str | None = None,
+                    release_identity: str | None = None) -> None:
+    if release_identity is None:
+        if build_number is None:
+            raise ValueError("legacy release verification requires a build number")
+        expected = {
+            "CFBundleShortVersionString": validate_date(version),
+            "CFBundleVersion": str(validate_build_number(build_number)),
+        }
+    else:
+        numeric_version = bundle_version(validate_release_id(release_identity))
+        expected = {
+            "CFBundleShortVersionString": numeric_version,
+            "CFBundleVersion": numeric_version,
+        }
     for key, value in expected.items():
         if info.get(key) != value:
             raise ValueError(f"bundle {key} does not match release plan: expected {value!r}, got {info.get(key)!r}")
@@ -162,19 +200,36 @@ def verify_release(
     arch: str,
     repo: Path,
     revision: str,
-    version: str,
-    build_number: str,
-    component_profile: str,
+    version: str | None = None,
+    build_number: str | None = None,
+    component_profile: str | None = None,
     expected_release_identity: str | None = None,
+    *,
+    release_identity: str | None = None,
 ) -> dict:
-    source = verify_source(repo, revision, version, build_number)
+    is_new_identity = release_identity is not None
+    if not is_new_identity and expected_release_identity is not None:
+        is_new_identity = bool(re.fullmatch(r"v0\.[0-9]{4}(?:\.[0-9]{2}){4}\.(?:dev|preview|stable)_[0-9]{2}", expected_release_identity))
+    planned_identity = release_identity or (expected_release_identity if is_new_identity else None)
+    legacy_expected_identity = expected_release_identity if not is_new_identity else None
+    if component_profile is None:
+        raise ValueError("component profile is required")
+    if planned_identity is not None:
+        planned_identity = validate_release_id(planned_identity)
+        version = bundle_version(planned_identity)
+        build_number = version
+    elif version is None or build_number is None:
+        raise ValueError("release identity or legacy version and build number are required")
+    source = verify_source(repo, revision, version, build_number, planned_identity)
     require_siri, component_contract = verify_component_profile(component_profile, arch)
     contents = bundle / "Contents"
     with (contents / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
-    verify_versions(info, version, build_number)
+    verify_versions(info, version, build_number, planned_identity)
     release_identity = source.get("release_identity")
-    if (expected_release_identity is not None and release_identity != expected_release_identity) or info.get("MiMacReleaseVersion") != release_identity:
+    if ((planned_identity is not None and release_identity != planned_identity)
+            or (legacy_expected_identity is not None and release_identity != legacy_expected_identity)
+            or info.get("MiMacReleaseVersion") != release_identity):
         raise ValueError("bundle release identity does not match the release plan")
     if source["embedded_source"] and (info.get("MiMacBuildCommit") != revision or info.get("MiMacBuildDirty") is not False):
         raise ValueError("bundle embedded identity does not match the clean release source")
@@ -211,7 +266,9 @@ def verify_release(
         "executable": executable_name,
         "arch": arch,
         "version": version,
-        "build_number": str(validate_build_number(build_number)),
+        "build_number": (bundle_version(planned_identity) if planned_identity is not None
+                         else str(validate_build_number(build_number))),
+        **({"release_identity": planned_identity or legacy_expected_identity} if planned_identity or legacy_expected_identity else {}),
         "source": source,
         "binary": binary,
         "native_libraries": native["native_libraries"],
@@ -260,14 +317,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arch", choices=["arm64", "amd64"], required=True)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--revision", required=True)
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--build-number", required=True)
+    parser.add_argument("--version", help="legacy date version for historical receipts")
+    parser.add_argument("--build-number", help="legacy numeric build number for historical receipts")
     parser.add_argument("--release-identity")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--component-profile", choices=COMPONENT_PROFILES, required=True)
     parser.add_argument("--previous-signed-bundle", type=Path, help="verify mutually compatible Developer ID requirements with this prior release")
     args = parser.parse_args(argv)
     try:
+        is_new_identity = args.release_identity is not None and args.release_identity.startswith("v0.")
+        if not is_new_identity and (args.version is None or args.build_number is None):
+            raise ValueError("provide --release-identity, or both legacy --version and --build-number")
+        if is_new_identity and (args.version is not None or args.build_number is not None):
+            raise ValueError("new --release-identity cannot be combined with legacy version arguments")
         manifest = verify_release(
             args.bundle,
             args.arch,
@@ -276,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             args.version,
             args.build_number,
             args.component_profile,
-            args.release_identity,
+            expected_release_identity=(args.release_identity if args.release_identity and not is_new_identity else None),
+            release_identity=(args.release_identity if is_new_identity else None),
         )
         if args.previous_signed_bundle is not None:
             manifest["upgrade_identity"] = verify_upgrade_identity(args.previous_signed_bundle, args.bundle)

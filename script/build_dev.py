@@ -14,15 +14,15 @@ import time
 from verify_app_bundle import verify
 from dev_launch_registration import ensure_current_dev_registration
 from dev_bundle_path import development_bundle_path, development_output_root
-from release_version import apply_versions, build_date, channel_identity
+from release_version import apply_release_identity, build_train, channel_identity
 
 
 def development_config(config, root):
     result = json.loads(json.dumps(config))
     if result.get('identifier') != 'dev.mimac.app' or result.get('name') != 'MiMac':
         raise ValueError('expected the MiMac production build configuration')
-    date = build_date()
-    apply_versions(result, date, 1, release_identity=channel_identity(date, 'dev'))
+    train = build_train()
+    apply_release_identity(result, channel_identity(train, 'dev'))
     result['name'] += ' Dev'
     result['identifier'] += '.dev'
     result['main'] = str(root / result['main'])
