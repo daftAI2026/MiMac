@@ -34,6 +34,11 @@ from permission_acceptance import (
     complete_permission_view,
     draggable_window_geometry_ready,
     drag_page_probe_ready,
+    focus_check_preflight_ready,
+    focus_recovery_candidate,
+    settings_focus_readback_ready,
+    settings_page_opened,
+    settings_page_window_ready,
     resume_input_drop_args,
     restart_prompt_focus_ready,
     resumed_settings_focus_ready,
@@ -366,6 +371,84 @@ class OrdinaryGeneralPermissionViewTests(unittest.TestCase):
         self.assertIsNone(ordinary_existing_input_target(input_already_granted, self.name))
         self.assertIsNone(existing_input_target(input_already_granted, self.name))
 
+    def test_explicit_two_list_scope_accepts_bluetooth_pending_and_keeps_strict_default(self):
+        initial = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True
+        )
+        after_input = ordinary_permission_nodes(
+            input_pending=False, control_pending=True, bluetooth=True, bluetooth_pending=True
+        )
+        completed = ordinary_permission_nodes(
+            input_pending=False, control_pending=False, bluetooth=True, bluetooth_pending=True
+        )
+        self.assertIsNone(general_input_action_target(initial, self.name))
+        self.assertEqual(general_input_action_target(
+            initial, self.name, allow_bluetooth_pending=True,
+        ), INPUT_ROW_TITLE)
+        self.assertIsNone(ordinary_existing_input_target(after_input, self.name))
+        self.assertEqual(ordinary_existing_input_target(
+            after_input, self.name, allow_bluetooth_pending=True,
+        ), CONTROL_ROW_TITLES[0])
+        self.assertFalse(ordinary_permission_guide_complete(completed, self.name))
+        self.assertTrue(ordinary_permission_guide_complete(
+            completed, self.name, allow_bluetooth_pending=True,
+        ))
+        self.assertEqual(ordinary_permission_counts(completed, self.name), {
+            "row_count": 3, "granted_row_count": 2,
+            "rows": {"bluetooth": "pending", "device_control": "granted", "input": "granted"},
+        })
+
+    def test_two_list_general_flow_performs_input_then_control_and_never_emits_three_row_pass(self):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.two_list_permissions_only = True
+        instance.records = []
+        initial = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True
+        )
+        after_input = ordinary_permission_nodes(
+            input_pending=False, control_pending=True, bluetooth=True, bluetooth_pending=True
+        )
+        completed = ordinary_permission_nodes(
+            input_pending=False, control_pending=False, bluetooth=True, bluetooth_pending=True
+        )
+        view_sequence = iter((initial, after_input, completed))
+        native_drops = []
+        control_scope = []
+        final_state = {"app": 101, "settings": 202, "front": 202}
+        instance.preflight_no_existing_sheet = lambda _scope: dict(final_state)
+        instance.view_if_windows_available = lambda _pid: initial
+        instance.view = lambda _pid: next(view_sequence)
+        instance.press_permission_row = lambda _pid, _row: {
+            "ax_press_started_at": 1.0, "ax_press_completed_at": 1.1,
+        }
+        instance.wait_auth_or = lambda _description, _predicate: dict(final_state)
+        instance.record_window_latencies = lambda *_args: None
+        instance.prepare_settings_for_drag = lambda state, **_kwargs: (state, {
+            "focus_recovery_attempted": False,
+        })
+        instance.drag = lambda operation, **_kwargs: native_drops.append(operation) or {
+            "performed": operation,
+        }
+        instance.run_existing_input = lambda **kwargs: (
+            control_scope.append(kwargs["allow_bluetooth_pending"]) or dict(final_state)
+        )
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+
+        result = instance.run_general_permissions()
+
+        self.assertEqual(result, final_state)
+        self.assertEqual(native_drops, ["drag-input"])
+        self.assertEqual(control_scope, [True])
+        stages = [stage for stage, _ in instance.records]
+        self.assertIn("GENERAL_TWO_LIST_PASS", stages)
+        self.assertNotIn("GENERAL_PERMISSIONS_PASS", stages)
+        passed = next(values for stage, values in instance.records if stage == "GENERAL_TWO_LIST_PASS")
+        self.assertEqual(passed["verified_permission_scope"], ["input", "device_control"])
+        self.assertEqual(passed["bluetooth_status"], "pending")
+        self.assertEqual(passed["permission_rows"]["granted_row_count"], 2)
+        self.assertEqual(passed["permission_rows"]["row_count"], 3)
+
     def test_three_row_surfaces_must_match_and_unknown_route_rows_are_rejected(self):
         nodes = ordinary_permission_nodes(
             input_pending=True, control_pending=True, bluetooth=True
@@ -500,6 +583,58 @@ class ExistingInputGrantTests(unittest.TestCase):
         self.assertFalse(existing_input_segment_granted(
             {**state, "front": 101}, 101, 202, False, True, True, self.nodes, self.name,
         ))
+
+    def test_two_list_scope_runs_control_drop_and_preserves_pending_bluetooth_status(self):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.records = []
+        initial = ordinary_permission_nodes(
+            input_pending=False, control_pending=True, bluetooth=True, bluetooth_pending=True
+        )
+        completed = ordinary_permission_nodes(
+            input_pending=False, control_pending=False, bluetooth=True, bluetooth_pending=True
+        )
+        view_sequence = iter((initial, completed, completed))
+        native_drops = []
+        instance.preflight_no_existing_sheet = lambda _scope: {
+            "app": 101, "settings": 0, "front": 101, "page": "",
+        }
+        instance.view = lambda _pid: next(view_sequence)
+        instance.press_permission_row = lambda _pid, _row: {
+            "ax_press_started_at": 1.0, "ax_press_completed_at": 1.1,
+        }
+        ready = {
+            "app": 101, "settings": 202, "front": 202,
+            "page": CONTROL_PAGES[0], "restart": False,
+        }
+        granted = {"app": 101, "settings": 0, "front": 101, "restart": False}
+        waits = iter((ready, granted))
+
+        def wait_auth_or(_description, predicate):
+            result = next(waits)
+            if result is granted:
+                self.assertIs(predicate(result), result)
+            return result
+
+        instance.wait_auth_or = wait_auth_or
+        instance.record_window_latencies = lambda *_args: None
+        instance.prepare_settings_for_drag = lambda state, **_kwargs: (state, {
+            "focus_recovery_attempted": False,
+        })
+        instance.drag = lambda operation, **_kwargs: native_drops.append(operation) or {
+            "performed": operation,
+        }
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+
+        with patch("permission_acceptance.pid_exists", side_effect=lambda pid: pid == 101):
+            result = instance.run_existing_input(allow_bluetooth_pending=True)
+
+        self.assertEqual(result, granted)
+        self.assertEqual(native_drops, ["drag-control"])
+        segment = next(values for stage, values in instance.records if stage == "SEGMENT_PASS")
+        self.assertEqual(segment["bluetooth_status"], "pending")
+        self.assertEqual(segment["verified_permission_scope"], ["input", "device_control"])
+        self.assertEqual(segment["permission_rows"]["granted_row_count"], 2)
 
     def test_restart_path_requires_scoped_restart_and_old_process_exit(self):
         state = {"app": 303, "settings": 0, "front": 303, "restart": False}
@@ -636,6 +771,7 @@ class DraggableGeometryTests(unittest.TestCase):
                 sample, self.app_pid, self.settings_pid
             ))
 
+
     def test_window_observer_page_label_does_not_replace_fresh_page_probe(self):
         stale_page = dict(self.sample, settings_page_title_matches=[{"title": "Input Monitoring"}])
         self.assertTrue(draggable_window_geometry_ready(
@@ -717,6 +853,158 @@ class DraggableGeometryTests(unittest.TestCase):
         self.assertFalse(drag_page_probe_ready(
             dict(ready, page="Input Monitoring"), self.app_pid, self.settings_pid, (self.page,)
         ))
+
+
+class SettingsFocusRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.app_pid = 101
+        self.settings_pid = 202
+        self.page = CONTROL_PAGES[0]
+        self.bundle_id = "dev.mimac.app.dev"
+        self.bundle_path = "/Users/test/.mygo/dev/darwin-arm64/MiMac Dev.app"
+        self.state = {
+            "app": self.app_pid,
+            "bundle_id": self.bundle_id,
+            "bundle_path": self.bundle_path,
+            "settings": self.settings_pid,
+            "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1,
+            "settings_page_count": 1,
+            "front": 303,
+            "frontmost_bundle_id": "com.example.concurrent-app",
+            "page": self.page,
+            "permission_card_visible": True,
+            "permission_card_window_count": 1,
+            "password": False,
+            "system_sheet": False,
+            "restart": False,
+            "extra_access_warning": False,
+        }
+
+    def test_background_exact_page_is_a_recovery_candidate_and_not_native_focus_evidence(self):
+        self.assertTrue(settings_page_opened(self.state, self.app_pid, CONTROL_PAGES))
+        self.assertTrue(focus_recovery_candidate(
+            self.state, self.app_pid, self.settings_pid, self.page,
+            self.bundle_id, self.bundle_path,
+        ))
+        self.assertTrue(focus_check_preflight_ready(
+            self.state, self.bundle_id, self.bundle_path, INPUT_PAGES + CONTROL_PAGES,
+        ))
+        self.assertFalse(settings_focus_readback_ready(
+            self.state, self.app_pid, self.settings_pid, self.page,
+            self.bundle_id, self.bundle_path,
+        ))
+        self.assertFalse(settings_page_opened(
+            dict(self.state, front=0), self.app_pid, CONTROL_PAGES,
+        ))
+
+    def test_recovery_rejects_changed_identity_page_or_modal_state(self):
+        variants = [
+            dict(self.state, app=404),
+            dict(self.state, bundle_id="dev.mimac.app"),
+            dict(self.state, bundle_path="/Applications/MiMac.app"),
+            dict(self.state, settings=404),
+            dict(self.state, settings_bundle_id="com.example.settings"),
+            dict(self.state, settings_process_count=2),
+            dict(self.state, settings_page_count=2),
+            dict(self.state, page=INPUT_PAGES[0]),
+            dict(self.state, permission_card_visible=False),
+            dict(self.state, permission_card_window_count=2),
+            dict(self.state, password=True),
+            dict(self.state, system_sheet=True),
+            dict(self.state, restart=True),
+            dict(self.state, extra_access_warning=True),
+        ]
+        for state in variants:
+            with self.subTest(state=state):
+                self.assertFalse(focus_recovery_candidate(
+                    state, self.app_pid, self.settings_pid, self.page,
+                    self.bundle_id, self.bundle_path,
+                ))
+
+    def test_readback_requires_same_settings_process_and_exact_page(self):
+        frontmost = dict(self.state, front=self.settings_pid)
+        self.assertTrue(settings_focus_readback_ready(
+            frontmost, self.app_pid, self.settings_pid, self.page,
+            self.bundle_id, self.bundle_path,
+        ))
+        self.assertFalse(settings_focus_readback_ready(
+            dict(frontmost, front=303), self.app_pid, self.settings_pid, self.page,
+            self.bundle_id, self.bundle_path,
+        ))
+        self.assertTrue(settings_page_window_ready({
+            "settings_pid": self.settings_pid,
+            "settings_page_title_matches": [{"title": self.page}],
+        }, self.settings_pid, self.page))
+        self.assertFalse(settings_page_window_ready({
+            "settings_pid": 404,
+            "settings_page_title_matches": [{"title": self.page}],
+        }, self.settings_pid, self.page))
+
+    def test_native_activation_is_attempted_once_and_read_back_independently(self):
+        instance = object.__new__(Acceptance)
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.driver = Path("/tmp/permission-driver")
+        instance.focus_recovery_attempts = set()
+        instance.records = []
+        readback = dict(self.state, front=self.settings_pid)
+        instance.probe = lambda: readback
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+
+        with patch("permission_acceptance.capture", return_value={
+            "performed": "recover-settings-focus", "settings_frontmost_after": False,
+            "frontmost_after_pid": 303, "activation_accepted": True,
+            "activation_performed": True, "settings": self.settings_pid,
+            "page_after": self.page,
+        }) as native_call:
+            result, recovery = instance.restore_settings_focus_once(
+                self.state, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                page=self.page, stage="focus-check", visit_id="input-visit-1",
+            )
+            self.assertIs(result, readback)
+            self.assertTrue(recovery["attempted"])
+            self.assertEqual(native_call.call_count, 1)
+            with self.assertRaisesRegex(RuntimeError, "already attempted once"):
+                instance.restore_settings_focus_once(
+                    self.state, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                    page=self.page, stage="focus-check-retry", visit_id="input-visit-1",
+                )
+            self.assertEqual(native_call.call_count, 1)
+            instance.restore_settings_focus_once(
+                self.state, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                page=self.page, stage="focus-check-reentry", visit_id="input-visit-2",
+            )
+            self.assertEqual(native_call.call_count, 2)
+
+        stages = [stage for stage, _ in instance.records]
+        self.assertIn("settings_focus_recovery_requested", stages)
+        self.assertIn("settings_focus_recovery_native", stages)
+        self.assertIn("settings_focus_recovery_readback", stages)
+        self.assertEqual(instance.records[0][1]["initial_frontmost_bundle_id"],
+                         "com.example.concurrent-app")
+        self.assertFalse(instance.records[-2][1]["permission_change_requested"])
+        self.assertFalse(instance.records[-2][1]["native_drag_performed"])
+
+    def test_page_reentry_gets_a_fresh_visit_scope_for_one_recovery(self):
+        instance = object.__new__(Acceptance)
+        instance.focus_visit_sequence = 0
+        instance.records = []
+        visit_ids = []
+
+        def restore(state, **kwargs):
+            visit_ids.append(kwargs["visit_id"])
+            return state, {"attempted": True, "action": {"activation_performed": True}}
+
+        instance.restore_settings_focus_once = restore
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        for _ in range(2):
+            instance.prepare_settings_for_drag(
+                self.state, app_pid=self.app_pid, pages=CONTROL_PAGES,
+                stage="cancel-reentry-control",
+            )
+        self.assertEqual(visit_ids, ["cancel-reentry-control:1", "cancel-reentry-control:2"])
 
 
 class NativeDragRegressionTests(unittest.TestCase):
@@ -1204,8 +1492,15 @@ class CancelReentryTests(unittest.TestCase):
         instance.press_permission_row = lambda *_args: {
             "ax_press_started_at": 1.0, "ax_press_completed_at": 1.1,
         }
-        instance.wait_auth_or = lambda _stage, _ready: {"app": 101, "settings": 202}
+        instance.wait_auth_or = lambda _stage, _ready: {
+            "app": 101, "settings": 202, "front": 202, "page": INPUT_PAGES[0],
+        }
         instance.record_window_latencies = lambda *_args: None
+        instance.prepare_settings_for_drag = lambda state, **_kwargs: (state, {
+            "native_initial_focus_verified": True,
+            "focus_recovery_attempted": False,
+            "focus_recovery": None,
+        })
         instance.drag = lambda operation, **_kwargs: {"performed": operation}
         instance.press = lambda *_args: {"status": "pressed"}
         instance.record = lambda stage, values: instance.records.append((stage, values))

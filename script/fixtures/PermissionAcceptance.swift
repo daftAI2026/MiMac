@@ -61,9 +61,7 @@ func sheets(in roots: [AXUIElement]) -> [AXUIElement] {
         cursor += 1
         if visited.contains(where: { CFEqual($0, element) }) { continue }
         visited.append(element)
-        if property(element, "AXRole") == "AXSheet" {
-            found.append(element)
-        }
+        if property(element, "AXRole") == "AXSheet" { found.append(element) }
         let attachedSheets = attribute(element, "AXSheets") as? [AXUIElement] ?? []
         found.append(contentsOf: attachedSheets)
         queue.append(contentsOf: attachedSheets)
@@ -103,8 +101,10 @@ func rect(_ element: AXUIElement) -> CGRect? {
 let args = CommandLine.arguments
 guard args.count >= 3, AXIsProcessTrusted() else { stop("AX is unavailable or the bundle path is missing") }
 let operation = args[1]
+let focusOperation = operation == "recover-settings-focus"
 guard (operation == "cancel-auth" && args.count == 5) ||
-      (operation != "cancel-auth" && args.count == 3) else {
+      (focusOperation && args.count == 6) ||
+      (operation != "cancel-auth" && !focusOperation && args.count == 3) else {
     stop("unexpected arguments for permission operation")
 }
 let bundleURL = URL(fileURLWithPath: args[2]).resolvingSymlinksInPath()
@@ -202,7 +202,7 @@ if operation == "observe-windows" {
                 previous = data
             }
         }
-        usleep(100_000)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
     }
 }
 // Keep semantic permission labels in a separate, lower-rate AX log. Timing
@@ -246,7 +246,7 @@ if operation == "observe-ax-feedback" {
                 previous = data
             }
         }
-        usleep(250_000)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.25))
     }
 }
 let apps = NSRunningApplication.runningApplications(withBundleIdentifier: id)
@@ -263,7 +263,9 @@ if operation == "quit-app" {
     emit(["performed": operation, "app": appPID])
     exit(0)
 }
-let settingsPID = NSRunningApplication.runningApplications(withBundleIdentifier: settingsID).first?.processIdentifier ?? 0
+let settingsApps = NSRunningApplication.runningApplications(withBundleIdentifier: settingsID)
+let settingsApp = settingsApps.count == 1 ? settingsApps.first : nil
+let settingsPID = settingsApp?.processIdentifier ?? 0
 let front = NSWorkspace.shared.frontmostApplication
 let frontPID = front?.processIdentifier ?? 0
 let settingsWindows = windows(settingsPID)
@@ -313,6 +315,21 @@ let ordinaryOrder: [Int32] = scene.compactMap { row in
           row[kCGWindowLayer as String] as? Int == 0, let box = frame(row),
           box.width >= 400 && box.height >= 250 else { return nil }
     return pid
+}
+
+let extraAccessWarning: Bool
+if operation == "probe" || focusOperation {
+    let warningOwner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.accessibility.universalAccessAuthWarn").first
+    let quotedNames = ["“" + name + "”", "\"" + name + "\"", "「" + name + "」"]
+    extraAccessWarning = warningOwner.map { owner in
+        elements(windows(owner.processIdentifier)).contains { node in
+            guard property(node, "AXRole") == "AXStaticText" else { return false }
+            let text = property(node, "AXValue")
+            return quotedNames.contains(where: { text.contains($0) })
+        }
+    } ?? false
+} else {
+    extraAccessWarning = false
 }
 
 if operation == "cancel-auth" {
@@ -377,20 +394,99 @@ if operation == "cancel-auth" {
 }
 
 if operation == "probe" {
-    let warningOwner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.accessibility.universalAccessAuthWarn").first
-    let quotedNames = ["“" + name + "”", "\"" + name + "\"", "「" + name + "」"]
-    let extraWarning = warningOwner.map { owner in
-        elements(windows(owner.processIdentifier)).contains { node in
-            guard property(node, "AXRole") == "AXStaticText" else { return false }
-            let text = property(node, "AXValue")
-            return quotedNames.contains(where: { text.contains($0) })
-        }
-    } ?? false
     emit(["app": appPID, "settings": settingsPID, "front": frontPID, "page": title,
-          "restart": restart.count == 1 && suppliedApp, "password": password, "extra_access_warning": extraWarning,
+          "bundle_id": id, "bundle_path": bundleURL.path,
+          "settings_bundle_id": settingsApp?.bundleIdentifier ?? "",
+          "settings_bundle_path": settingsApp?.bundleURL?.resolvingSymlinksInPath().path ?? "",
+          "settings_process_count": settingsApps.count, "settings_page_count": pageIndices.count,
+          "frontmost_bundle_id": front?.bundleIdentifier ?? "",
+          "restart": restart.count == 1 && suppliedApp, "password": password, "extra_access_warning": extraAccessWarning,
           "permission_card_visible": permissionCardVisible, "permission_summary": permissionSummary,
+          "permission_card_window_count": permissionCardAX.count,
           "system_sheet": !systemSheets.isEmpty, "system_sheet_titles": systemSheets.map { property($0, "AXTitle") },
           "settings_above_setup": settingsPID > 0 && ordinaryOrder.starts(with: [settingsPID, appPID])])
+    exit(0)
+}
+if focusOperation {
+    guard let expectedAppPID = Int32(args[3]), let expectedSettingsPID = Int32(args[4]),
+          expectedAppPID > 0, expectedSettingsPID > 0,
+          let expectedPage = (inputPage + controlPage).first(where: { $0 == args[5] }) else {
+        stop("focus recovery needs exact positive app and Settings PIDs and a recognized page title")
+    }
+    let before: [String: Any] = [
+        "app": Int(appPID), "settings": Int(settingsPID), "front": Int(frontPID),
+        "page": title, "frontmost_bundle_id": front?.bundleIdentifier ?? "",
+        "app_bundle_id": id, "app_bundle_path": bundleURL.path,
+        "settings_bundle_id": settingsApp?.bundleIdentifier ?? "",
+        "settings_bundle_path": settingsApp?.bundleURL?.resolvingSymlinksInPath().path ?? "",
+        "settings_process_count": settingsApps.count, "settings_page_count": pageIndices.count,
+        "permission_card_visible": permissionCardVisible,
+        "permission_card_window_count": permissionCardAX.count,
+        "password": password, "system_sheet_count": systemSheets.count,
+        "restart_action_visible": restart.count == 1 && suppliedApp,
+        "extra_access_warning": extraAccessWarning,
+    ]
+    guard apps.count == 1, candidates.count == 1, appPID == expectedAppPID else {
+        emit(["error": "focus recovery is restricted to the unique verified app process", "activation_performed": false,
+              "expected_app": Int(expectedAppPID), "before": before])
+        exit(2)
+    }
+    guard settingsApps.count == 1, settingsPID == expectedSettingsPID,
+          settingsApp?.bundleIdentifier == settingsID else {
+        emit(["error": "the exact unique System Settings process changed before focus recovery", "activation_performed": false,
+              "expected_settings": Int(expectedSettingsPID), "before": before])
+        exit(2)
+    }
+    guard pageIndices.count == 1, page != nil, title == expectedPage,
+          !password, systemSheets.isEmpty, restart.isEmpty,
+          !extraAccessWarning, permissionCardVisible, permissionCardAX.count == 1 else {
+        emit(["error": "the exact open permission page is blocked by changed page, password, sheet, restart, or permission-card state",
+              "activation_performed": false, "expected_page": expectedPage, "before": before])
+        exit(2)
+    }
+    let settingsScene = scene.filter {
+        $0[kCGWindowOwnerPID as String] as? Int32 == expectedSettingsPID &&
+        $0[kCGWindowName as String] as? String == expectedPage &&
+        ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0.05
+    }
+    guard settingsScene.count == 1 else {
+        emit(["error": "the exact Settings page is not uniquely visible on screen", "activation_performed": false,
+              "expected_page": expectedPage, "visible_page_window_count": settingsScene.count, "before": before])
+        exit(2)
+    }
+    if frontPID == expectedSettingsPID {
+        emit(["performed": operation, "app": Int(expectedAppPID), "settings": Int(expectedSettingsPID),
+              "expected_page": expectedPage, "already_frontmost": true, "activation_performed": false,
+              "settings_frontmost_after": true,
+              "page_after": expectedPage, "before": before,
+              "permission_change_requested": false, "native_drag_performed": false])
+        exit(0)
+    }
+    guard let runningSettings = settingsApp else {
+        emit(["error": "the unique System Settings process is unavailable", "activation_performed": false, "before": before])
+        exit(2)
+    }
+    let startedAt = Date().timeIntervalSince1970
+    let activationAccepted = runningSettings.activate(options: [])
+    guard activationAccepted else {
+        emit(["error": "System Settings rejected its single foreground activation", "activation_performed": true,
+              "activation_accepted": false, "activation_started_at": startedAt, "before": before])
+        exit(2)
+    }
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
+    let frontmostAfterPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let completedAt = Date().timeIntervalSince1970
+    let action: [String: Any] = [
+        "performed": operation, "app": Int(expectedAppPID), "settings": Int(expectedSettingsPID),
+        "expected_page": expectedPage, "already_frontmost": false, "activation_performed": true,
+        "activation_accepted": activationAccepted, "activation_started_at": startedAt,
+        "activation_completed_at": completedAt,
+        "settings_frontmost_after": frontmostAfterPID == expectedSettingsPID,
+        "frontmost_after_pid": Int(frontmostAfterPID),
+        "before": before,
+        "permission_change_requested": false, "native_drag_performed": false,
+    ]
+    emit(action)
     exit(0)
 }
 guard let page, appPID > 0, settingsPID > 0, frontPID == settingsPID, !password else {

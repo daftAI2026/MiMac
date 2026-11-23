@@ -77,10 +77,16 @@ class Acceptance:
         self.resume_input_drop = args.resume_input_drop
         self.drag_regressions_only = args.drag_regressions_only
         self.cancel_reentry = getattr(args, "cancel_reentry", False)
+        self.focus_check = getattr(args, "focus_check", False)
+        self.two_list_permissions_only = getattr(args, "two_list_permissions_only", False)
+        if self.two_list_permissions_only and not self.general_permissions:
+            raise RuntimeError("--two-list-permissions-only requires --general-permissions")
+        self.focus_recovery_attempts = set()
+        self.focus_visit_sequence = 0
         selected_scopes = sum((self.existing_input, self.general_permissions, self.resume_input_drop,
-                               self.drag_regressions_only, self.cancel_reentry, args.finish))
+                               self.drag_regressions_only, self.cancel_reentry, self.focus_check, args.finish))
         if selected_scopes > 1:
-            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only and --finish are separate acceptance scopes")
+            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only, --focus-check and --finish are separate acceptance scopes")
         if self.existing_input and not self.fixed_dev:
             raise RuntimeError("--existing-input requires the verified canonical Dev receipt")
         if self.general_permissions and not self.fixed_dev:
@@ -91,6 +97,8 @@ class Acceptance:
             raise RuntimeError("--resume-input-drop requires the verified canonical Dev receipt")
         if self.drag_regressions_only and not self.fixed_dev:
             raise RuntimeError("--drag-regressions-only requires the verified canonical Dev receipt")
+        if self.focus_check and not self.fixed_dev:
+            raise RuntimeError("--focus-check requires the verified canonical Dev receipt")
         if self.fixed_dev:
             from live_acceptance import verify_fixed_dev
             fixed, _ = verify_fixed_dev(args.fixed_dev_receipt)
@@ -111,7 +119,8 @@ class Acceptance:
         self.check_identity()
         self.config = Path.home() / "Library/Application Support" / self.name
         if self.config.exists() and not (args.finish or self.existing_input or self.general_permissions or
-                                         self.cancel_reentry or self.resume_input_drop or self.drag_regressions_only):
+                                         self.cancel_reentry or self.resume_input_drop or self.drag_regressions_only or
+                                         self.focus_check):
             raise RuntimeError("use a fresh verification identity with an unused configuration directory")
         self.output = args.output.resolve()
         if not self.output.is_relative_to(CACHE.resolve()):
@@ -133,13 +142,16 @@ class Acceptance:
             self.resume_input_args = resume_input_drop_args(entries, identity)
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
-        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry:
+        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry or self.focus_check:
             self.output.mkdir()
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
-            self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
+            if not self.focus_check:
+                self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
             mode = (
                 "drag-regressions-only" if self.drag_regressions_only else
+                "focus-recovery-only" if self.focus_check else
                 "ordinary-cancel-reentry" if self.cancel_reentry else
+                "ordinary-general-two-list-only" if self.two_list_permissions_only else
                 "ordinary-general-permissions"
             )
             self.record("identity", {**identity, "mode": mode})
@@ -179,6 +191,177 @@ class Acceptance:
             raise RuntimeError("an extra device-control prompt appeared for the tested app")
         return result
 
+    def focus_recovery_candidate(self, state, app_pid, settings_pid, page):
+        return focus_recovery_candidate(
+            state, app_pid, settings_pid, page, self.identifier, str(self.bundle)
+        )
+
+    def restore_settings_focus_once(self, state, *, app_pid, settings_pid, page, stage, visit_id=None):
+        if not self.focus_recovery_candidate(state, app_pid, settings_pid, page):
+            self.record("settings_focus_recovery_blocked", {
+                "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+                "expected_page": page, "observation": focus_probe_summary(state),
+                "activation_performed": False,
+            })
+            raise RuntimeError("the exact existing Settings page is not safe to restore")
+        if state.get("front") == settings_pid:
+            return state, {"attempted": False, "reason": "settings_already_frontmost"}
+
+        visit_id = visit_id or getattr(self, "current_focus_visit_id", "direct-check")
+        key = (visit_id, app_pid, settings_pid, page)
+        if key in self.focus_recovery_attempts:
+            self.record("settings_focus_recovery_blocked", {
+                "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+                "expected_page": page, "visit_id": visit_id,
+                "observation": focus_probe_summary(state),
+                "activation_performed": False, "reason": "one_attempt_already_used",
+            })
+            raise RuntimeError("Settings focus recovery was already attempted once for this page")
+        self.focus_recovery_attempts.add(key)
+
+        request = {
+            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "expected_page": page, "visit_id": visit_id, "attempt": 1,
+            "initial_frontmost_pid": state.get("front"),
+            "initial_frontmost_bundle_id": state.get("frontmost_bundle_id"),
+            "native_initial_focus_verified": False,
+            "activation_performed": False,
+            "permission_change_requested": False,
+            "native_drag_performed": False,
+        }
+        self.record("settings_focus_recovery_requested", request)
+        try:
+            action = capture(
+                self.driver, "recover-settings-focus", self.bundle,
+                str(app_pid), str(settings_pid), page,
+            )
+        except RuntimeError as error:
+            detail = error.args[0] if error.args else str(error)
+            self.record("settings_focus_recovery_failed", {
+                **request, "error": detail,
+                "activation_performed": bool(
+                    isinstance(detail, dict) and detail.get("activation_performed")
+                ),
+            })
+            raise
+        self.record("settings_focus_recovery_native", {**request, **action})
+        if (action.get("activation_performed") is not True and
+                action.get("already_frontmost") is not True):
+            raise RuntimeError("the native helper neither activated Settings nor found it already frontmost")
+
+        readback = self.probe()
+        readback_ok = settings_focus_readback_ready(
+            readback, app_pid, settings_pid, page, self.identifier, str(self.bundle)
+        )
+        self.record("settings_focus_recovery_readback", {
+            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "expected_page": page, "readback": focus_probe_summary(readback),
+            "settings_frontmost": readback.get("front") == settings_pid,
+            "exact_page_verified": readback.get("page") == page,
+            "permission_change_requested": False,
+            "native_drag_performed": False,
+            "passed": readback_ok,
+        })
+        if not readback_ok:
+            raise RuntimeError("Settings focus recovery failed its independent PID and page readback")
+        return readback, {
+            "attempted": action.get("activation_performed") is True,
+            "helper_called": True, "action": action,
+        }
+
+    def prepare_settings_for_drag(self, state, *, app_pid, pages, stage):
+        settings_pid = state.get("settings")
+        page = state.get("page")
+        if page not in pages or not isinstance(settings_pid, int) or settings_pid <= 0:
+            raise RuntimeError("the expected Settings page did not open in a unique process")
+        self.focus_visit_sequence = getattr(self, "focus_visit_sequence", 0) + 1
+        self.current_focus_visit_id = f"{stage}:{self.focus_visit_sequence}"
+        native_initial_focus_verified = state.get("front") == settings_pid
+        self.record("settings_page_opened", {
+            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "page": page, "front_at_first_probe": state.get("front"),
+            "native_initial_focus_verified": native_initial_focus_verified,
+            "settings_page_opened": True,
+        })
+        ready, recovery = self.restore_settings_focus_once(
+            state, app_pid=app_pid, settings_pid=settings_pid, page=page, stage=stage,
+            visit_id=self.current_focus_visit_id,
+        )
+        return ready, {
+            "native_initial_focus_verified": native_initial_focus_verified,
+            "focus_recovery_attempted": recovery["attempted"],
+            "focus_recovery_helper_called": recovery.get("helper_called", False),
+            "focus_recovery": recovery.get("action"),
+        }
+
+    def run_focus_check(self):
+        state = self.preflight_no_existing_sheet("focus-check")
+        app_pid = state.get("app")
+        settings_pid = state.get("settings")
+        page = state.get("page")
+        if not focus_check_preflight_ready(
+            state, self.identifier, str(self.bundle), INPUT_PAGES + CONTROL_PAGES
+        ):
+            self.record("FOCUS_CHECK_BLOCKED", {
+                "app_pid": app_pid, "settings_pid": settings_pid, "page": page,
+                "observation": focus_probe_summary(state),
+                "permission_change_requested": False, "native_drag_performed": False,
+            })
+            raise RuntimeError(
+                "--focus-check requires the exact fixed Dev, visible permission card, one open Input Monitoring or Device Control Settings page, and no password, sheet, or restart UI"
+            )
+        app_pid = int(app_pid)
+        settings_pid = int(settings_pid)
+        page = str(page)
+        window_state = wait_for(
+            lambda: (sample if isinstance((sample := self.latest_window_observation()), dict) and
+                     isinstance(sample.get("state"), dict) and
+                     draggable_window_geometry_ready(sample["state"], app_pid, settings_pid)
+                     and settings_page_window_ready(sample["state"], settings_pid, page) else None),
+            "the attached fixed Dev permission card and exact Settings page",
+            seconds=4,
+        )
+        self.record("focus_check_preflight", {
+            "app": app_pid, "settings": settings_pid, "page": page,
+            "front_before": state.get("front"),
+            "window_observation": window_state,
+            "permission_change_requested": False, "native_drag_performed": False,
+            "permission_rows_evaluated": False,
+            "initial_focus_was_native": state.get("front") == settings_pid,
+        })
+        ready, recovery = self.restore_settings_focus_once(
+            state, app_pid=app_pid, settings_pid=settings_pid, page=page, stage="focus-check",
+        )
+        if not settings_focus_readback_ready(
+            ready, app_pid, settings_pid, page, self.identifier, str(self.bundle)
+        ):
+            self.record("FOCUS_CHECK_READBACK_FAILED", {
+                "app": app_pid, "settings": settings_pid, "page": page,
+                "observation": focus_probe_summary(ready),
+                "permission_change_requested": False, "native_drag_performed": False,
+            })
+            raise RuntimeError("--focus-check did not read back the same Settings PID and exact page in front")
+        final_windows = wait_for(
+            lambda: (sample if isinstance((sample := self.latest_window_observation()), dict) and
+                     isinstance(sample.get("state"), dict) and
+                     draggable_window_geometry_ready(sample["state"], app_pid, settings_pid) and
+                     settings_page_window_ready(sample["state"], settings_pid, page) else None),
+            "the attached permission card and exact Settings page after focus recovery",
+            seconds=4,
+        )
+        self.record("FOCUS_CHECK_PASS", {
+            "app": app_pid, "settings": settings_pid, "page": page,
+            "initial_frontmost_pid": state.get("front"),
+            "initial_frontmost_bundle_id": state.get("frontmost_bundle_id"),
+            "final_frontmost_pid": ready.get("front"),
+            "recovery_attempted": recovery["attempted"],
+            "recovery_count": int(recovery["attempted"]),
+            "focus_helper_called": recovery.get("helper_called", False),
+            "permission_change_requested": False, "native_drag_performed": False,
+            "permission_rows_evaluated": False,
+            "window_readback": final_windows,
+        })
+
     def preflight_no_existing_sheet(self, scope):
         state = self.probe()
         if state.get("password") or state.get("system_sheet"):
@@ -192,6 +375,7 @@ class Acceptance:
         return state
 
     def run_general_permissions(self):
+        allow_bluetooth_pending = getattr(self, "two_list_permissions_only", False)
         state = self.preflight_no_existing_sheet("ordinary-general-permissions")
         if not state["app"]:
             subprocess.run([
@@ -222,10 +406,15 @@ class Acceptance:
             self.press(pid, "管理输入监控")
 
         initial_nodes = wait_for(
-            lambda: (current if general_input_action_target(current := self.view(pid), self.name) else None),
-            "the ordinary permission guide with Input Monitoring pending and every optional row accounted for",
+            lambda: (current if general_input_action_target(
+                current := self.view(pid), self.name,
+                allow_bluetooth_pending=allow_bluetooth_pending,
+            ) else None),
+            "the ordinary permission guide with Input Monitoring pending and every permission row accounted for",
         )
-        input_title = general_input_action_target(initial_nodes, self.name)
+        input_title = general_input_action_target(
+            initial_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+        )
         if input_title != INPUT_ROW_TITLE:
             raise RuntimeError("--general-permissions requires Input Monitoring to be pending in the ordinary guide")
         permission_rows = ordinary_permission_counts(initial_nodes, self.name)
@@ -233,7 +422,9 @@ class Acceptance:
             raise RuntimeError("--general-permissions could not read every recognized permission row on both surfaces")
         self.record("general_permissions_preflight", {
             "app": pid, "settings": state["settings"], "front": state["front"],
-            "flow": "ordinary-general", "input_pending": True,
+            "flow": "ordinary-general-two-list-only" if allow_bluetooth_pending else "ordinary-general",
+            "verified_permission_scope": ["input", "device_control"] if allow_bluetooth_pending else None,
+            "input_pending": True,
             "device_control_pending": permission_rows["rows"].get("device_control") == "pending",
             "permission_rows": permission_rows,
             "onboarding_window_present": False,
@@ -247,10 +438,16 @@ class Acceptance:
             "press_completed_at": press["ax_press_completed_at"],
             "source": "right-side 授权…", "flow": "ordinary-general",
         })
-        ready = self.wait_auth_or("input-monitoring Settings pane", ready_input)
+        ready = self.wait_auth_or(
+            "input-monitoring Settings pane",
+            lambda current: current if settings_page_opened(current, pid, INPUT_PAGES) else None,
+        )
         settings_pid = ready["settings"]
         self.record_window_latencies("input-monitoring", press)
-        self.record("input_ready", {**ready, "flow": "ordinary-general"})
+        ready, focus = self.prepare_settings_for_drag(
+            ready, app_pid=pid, pages=INPUT_PAGES, stage="ordinary-general-input-monitoring",
+        )
+        self.record("input_ready", {**ready, **focus, "flow": "ordinary-general"})
         self.record("native_drop", self.drag(
             "drag-input", permission="input-monitoring", app_pid=pid,
             settings_pid=settings_pid, pages=INPUT_PAGES,
@@ -272,8 +469,10 @@ class Acceptance:
                 return None
             if self.name + " 首次设置" in window_names(current_nodes):
                 return None
-            if (existing_input_target(current_nodes, self.name) or
-                    ordinary_permission_guide_complete(current_nodes, self.name)):
+            if (existing_input_target(current_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending) or
+                    ordinary_permission_guide_complete(
+                        current_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+                    )):
                 return current
             return None
 
@@ -293,8 +492,10 @@ class Acceptance:
                 )
                 if self.name + " 首次设置" in window_names(current_nodes):
                     return None
-                if (existing_input_target(current_nodes, self.name) or
-                        ordinary_permission_guide_complete(current_nodes, self.name)):
+                if (existing_input_target(current_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending) or
+                        ordinary_permission_guide_complete(
+                            current_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+                        )):
                     return current
                 return None
 
@@ -307,38 +508,60 @@ class Acceptance:
             "settings_reopened_app": post_input["app"] != pid,
             "onboarding_window_present": False,
         })
-        if ordinary_permission_guide_complete(self.view(post_input["app"]), self.name):
-            completed_nodes = self.view(post_input["app"])
-            permission_counts = ordinary_permission_counts(completed_nodes, self.name)
-            self.record("GENERAL_PERMISSIONS_PASS", {
-                "scope": "ordinary-general-input-monitoring",
-                "app": post_input["app"], "settings": post_input["settings"],
-                "input_granted": True, "device_control_granted_before_run": True,
-                "bluetooth_present": permission_counts["rows"].get("bluetooth") is not None,
-                "bluetooth_granted": permission_counts["rows"].get("bluetooth") == "granted",
-                "permission_rows": permission_counts,
-                "full_first_use_verified": False,
-            })
+        completed_nodes = self.view(post_input["app"])
+        if ordinary_permission_guide_complete(
+            completed_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+        ):
+            self.record_general_permissions_pass(
+                post_input, completed_nodes, scope="ordinary-general-input-monitoring",
+            )
             return post_input
 
-        if not existing_input_target(self.view(post_input["app"]), self.name):
-            raise RuntimeError("input grant did not restore the ordinary General guide with Device Control as the only pending row and any Bluetooth row granted")
-        final = self.run_existing_input()
+        if not existing_input_target(
+            completed_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+        ):
+            raise RuntimeError("input grant did not restore the ordinary General guide with Device Control as the only remaining list permission")
+        final = self.run_existing_input(allow_bluetooth_pending=allow_bluetooth_pending)
         final_nodes = self.view(final["app"])
         permission_counts = ordinary_permission_counts(final_nodes, self.name)
         if (permission_counts is None or
-            permission_counts["granted_row_count"] != permission_counts["row_count"]):
+            not ordinary_permission_guide_complete(
+                final_nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+            ) or
+            (not allow_bluetooth_pending and
+             permission_counts["granted_row_count"] != permission_counts["row_count"])):
+            raise RuntimeError("ordinary permission completion did not retain the required rows as granted")
+        self.record_general_permissions_pass(
+            final, final_nodes, scope="ordinary-general-input-and-device-control",
+        )
+        return final
+
+    def record_general_permissions_pass(self, state, nodes, *, scope):
+        counts = ordinary_permission_counts(nodes, self.name)
+        if counts is None:
+            raise RuntimeError("the General permission rows no longer agree with the permission card")
+        rows = counts["rows"]
+        if getattr(self, "two_list_permissions_only", False):
+            if rows.get("input") != "granted" or rows.get("device_control") != "granted":
+                raise RuntimeError("the two list permissions are not both granted")
+            self.record("GENERAL_TWO_LIST_PASS", {
+                "scope": scope, "verified_permission_scope": ["input", "device_control"],
+                "app": state["app"], "settings": state["settings"],
+                "input_granted": True, "device_control_granted": True,
+                "bluetooth_status": rows.get("bluetooth", "not_present"),
+                "permission_rows": counts, "full_first_use_verified": False,
+            })
+            return
+        if counts["granted_row_count"] != counts["row_count"]:
             raise RuntimeError("ordinary permission completion did not retain all actual rows as granted")
         self.record("GENERAL_PERMISSIONS_PASS", {
-            "scope": "ordinary-general-input-and-device-control",
-            "app": final["app"], "settings": final["settings"],
-            "input_granted": True, "device_control_granted": True,
-            "bluetooth_present": permission_counts["rows"].get("bluetooth") is not None,
-            "bluetooth_granted": permission_counts["rows"].get("bluetooth") == "granted",
-            "permission_rows": permission_counts,
-            "full_first_use_verified": False,
+            "scope": scope, "app": state["app"], "settings": state["settings"],
+            "input_granted": rows.get("input") == "granted",
+            "device_control_granted": rows.get("device_control") == "granted",
+            "bluetooth_present": "bluetooth" in rows,
+            "bluetooth_granted": rows.get("bluetooth") == "granted",
+            "permission_rows": counts, "full_first_use_verified": False,
         })
-        return final
 
     def run_cancel_reentry(self):
         state = self.preflight_no_existing_sheet("ordinary-cancel-reentry")
@@ -397,10 +620,16 @@ class Acceptance:
             "press_completed_at": press["ax_press_completed_at"],
             "source": "ordinary General permission card",
         })
-        ready = self.wait_auth_or("input-monitoring Settings pane", ready_input)
+        ready = self.wait_auth_or(
+            "input-monitoring Settings pane",
+            lambda current: current if settings_page_opened(current, pid, INPUT_PAGES) else None,
+        )
         settings_pid = ready["settings"]
         self.record_window_latencies("input-monitoring", press)
-        self.record("input_ready", {**ready, "flow": "ordinary-cancel-reentry"})
+        ready, focus = self.prepare_settings_for_drag(
+            ready, app_pid=pid, pages=INPUT_PAGES, stage="ordinary-cancel-reentry-input-monitoring",
+        )
+        self.record("input_ready", {**ready, **focus, "flow": "ordinary-cancel-reentry"})
         self.record("native_drop", self.drag(
             "drag-input", permission="input-monitoring", app_pid=pid,
             settings_pid=settings_pid, pages=INPUT_PAGES,
@@ -809,7 +1038,7 @@ class Acceptance:
         return (self.name + " 系统权限" in window_names(nodes) and
                 has_button(nodes, row_title) and has_button(nodes, PERMISSION_ACTION_LABEL))
 
-    def run_existing_input(self):
+    def run_existing_input(self, *, allow_bluetooth_pending=False):
         state = self.preflight_no_existing_sheet("existing-input-device-control")
         pid = state["app"]
         if not pid:
@@ -821,13 +1050,19 @@ class Acceptance:
             pid = state["app"]
         if not pid:
             raise RuntimeError("--existing-input could not find the canonical Dev process")
-        nodes = wait_for(lambda: self.existing_input_panel(pid), "Dev permission guide with Input Monitoring granted, Device Control pending, and any Bluetooth row already granted")
+        bluetooth_requirement = "Bluetooth may remain pending" if allow_bluetooth_pending else "any Bluetooth row already granted"
+        nodes = wait_for(
+            lambda: self.existing_input_panel(pid, allow_bluetooth_pending=allow_bluetooth_pending),
+            f"Dev permission guide with Input Monitoring granted, Device Control pending, and {bluetooth_requirement}",
+        )
         full_first_use = self.name + " 首次设置" in window_names(nodes)
-        control_title = existing_input_target(nodes, self.name)
+        control_title = existing_input_target(
+            nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+        )
         if control_title is None:
             if full_first_use:
                 raise RuntimeError("--existing-input requires every recognized first-use permission row except Device Control to be granted, with the summary matching the actual row count")
-            raise RuntimeError("--existing-input requires the ordinary General page and permission card to show Input Monitoring granted, Device Control pending, and any Bluetooth row granted")
+            raise RuntimeError("--existing-input requires the ordinary General page and permission card to show Input Monitoring granted, Device Control pending, and " + bluetooth_requirement)
         self.record("existing_input_preflight", {
             "app": pid, "settings": state["settings"], "front": state["front"],
             "page_before": state["page"], "input_already_granted": True,
@@ -843,12 +1078,19 @@ class Acceptance:
             "app": pid, "permission": "device-control", "press_started_at": press["ax_press_started_at"],
             "press_completed_at": press["ax_press_completed_at"], "source": "right-side 授权…"
         })
-        ready = self.wait_auth_or("device-control Settings pane", ready_control)
+        ready = self.wait_auth_or(
+            "device-control Settings pane",
+            lambda current: current if settings_page_opened(current, pid, CONTROL_PAGES) else None,
+        )
         settings_pid = ready["settings"]
         self.record_window_latencies("device-control", press)
+        ready, focus = self.prepare_settings_for_drag(
+            ready, app_pid=pid, pages=CONTROL_PAGES, stage="existing-input-device-control",
+        )
         self.record("settings_page_ready", {
             "permission": "device-control", "app": ready["app"], "settings": settings_pid,
-            "front": ready["front"], "page": ready["page"], "observed_at": time.time()
+            "front": ready["front"], "page": ready["page"], "observed_at": time.time(),
+            **focus,
         })
         self.record("native_drop", self.drag(
             "drag-control", permission="device-control", app_pid=pid,
@@ -860,7 +1102,8 @@ class Acceptance:
 
         def granted(state):
             return self.existing_input_segment_granted(
-                state, pid, settings_pid, restart_observed, full_first_use
+                state, pid, settings_pid, restart_observed, full_first_use,
+                allow_bluetooth_pending=allow_bluetooth_pending,
             )
 
         def confirm_or_finish(state):
@@ -892,6 +1135,8 @@ class Acceptance:
             return None
 
         state = self.wait_auth_or("device-control", confirm_or_finish)
+        final_nodes = self.view(state["app"]) if not full_first_use else []
+        final_rows = ordinary_permission_counts(final_nodes, self.name) if not full_first_use else None
         self.record("SEGMENT_PASS", {
             "scope": "existing-input-device-control",
             "initial_pid": pid, "final_pid": state["app"], "settings_pid": settings_pid,
@@ -904,12 +1149,14 @@ class Acceptance:
             "final_frontmost_pid": state["front"], "settings_pid_after": state["settings"],
             "final_granted_summary": (
                 "全部已授权" if full_first_use else permission_progress_summary(
-                    self.view(state["app"]), self.name
+                    final_nodes, self.name
                 )
             ),
-            "permission_rows": ordinary_permission_counts(
-                self.view(state["app"]), self.name
-            ) if not full_first_use else None,
+            "permission_rows": final_rows,
+            "bluetooth_status": final_rows["rows"].get("bluetooth", "not_present") if final_rows else None,
+            "verified_permission_scope": (
+                ["input", "device_control"] if allow_bluetooth_pending else None
+            ),
             "restart_prompt_observed": restart_observed,
             "same_process_authorized_ui_verified": not restart_observed,
             "verified_after_original_pid_exit": restart_observed,
@@ -917,9 +1164,11 @@ class Acceptance:
         })
         return state
 
-    def existing_input_panel(self, pid):
+    def existing_input_panel(self, pid, *, allow_bluetooth_pending=False):
         nodes = self.view(pid)
-        return nodes if existing_input_target(nodes, self.name) else None
+        return nodes if existing_input_target(
+            nodes, self.name, allow_bluetooth_pending=allow_bluetooth_pending,
+        ) else None
 
     def wait_for_restart_prompt_focus(self, initial, app_pid, settings_pid):
         """Wait for stable Settings ownership without activating either app."""
@@ -1100,10 +1349,16 @@ class Acceptance:
             "app": pid, "permission": "input-monitoring", "press_started_at": input_press["ax_press_started_at"],
             "press_completed_at": input_press["ax_press_completed_at"], "source": "right-side 授权…"
         })
-        state = self.wait_auth_or("input-monitoring Settings pane", ready_input)
+        state = self.wait_auth_or(
+            "input-monitoring Settings pane",
+            lambda current: current if settings_page_opened(current, pid, INPUT_PAGES) else None,
+        )
         settings_pid = state["settings"]
         self.record_window_latencies("input-monitoring", input_press)
-        self.record("input_ready", state)
+        state, focus = self.prepare_settings_for_drag(
+            state, app_pid=pid, pages=INPUT_PAGES, stage="full-first-use-input-monitoring",
+        )
+        self.record("input_ready", {**state, **focus})
         self.record("native_drop", self.drag(
             "drag-input", permission="input-monitoring", app_pid=pid,
             settings_pid=settings_pid, pages=INPUT_PAGES,
@@ -1174,9 +1429,15 @@ class Acceptance:
             "app": resumed_pid, "permission": "device-control", "press_started_at": control_press["ax_press_started_at"],
             "press_completed_at": control_press["ax_press_completed_at"], "source": "right-side 授权…"
         })
-        state = self.wait_auth_or("device-control Settings pane", ready_control)
+        state = self.wait_auth_or(
+            "device-control Settings pane",
+            lambda current: current if settings_page_opened(current, resumed_pid, CONTROL_PAGES) else None,
+        )
         self.record_window_latencies("device-control", control_press)
-        self.record("device_control_ready", state)
+        state, focus = self.prepare_settings_for_drag(
+            state, app_pid=resumed_pid, pages=CONTROL_PAGES, stage="resumed-device-control",
+        )
+        self.record("device_control_ready", {**state, **focus})
         self.record("native_drop", self.drag(
             "drag-control", permission="device-control", app_pid=resumed_pid,
             settings_pid=settings_pid, pages=CONTROL_PAGES,
@@ -1244,7 +1505,7 @@ class Acceptance:
         return None
 
     def existing_input_segment_granted(self, state, initial_pid, settings_pid, restart_observed,
-                                       full_first_use=False):
+                                       full_first_use=False, *, allow_bluetooth_pending=False):
         app_pid = state["app"]
         original_alive = pid_exists(initial_pid)
         settings_alive = pid_exists(settings_pid)
@@ -1259,6 +1520,7 @@ class Acceptance:
             original_alive=original_alive, settings_alive=settings_alive,
             nodes=nodes, name=self.name,
             full_first_use=full_first_use,
+            allow_bluetooth_pending=allow_bluetooth_pending,
         ):
             return None
         return state
@@ -1353,7 +1615,7 @@ def resume_input_drop_args(entries, identity):
 
 def existing_input_segment_granted(state, initial_pid, settings_pid, restart_observed,
                                    original_alive, settings_alive, nodes, name,
-                                   full_first_use=False):
+                                   full_first_use=False, *, allow_bluetooth_pending=False):
     process_verified = existing_input_process_verified(
         state, initial_pid, settings_pid, restart_observed, original_alive, settings_alive,
         full_first_use=full_first_use,
@@ -1361,7 +1623,9 @@ def existing_input_segment_granted(state, initial_pid, settings_pid, restart_obs
     if full_first_use:
         authorization_view = complete_permission_view(nodes, name)
     else:
-        authorization_view = ordinary_permission_guide_complete(nodes, name)
+        authorization_view = ordinary_permission_guide_complete(
+            nodes, name, allow_bluetooth_pending=allow_bluetooth_pending,
+        )
     return process_verified and authorization_view
 
 
@@ -1387,11 +1651,13 @@ def existing_input_process_verified(state, initial_pid, settings_pid, restart_ob
     return settings_exited and state.get("front") == app_pid
 
 
-def existing_input_target(nodes, name):
+def existing_input_target(nodes, name, *, allow_bluetooth_pending=False):
     names = window_names(nodes)
     if name + " 首次设置" in names:
         return first_use_existing_input_target(nodes, name)
-    return ordinary_existing_input_target(nodes, name)
+    return ordinary_existing_input_target(
+        nodes, name, allow_bluetooth_pending=allow_bluetooth_pending,
+    )
 
 
 def first_use_existing_input_target(nodes, name):
@@ -1469,7 +1735,7 @@ def ordinary_permission_guide_card_present(nodes, name):
     return surfaces is not None
 
 
-def ordinary_permission_guide_complete(nodes, name):
+def ordinary_permission_guide_complete(nodes, name, *, allow_bluetooth_pending=False):
     surfaces = ordinary_permission_surfaces(nodes, name)
     if surfaces is None:
         return False
@@ -1477,11 +1743,21 @@ def ordinary_permission_guide_complete(nodes, name):
     if set(general_rows) != set(card_rows):
         return False
     states = ordinary_permission_row_states(general, card, general_rows, card_rows)
-    return (states is not None and all(state == "granted" for state in states.values()) and
+    if states is None:
+        return False
+    pending = {kind for kind, state in states.items() if state == "pending"}
+    if allow_bluetooth_pending:
+        return (
+            states.get("input") == states.get("device_control") == "granted" and
+            all(state in ("granted", "pending") for state in states.values()) and
+            pending.issubset({"bluetooth"}) and
+            exact_button_count(card, PERMISSION_ACTION_LABEL) == len(pending)
+        )
+    return (not pending and all(state == "granted" for state in states.values()) and
             exact_button_count(card, PERMISSION_ACTION_LABEL) == 0)
 
 
-def general_input_action_target(nodes, name):
+def general_input_action_target(nodes, name, *, allow_bluetooth_pending=False):
     """Return the Input Monitoring row only for a readable ordinary cold-flow state."""
     surfaces = ordinary_permission_surfaces(nodes, name)
     if surfaces is None:
@@ -1492,7 +1768,9 @@ def general_input_action_target(nodes, name):
         return None
     if states.get("device_control") not in ("granted", "pending"):
         return None
-    if "bluetooth" in states and states["bluetooth"] != "granted":
+    if "bluetooth" in states and states["bluetooth"] not in (
+        ("granted", "pending") if allow_bluetooth_pending else ("granted",)
+    ):
         return None
     expected_actions = sum(state == "pending" for state in states.values())
     if exact_button_count(card, PERMISSION_ACTION_LABEL) != expected_actions:
@@ -1500,7 +1778,7 @@ def general_input_action_target(nodes, name):
     return INPUT_ROW_TITLE
 
 
-def ordinary_existing_input_target(nodes, name):
+def ordinary_existing_input_target(nodes, name, *, allow_bluetooth_pending=False):
     surfaces = ordinary_permission_surfaces(nodes, name)
     if surfaces is None:
         return None
@@ -1508,9 +1786,12 @@ def ordinary_existing_input_target(nodes, name):
     states = ordinary_permission_row_states(general, card, general_rows, card_rows)
     if states is None or states.get("input") != "granted" or states.get("device_control") != "pending":
         return None
-    if "bluetooth" in states and states["bluetooth"] != "granted":
+    if "bluetooth" in states and states["bluetooth"] not in (
+        ("granted", "pending") if allow_bluetooth_pending else ("granted",)
+    ):
         return None
-    if exact_button_count(card, PERMISSION_ACTION_LABEL) != 1:
+    expected_actions = 2 if allow_bluetooth_pending and states.get("bluetooth") == "pending" else 1
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != expected_actions:
         return None
     return card_rows["device_control"]["route_title"]
 
@@ -1934,6 +2215,79 @@ def drag_page_probe_ready(state, app_pid, settings_pid, pages):
             state.get("permission_card_visible") is True)
 
 
+def settings_page_opened(state, app_pid, pages):
+    """Accept an exact, unobstructed destination pane even if another app owns focus."""
+    if not isinstance(state, dict) or not positive_pid(app_pid):
+        return False
+    settings_pid = state.get("settings")
+    return (
+        state.get("app") == app_pid and positive_pid(settings_pid) and
+        state.get("page") in pages and positive_pid(state.get("front")) and
+        state.get("settings_bundle_id") == "com.apple.systempreferences" and
+        state.get("settings_process_count") == 1 and state.get("settings_page_count") == 1 and
+        state.get("permission_card_visible") is True and
+        state.get("permission_card_window_count") == 1 and
+        not state.get("password") and not state.get("system_sheet") and not state.get("restart")
+    )
+
+
+def focus_recovery_candidate(state, app_pid, settings_pid, page, bundle_id, bundle_path):
+    """Require the exact already-open pair before any one-shot Settings activation."""
+    return (
+        settings_page_opened(state, app_pid, (page,)) and
+        state.get("settings") == settings_pid and state.get("bundle_id") == bundle_id and
+        state.get("bundle_path") == bundle_path and
+        isinstance(state.get("front"), int) and not isinstance(state.get("front"), bool) and
+        state.get("settings_bundle_path") and
+        state.get("extra_access_warning") is False
+    )
+
+
+def settings_focus_readback_ready(state, app_pid, settings_pid, page, bundle_id, bundle_path):
+    return (focus_recovery_candidate(state, app_pid, settings_pid, page, bundle_id, bundle_path) and
+            state.get("front") == settings_pid)
+
+
+def focus_check_preflight_ready(state, bundle_id, bundle_path, pages):
+    return (
+        isinstance(state, dict) and state.get("page") in pages and
+        focus_recovery_candidate(
+            state, state.get("app"), state.get("settings"), state.get("page"),
+            bundle_id, bundle_path,
+        )
+    )
+
+
+def positive_pid(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def settings_page_window_ready(state, settings_pid, page):
+    if not isinstance(state, dict) or state.get("settings_pid") != settings_pid:
+        return False
+    matches = state.get("settings_page_title_matches")
+    return (isinstance(matches, list) and len(matches) == 1 and
+            isinstance(matches[0], dict) and matches[0].get("title") == page)
+
+
+def focus_probe_summary(state):
+    if not isinstance(state, dict):
+        return {"state_available": False}
+    return {
+        "app_pid": state.get("app"), "app_bundle_id": state.get("bundle_id"),
+        "settings_pid": state.get("settings"),
+        "settings_bundle_id": state.get("settings_bundle_id"),
+        "settings_process_count": state.get("settings_process_count"),
+        "frontmost_pid": state.get("front"),
+        "frontmost_bundle_id": state.get("frontmost_bundle_id"),
+        "page": state.get("page"), "settings_page_count": state.get("settings_page_count"),
+        "permission_card_visible": state.get("permission_card_visible"),
+        "permission_card_window_count": state.get("permission_card_window_count"),
+        "password": state.get("password"), "system_sheet": state.get("system_sheet"),
+        "restart": state.get("restart"),
+    }
+
+
 def drag_geometry_summary(state):
     attachment = state.get("attachment", {}) if isinstance(state, dict) else {}
     pages = state.get("settings_page_title_matches", []) if isinstance(state, dict) else []
@@ -2056,10 +2410,14 @@ def main():
                         help="verify device control with input monitoring already granted; any Bluetooth row must also be granted")
     parser.add_argument("--general-permissions", action="store_true",
                         help="cold-enter ordinary General settings and grant Input Monitoring, with any Bluetooth row already granted")
+    parser.add_argument("--two-list-permissions-only", action="store_true",
+                        help="with --general-permissions, grant both ordinary list rows while recording Bluetooth status separately")
     parser.add_argument("--cancel-reentry", action="store_true",
                         help="drop Input Monitoring once from the ordinary permission card, cancel its exact system password sheet, then verify every actual permission row and card re-entry are unchanged")
     parser.add_argument("--drag-regressions-only", action="store_true",
                         help="run only the non-granting native drag regressions on an already open Dev/Settings pair")
+    parser.add_argument("--focus-check", action="store_true",
+                        help="recover one already-open fixed Dev Settings page after focus loss; no drag or permission action")
     parser.add_argument("--resume-input-drop", action="store_true",
                         help="continue after the recorded input-monitoring drop without repeating it")
     parser.add_argument("--finish", action="store_true",
@@ -2076,6 +2434,8 @@ def main():
                 acceptance.run_cancel_reentry()
             elif args.drag_regressions_only:
                 acceptance.run_drag_regressions_only()
+            elif args.focus_check:
+                acceptance.run_focus_check()
             elif args.resume_input_drop:
                 acceptance.finish_input_drop(*acceptance.resume_input_args)
             elif args.finish:
