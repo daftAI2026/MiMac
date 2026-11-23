@@ -32,6 +32,8 @@ GENERAL_CONTROL_MANAGE = tuple("管理" + title for title in CONTROL_PERMISSION_
 GENERAL_BLUETOOTH_MANAGE = tuple("管理" + title for title in BLUETOOTH_PERMISSION_NAMES)
 PERMISSION_ACTION_LABEL = "授权…"
 DRAG_GEOMETRY_TIMEOUT = 12
+FOCUS_READBACK_TIMEOUT = 2
+FOCUS_READBACK_INTERVAL = 0.12
 RESTART_FOCUS_RECOVERY_SECONDS = 4
 AUTH_PROMPT_BUNDLES = {
     "com.apple.systempreferences",
@@ -196,6 +198,36 @@ class Acceptance:
             state, app_pid, settings_pid, page, self.identifier, str(self.bundle)
         )
 
+    def wait_for_settings_focus_readback(self, initial, *, app_pid, settings_pid, page,
+                                         original_state, flow_stage):
+        deadline = time.monotonic() + FOCUS_READBACK_TIMEOUT
+        current = initial
+        samples = 0
+        while True:
+            samples += 1
+            transition_safe = focus_readback_transition_safe(
+                current, app_pid, settings_pid, page, self.identifier, str(self.bundle), original_state
+            )
+            if transition_safe and settings_focus_readback_ready(
+                current, app_pid, settings_pid, page, self.identifier, str(self.bundle)
+            ):
+                return current, samples
+            if not transition_safe:
+                self.record("settings_focus_readback_failed", {
+                    "flow_stage": flow_stage, "reason": "identity_or_modal_state_changed",
+                    "observation": focus_probe_summary(current), "samples": samples,
+                })
+                raise RuntimeError("Settings focus readback changed identity or entered a blocked state")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.record("settings_focus_readback_failed", {
+                    "flow_stage": flow_stage, "reason": "timed_out_waiting_for_exact_page_and_focus",
+                    "observation": focus_probe_summary(current), "samples": samples,
+                })
+                raise RuntimeError("timed out waiting for the exact Settings page and foreground readback")
+            time.sleep(min(FOCUS_READBACK_INTERVAL, remaining))
+            current = self.probe()
+
     def restore_settings_focus_once(self, state, *, app_pid, settings_pid, page, stage, visit_id=None):
         if not self.focus_recovery_candidate(state, app_pid, settings_pid, page):
             self.record("settings_focus_recovery_blocked", {
@@ -249,10 +281,11 @@ class Acceptance:
                 action.get("already_frontmost") is not True):
             raise RuntimeError("the native helper neither activated Settings nor found it already frontmost")
 
-        readback = self.probe()
-        readback_ok = settings_focus_readback_ready(
-            readback, app_pid, settings_pid, page, self.identifier, str(self.bundle)
+        readback, readback_samples = self.wait_for_settings_focus_readback(
+            self.probe(), app_pid=app_pid, settings_pid=settings_pid, page=page,
+            original_state=state, flow_stage=stage,
         )
+        readback_ok = True
         self.record("settings_focus_recovery_readback", {
             "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
             "expected_page": page, "readback": focus_probe_summary(readback),
@@ -260,7 +293,7 @@ class Acceptance:
             "exact_page_verified": readback.get("page") == page,
             "permission_change_requested": False,
             "native_drag_performed": False,
-            "passed": readback_ok,
+            "samples": readback_samples, "passed": readback_ok,
         })
         if not readback_ok:
             raise RuntimeError("Settings focus recovery failed its independent PID and page readback")
@@ -313,14 +346,7 @@ class Acceptance:
         app_pid = int(app_pid)
         settings_pid = int(settings_pid)
         page = str(page)
-        window_state = wait_for(
-            lambda: (sample if isinstance((sample := self.latest_window_observation()), dict) and
-                     isinstance(sample.get("state"), dict) and
-                     draggable_window_geometry_ready(sample["state"], app_pid, settings_pid)
-                     and settings_page_window_ready(sample["state"], settings_pid, page) else None),
-            "the attached fixed Dev permission card and exact Settings page",
-            seconds=4,
-        )
+        window_state = self.latest_window_observation()
         self.record("focus_check_preflight", {
             "app": app_pid, "settings": settings_pid, "page": page,
             "front_before": state.get("front"),
@@ -332,6 +358,18 @@ class Acceptance:
         ready, recovery = self.restore_settings_focus_once(
             state, app_pid=app_pid, settings_pid=settings_pid, page=page, stage="focus-check",
         )
+        try:
+            ready, readback_samples = self.wait_for_settings_focus_readback(
+                self.probe(), app_pid=app_pid, settings_pid=settings_pid, page=page,
+                original_state=state, flow_stage="focus-check-verification",
+            )
+        except RuntimeError as error:
+            self.record("FOCUS_CHECK_READBACK_FAILED", {
+                "app": app_pid, "settings": settings_pid, "page": page,
+                "error": str(error), "permission_change_requested": False,
+                "native_drag_performed": False,
+            })
+            raise
         if not settings_focus_readback_ready(
             ready, app_pid, settings_pid, page, self.identifier, str(self.bundle)
         ):
@@ -341,14 +379,7 @@ class Acceptance:
                 "permission_change_requested": False, "native_drag_performed": False,
             })
             raise RuntimeError("--focus-check did not read back the same Settings PID and exact page in front")
-        final_windows = wait_for(
-            lambda: (sample if isinstance((sample := self.latest_window_observation()), dict) and
-                     isinstance(sample.get("state"), dict) and
-                     draggable_window_geometry_ready(sample["state"], app_pid, settings_pid) and
-                     settings_page_window_ready(sample["state"], settings_pid, page) else None),
-            "the attached permission card and exact Settings page after focus recovery",
-            seconds=4,
-        )
+        final_windows = self.latest_window_observation()
         self.record("FOCUS_CHECK_PASS", {
             "app": app_pid, "settings": settings_pid, "page": page,
             "initial_frontmost_pid": state.get("front"),
@@ -357,6 +388,7 @@ class Acceptance:
             "recovery_attempted": recovery["attempted"],
             "recovery_count": int(recovery["attempted"]),
             "focus_helper_called": recovery.get("helper_called", False),
+            "readback_samples": readback_samples,
             "permission_change_requested": False, "native_drag_performed": False,
             "permission_rows_evaluated": False,
             "window_readback": final_windows,
@@ -2246,6 +2278,34 @@ def focus_recovery_candidate(state, app_pid, settings_pid, page, bundle_id, bund
 def settings_focus_readback_ready(state, app_pid, settings_pid, page, bundle_id, bundle_path):
     return (focus_recovery_candidate(state, app_pid, settings_pid, page, bundle_id, bundle_path) and
             state.get("front") == settings_pid)
+
+
+def focus_readback_transition_safe(state, app_pid, settings_pid, page, bundle_id, bundle_path,
+                                  original_state):
+    if not isinstance(state, dict) or not isinstance(original_state, dict):
+        return False
+    current_page = state.get("page")
+    page_count = state.get("settings_page_count")
+    page_is_transitioning = current_page in (None, "") and page_count == 0
+    page_is_exact = current_page == page and page_count == 1
+    front = state.get("front")
+    original_front = original_state.get("front")
+    front_is_transitioning = (
+        isinstance(front, int) and not isinstance(front, bool) and
+        front in (0, settings_pid, original_front)
+    )
+    return (
+        state.get("app") == app_pid and state.get("bundle_id") == bundle_id and
+        state.get("bundle_path") == bundle_path and
+        state.get("settings") == settings_pid and state.get("settings_bundle_id") == "com.apple.systempreferences" and
+        state.get("settings_bundle_path") == original_state.get("settings_bundle_path") and
+        state.get("settings_process_count") == 1 and front_is_transitioning and
+        (page_is_transitioning or page_is_exact) and
+        state.get("permission_card_visible") is True and
+        state.get("permission_card_window_count") == 1 and
+        not state.get("password") and not state.get("system_sheet") and
+        not state.get("restart") and state.get("extra_access_warning") is False
+    )
 
 
 def focus_check_preflight_ready(state, bundle_id, bundle_path, pages):

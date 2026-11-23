@@ -942,6 +942,90 @@ class SettingsFocusRecoveryTests(unittest.TestCase):
             "settings_page_title_matches": [{"title": self.page}],
         }, self.settings_pid, self.page))
 
+    def test_passive_readback_retries_transient_blank_page_then_accepts_exact_page(self):
+        instance = object.__new__(Acceptance)
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.records = []
+        blank = dict(self.state, page="", settings_page_count=0)
+        ready = dict(self.state, front=self.settings_pid)
+        instance.probe = lambda: ready
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+
+        with patch("permission_acceptance.time.sleep") as sleep:
+            result, samples = instance.wait_for_settings_focus_readback(
+                blank, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                page=self.page, original_state=self.state, flow_stage="focus-check",
+            )
+
+        self.assertIs(result, ready)
+        self.assertEqual(samples, 2)
+        sleep.assert_called_once()
+        self.assertEqual(instance.records, [])
+
+    def test_focus_check_uses_passive_readback_without_attached_geometry_gate(self):
+        instance = object.__new__(Acceptance)
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.records = []
+        blank = dict(self.state, page="", settings_page_count=0, front=self.settings_pid)
+        ready = dict(self.state, front=self.settings_pid)
+        probes = iter((blank, ready))
+        instance.preflight_no_existing_sheet = lambda _scope: self.state
+        instance.latest_window_observation = lambda: None
+        instance.restore_settings_focus_once = lambda state, **_kwargs: (
+            ready, {"attempted": True, "helper_called": True},
+        )
+        instance.probe = lambda: next(probes)
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+
+        with patch("permission_acceptance.time.sleep"):
+            instance.run_focus_check()
+
+        passed = next(values for stage, values in instance.records if stage == "FOCUS_CHECK_PASS")
+        self.assertEqual(passed["readback_samples"], 2)
+        self.assertIsNone(passed["window_readback"])
+
+    def test_passive_readback_fails_closed_on_other_page_identity_or_modal(self):
+        instance = object.__new__(Acceptance)
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.records = []
+        instance.probe = lambda: self.state
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        unsafe = (
+            dict(self.state, page="Privacy & Security"),
+            dict(self.state, page="", settings_page_count=0, app=404),
+            dict(self.state, page="", settings_page_count=0, system_sheet=True),
+            dict(self.state, page="", settings_page_count=0, password=True),
+            dict(self.state, page="", settings_page_count=0, restart=True),
+        )
+        for state in unsafe:
+            with self.subTest(state=state):
+                instance.records.clear()
+                with self.assertRaisesRegex(RuntimeError, "identity or entered a blocked state"):
+                    instance.wait_for_settings_focus_readback(
+                        state, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                        page=self.page, original_state=self.state, flow_stage="focus-check",
+                    )
+                self.assertEqual(instance.records[-1][0], "settings_focus_readback_failed")
+
+    def test_passive_readback_has_a_bounded_timeout_without_reactivation(self):
+        instance = object.__new__(Acceptance)
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.records = []
+        instance.probe = lambda: self.state
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        blank = dict(self.state, page="", settings_page_count=0)
+        with patch("permission_acceptance.FOCUS_READBACK_TIMEOUT", 0):
+            with self.assertRaisesRegex(RuntimeError, "timed out waiting"):
+                instance.wait_for_settings_focus_readback(
+                    blank, app_pid=self.app_pid, settings_pid=self.settings_pid,
+                    page=self.page, original_state=self.state, flow_stage="focus-check",
+                )
+        self.assertEqual(instance.records[-1][1]["reason"], "timed_out_waiting_for_exact_page_and_focus")
+
     def test_native_activation_is_attempted_once_and_read_back_independently(self):
         instance = object.__new__(Acceptance)
         instance.identifier = self.bundle_id

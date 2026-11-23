@@ -123,7 +123,7 @@ If the run stops after recording the second drag, pass `--finish` with the same 
 
 For the frozen Dev, pass its canonical `--fixed-dev-receipt`. Use `--general-permissions` for the ordinary Settings route. Add `--two-list-permissions-only` to exercise both native file drops while tracking Bluetooth separately. A pass in this scope confirms Input Monitoring and Device Control on both the card and the General page.
 
-If another app takes focus before a drop, the runner can reactivate the exact Settings page opened by the permission action once per visit. It checks for authentication or restart UI and verifies the page and foreground again before dragging. For a focus-only readback on an existing attached card and Settings page, use `--focus-check` with a fresh output directory.
+If another app takes focus before a drop, the runner can reactivate the exact Settings page opened by the permission action once per visit. It checks for authentication or restart UI and verifies the page and foreground again before dragging. For a focus-only readback on an existing visible card and Settings page, use `--focus-check` with a fresh output directory.
 
 ## Clean Finder first install
 
