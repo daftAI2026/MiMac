@@ -40,7 +40,7 @@ flowchart LR
     meter --> projection["Host 语音呈现投影\n仅 Preparing / Capturing / Draining"]
     snapshot --> projection
     projection --> preference["voice_presentation 偏好"]
-    preference -->|点阵语音条| dots["当前 token RMS；MyGo 点阵；收起后停帧"]
+    preference -->|点阵语音条| dots["当前 token 交流 RMS；Rust 点阵与 MyGo 面板；收起后停帧"]
     preference -->|语音球| panel["MyGo 非激活 Panel\n鼠标穿透；可见时请求 30 Hz；实测节拍单列"]
     panel --> gate{"arm64 + macOS26公开API下限？"}
     gate -->|是| capability{"原生符号、布局与witness兼容？"}

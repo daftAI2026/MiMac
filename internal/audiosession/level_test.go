@@ -38,6 +38,14 @@ func TestInputLevelUsesFullScaleAndActualSampleCount(t *testing.T) {
 	}
 }
 
+func TestVoiceMeterRemovesDCWithoutChangingSourceLevel(t *testing.T) {
+	flat := measureInputLevel([]int16{8000, 8000, 8000}, time.Now())
+	speech := measureInputLevel([]int16{9000, 7000, 9000, 7000}, time.Now())
+	if flat.CenteredRMS != 0 || flat.RMS != 8000.0/32768 || speech.CenteredRMS != 1000.0/32768 {
+		t.Fatalf("flat=%+v speech=%+v", flat, speech)
+	}
+}
+
 func TestRuntimeInputLevelFollowsPCMAndClearsBeforeDrain(t *testing.T) {
 	for _, rate := range []int{8000, 16000} {
 		t.Run(strconv.Itoa(rate), func(t *testing.T) {

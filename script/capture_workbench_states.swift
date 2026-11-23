@@ -131,7 +131,7 @@ do {
  }
  let original=try pages.filter{try matches(window,role:"AXHeading",text:$0.1).count==1};guard original.count==1 else{throw CaptureFailure("Cannot identify original page")}
  let nativeRoot=bundleURL.appendingPathComponent("Contents/Resources")
- let nativeNames=["libMiMacATVV.dylib","libMiMacProcessTap.dylib","libMiMacReadyIndicator.dylib","libMiMacSettings.dylib","libMiMacSpeech.dylib","libSiriGlassBridge.dylib"]
+ let nativeNames=["libMiMacATVV.dylib","libMiMacProcessTap.dylib","libMiMacReadyIndicator.dylib","libMiMacSettings.dylib","libMiMacSpeech.dylib","libMiMacVoiceDots.dylib","libSiriGlassBridge.dylib"]
  var nativeSHA=[String:String]();for name in nativeNames{nativeSHA[name]=sha(try Data(contentsOf:nativeRoot.appendingPathComponent(name)))}
  let scriptURL=URL(fileURLWithPath:CommandLine.arguments[0]).standardizedFileURL
  let captureToolSHA=sha(try Data(contentsOf:scriptURL))

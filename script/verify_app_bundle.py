@@ -16,6 +16,20 @@ REQUIRED = {
     "libMiMacProcessTap.dylib": "MiMacProcessTapCreate",
     "libMiMacReadyIndicator.dylib": "MiMacReadyIndicatorABIVersion",
     "libMiMacSpeech.dylib": "MiMacAppleSpeechIsAvailable",
+    "libMiMacVoiceDots.dylib": "mi_dot_model_abi_version",
+}
+REQUIRED_EXPORTS = {
+    "libMiMacVoiceDots.dylib": (
+        "mi_dot_model_create",
+        "mi_dot_model_destroy",
+        "mi_dot_model_start",
+        "mi_dot_model_meter_rms",
+        "mi_dot_model_submit",
+        "mi_dot_model_done",
+        "mi_dot_model_fail",
+        "mi_dot_model_cancel",
+        "mi_dot_model_step",
+    ),
 }
 SIRI = "libSiriGlassBridge.dylib"
 
@@ -71,6 +85,9 @@ def verify(bundle, arch, require_siri=False, development=False, require_audio_in
             raise ValueError("missing input update export in " + name)
         if not any(line.split()[-1:] == ["_" + symbol] for line in exports.splitlines()):
             raise ValueError(f"missing export {symbol} in {name}")
+        for symbol in REQUIRED_EXPORTS.get(name, ()):
+            if not any(line.split()[-1:] == ["_" + symbol] for line in exports.splitlines()):
+                raise ValueError(f"missing export {symbol} in {name}")
     audio_installer = verify_audio_installer(resources, arch, require_audio_installer)
     if audio_installer is not None:
         installer = resources / "MiMacAudio.pkg"

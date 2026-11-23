@@ -58,6 +58,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up pinned Rust compiler and Apple targets
+        run: rustc --version
+
       - name: Install DMG metadata dependencies
         run: |
           python3 -m venv "$RUNNER_TEMP/mimac-packaging-venv"

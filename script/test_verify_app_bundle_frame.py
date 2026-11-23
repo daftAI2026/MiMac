@@ -9,7 +9,8 @@ import verify_app_bundle as bundle_check
 
 
 class FrameExportContract(unittest.TestCase):
-    def verify_fixture(self, with_frame, development=False, bundle_id="dev.mimac.app", with_input=True):
+    def verify_fixture(self, with_frame, development=False, bundle_id="dev.mimac.app", with_input=True,
+                       missing_export=None):
         with tempfile.TemporaryDirectory() as directory:
             app = Path(directory) / "MiMac.app"
             contents = app / "Contents"
@@ -26,6 +27,9 @@ class FrameExportContract(unittest.TestCase):
                 name = Path(arguments[-1]).name
                 symbol = bundle_check.REQUIRED.get(name, "mimac_siri_glass_abi_version")
                 result = "00000000 T _" + symbol + "\n"
+                for extra_symbol in bundle_check.REQUIRED_EXPORTS.get(name, ()):
+                    if extra_symbol != missing_export:
+                        result += "00000004 T _" + extra_symbol + "\n"
                 if name == bundle_check.SIRI and with_frame:
                     result += "00000004 T _mimac_siri_glass_update_frame\n"
                 if name == bundle_check.SIRI and with_input:
@@ -57,6 +61,10 @@ class FrameExportContract(unittest.TestCase):
     def test_missing_input_update_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "missing input update export"):
             self.verify_fixture(True, with_input=False)
+
+    def test_missing_voice_dot_model_export_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "missing export mi_dot_model_cancel"):
+            self.verify_fixture(True, missing_export="mi_dot_model_cancel")
 
 
 class AudioInstallerChecksumContract(unittest.TestCase):

@@ -42,7 +42,7 @@ flowchart LR
     measurement --> projection
     prefs --> projection
     projection --> panel
-    panel --> dots["点阵语音条：RMS 驱动点场；收起后停止请求帧"]
+    panel --> dots["点阵语音条：Rust 模型接收去直流的 RMS；收起后停止请求帧"]
     panel --> glass
     glass --> fault
     glass -.-> future

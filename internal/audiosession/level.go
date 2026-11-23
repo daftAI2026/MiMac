@@ -12,10 +12,11 @@ import (
 // [0, 1]. ObservedAt is the worker's read time, not a hardware capture timestamp.
 // No samples or history are retained. Consumers choose their own visual decay.
 type InputLevel struct {
-	RMS        float32   `json:"rms"`
-	Peak       float32   `json:"peak"`
-	Samples    int       `json:"samples"`
-	ObservedAt time.Time `json:"observed_at"`
+	RMS         float32   `json:"rms"`
+	CenteredRMS float32   `json:"-"` // AC component for voice-responsive indicators.
+	Peak        float32   `json:"peak"`
+	Samples     int       `json:"samples"`
+	ObservedAt  time.Time `json:"observed_at"`
 }
 
 // InputLevel never prepares or reads a source. The complete token must match
@@ -35,18 +36,23 @@ func measureInputLevel(pcm []int16, observedAt time.Time) InputLevel {
 		return InputLevel{}
 	}
 	var squares uint64
-	var peak int64
+	var peak, sum int64
 	for _, sample := range pcm {
 		value := int64(sample) // Widen before abs: -32768 is valid full scale.
+		sum += value
 		squares += uint64(value * value)
 		if value < 0 {
 			value = -value
 		}
 		peak = max(peak, value)
 	}
+	count := float64(len(pcm))
+	mean := float64(sum) / count
+	variance := float64(squares)/count - mean*mean
 	return InputLevel{
-		RMS:  float32(math.Sqrt(float64(squares)/float64(len(pcm))) / 32768),
-		Peak: float32(peak) / 32768, Samples: len(pcm), ObservedAt: observedAt,
+		CenteredRMS: float32(math.Sqrt(max(0, variance)) / 32768),
+		RMS:         float32(math.Sqrt(float64(squares)/float64(len(pcm))) / 32768),
+		Peak:        float32(peak) / 32768, Samples: len(pcm), ObservedAt: observedAt,
 	}
 }
 

@@ -90,4 +90,6 @@ for arch in arm64 amd64; do
 	done
 done
 
-echo "Built native settings, ATVV, process tap, ready indicator and Apple Speech libraries for darwin-arm64 and darwin-amd64."
+"$ROOT_DIR/script/build_native_voice_dots.sh"
+
+echo "Built native settings, ATVV, process tap, ready indicator, Apple Speech and voice dot model libraries for darwin-arm64 and darwin-amd64."

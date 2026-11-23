@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/bridge"
-	"mimac.local/mimac/internal/platform/dotscope"
 	"mimac.local/mimac/internal/platform/siriglass"
 	"mimac.local/mimac/internal/pluginrt"
 )
@@ -15,13 +14,14 @@ import (
 // This is a render snapshot. Core and the existing PCM owner remain the only
 // sources of session identity, phase and input level.
 type voiceOverlayFrame struct {
-	Visible  bool
-	Token    bridge.SessionToken
-	Phase    bridge.Phase
-	Label    string
-	DB       float32
-	Spectrum siriglass.Spectrum
-	Input    siriglass.InputState
+	Visible     bool
+	Token       bridge.SessionToken
+	Phase       bridge.Phase
+	Label       string
+	DB          float32
+	CenteredRMS float32
+	Spectrum    siriglass.Spectrum
+	Input       siriglass.InputState
 }
 
 type voiceOverlayView interface {
@@ -90,9 +90,6 @@ func (s *shell) stopVoicePresentation() {
 
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 	frame := voiceOverlayFrame{DB: -60}
-	if s.voiceOverlay.mode == voicePresentationDotBar {
-		frame.DB = dotscope.Loudness(0)
-	}
 	if !s.voicePresentationActive() || s.voiceOverlay.err != nil || s.closing ||
 		s.powerInputBlocked() || s.remoteState.stopPending || s.liveAudio.retiring || s.coordinator == nil ||
 		s.audioSession == nil || s.audioSession.runtime == nil {
@@ -121,7 +118,7 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 		return frame
 	}
 	if s.voiceOverlay.mode == voicePresentationDotBar {
-		frame.DB = dotscope.Loudness(level.RMS)
+		frame.CenteredRMS = level.CenteredRMS
 	} else if level.RMS > 0 {
 		frame.DB = float32(max(-60, min(0, 20*math.Log10(float64(level.RMS)))))
 	}

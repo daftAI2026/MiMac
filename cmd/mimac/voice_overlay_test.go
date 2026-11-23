@@ -5,11 +5,22 @@ import (
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/dotscope"
 	"mimac.local/mimac/internal/platform/siriglass"
+	"mimac.local/mimac/internal/testutil/dotfixture"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func testDotView(t *testing.T) *voiceDotView {
+	t.Helper()
+	model, err := dotscope.Open(dotfixture.Library(t, "../.."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(model.Close)
+	return &voiceDotView{model: model, visible: true}
+}
 
 type fakeVoiceOverlay struct {
 	frames              []voiceOverlayFrame
@@ -180,13 +191,13 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	}
 	now := time.Now()
 	reading := s.voiceOverlayFrameAt(now)
-	if reading.Phase != bridge.PhaseCapturing || reading.Token != token || reading.DB < -6.1 || reading.DB > -5.9 {
+	if reading.Phase != bridge.PhaseCapturing || reading.Token != token || reading.CenteredRMS != .5 {
 		t.Fatalf("dot input did not read this audio session: %+v", reading)
 	}
-	if stale := s.voiceOverlayFrameAt(now.Add(time.Second)); stale.DB != dotscope.Loudness(0) {
-		t.Fatalf("dot reused stale input: %v", stale.DB)
+	if stale := s.voiceOverlayFrameAt(now.Add(time.Second)); stale.CenteredRMS != 0 {
+		t.Fatalf("dot reused stale input: %v", stale.CenteredRMS)
 	}
-	dot := voiceDotView{model: dotscope.New(), visible: true}
+	dot := testDotView(t)
 	for i := 0; i < 45; i++ {
 		dot.advance(now.Add(time.Duration(i)*voiceDotPeriod), reading, false)
 	}
@@ -291,34 +302,36 @@ func TestDotViewFinishesOnlyTheSessionThatReported(t *testing.T) {
 	token := s.coordinator.core.Snapshot().Session.Token
 	now := time.Now()
 	drain := voiceOverlayFrame{Visible: true, Token: token, Phase: bridge.PhaseDraining}
-	view := voiceDotView{model: dotscope.New(), visible: true}
+	view := testDotView(t)
 	view.advance(now, drain, true)
 	view.finish(bridge.SessionToken{}, true, now)
-	if !view.terminalUntil.IsZero() {
+	if view.ended {
 		t.Fatal("an unrelated completion reached the displayed session")
 	}
 	view.finish(token, false, now)
 	view.advance(now.Add(60*time.Millisecond), voiceOverlayFrame{}, true)
-	if view.stage != dotscope.StageProcessing {
+	if view.model.Snapshot().Pose.Done != 0 {
 		t.Fatal("quick delivery skipped the processing transition")
 	}
 	view.advance(now.Add(210*time.Millisecond), voiceOverlayFrame{}, true)
-	if view.stage != dotscope.StageDone {
+	if view.model.Snapshot().Pose.Done != 1 {
 		t.Fatal("confirmed delivery did not render completion")
 	}
 	// An error before the first paint must survive the deferred motion setup.
-	view.begin(token)
+	view = testDotView(t)
+	view.selectToken(token, now)
 	view.finish(token, true, now)
 	view.advance(now.Add(50*time.Millisecond), voiceOverlayFrame{}, true)
-	if view.stage != dotscope.StageFailed {
+	if view.model.Snapshot().Pose.Fail <= 0 {
 		t.Fatal("failure before first paint was lost")
 	}
-	view.begin(token)
+	view = testDotView(t)
+	view.selectToken(token, now)
 	view.advance(now.Add(time.Second), drain, true)
 	idle := voiceOverlayFrame{}
 	for tick := 0; tick < 120; tick++ {
 		if !view.advance(now.Add(time.Second+time.Duration(tick)*voiceDotPeriod), idle, true) {
-			if view.stage == dotscope.StageDone || view.stage == dotscope.StageFailed {
+			if view.model.Snapshot().Pose.Done != 0 || view.model.Snapshot().Pose.Fail > 0 {
 				t.Fatal("an ordinary drain reported a transcription result")
 			}
 			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {

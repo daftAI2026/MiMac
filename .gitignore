@@ -16,6 +16,8 @@ resources/darwin-amd64/libMiMacSpeech.dylib
 resources/darwin-arm64/libMiMacReadyIndicator.dylib
 resources/darwin-arm64/libSiriGlassBridge.dylib
 resources/darwin-amd64/libMiMacReadyIndicator.dylib
+resources/darwin-arm64/libMiMacVoiceDots.dylib
+resources/darwin-amd64/libMiMacVoiceDots.dylib
 
 __pycache__/
 *.py[cod]

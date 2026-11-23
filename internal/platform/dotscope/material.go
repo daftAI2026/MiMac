@@ -27,6 +27,7 @@ var Grid float
 var Live float
 var Cool float
 var Dark float
+var Shift float
 var Base vec4
 var Core vec4
 var Plate vec4
@@ -94,7 +95,8 @@ func Fragment(dst vec4, pos vec2) vec4 {
 	rows := int(Rows+0.5)
 	pitch := max(Pitch, 0.001)
 	centerOffset := vec2(float(columns-1), float(rows-1))*0.5
-	i0 := int(floor(point.x/pitch+centerOffset.x+0.5))
+	shift := vec2(Shift, 0)
+	i0 := int(floor((point.x-Shift)/pitch+centerOffset.x+0.5))
 	j0 := int(floor(point.y/pitch+centerOffset.y+0.5))
 	unlit := mix(0.085, 0.07, Dark)
 	full := mix(1, 0.96, Dark)
@@ -119,7 +121,7 @@ func Fragment(dst vec4, pos vec2) vec4 {
 			if i < 0 || j < 0 || i >= columns || j >= rows {
 				continue
 			}
-			center := (vec2(float(i), float(j))-centerOffset)*pitch
+			center := (vec2(float(i), float(j))-centerOffset)*pitch+shift
 			cap := -roundedBox(center, halfSize, radius)
 			mask := sstep(1.4, 4.6, cap)
 			if mask <= 0 {
@@ -154,7 +156,7 @@ const (
 
 type materialUniformSet struct {
 	width, height, opacity, scale, softness, pitch, columns, rows shader.Uniform
-	glow, grid, live, cool, dark                                  shader.Uniform
+	glow, grid, live, cool, dark, shift                           shader.Uniform
 	base, core, plate, rim, shadow                                shader.Uniform
 }
 
@@ -178,7 +180,8 @@ var compileMaterial = sync.OnceValues(func() (*materialProgram, error) {
 			columns: uniform("Columns"), rows: uniform("Rows"),
 			glow: uniform("Glow"), grid: uniform("Grid"),
 			live: uniform("Live"), cool: uniform("Cool"), dark: uniform("Dark"),
-			base: uniform("Base"), core: uniform("Core"), plate: uniform("Plate"),
+			shift: uniform("Shift"),
+			base:  uniform("Base"), core: uniform("Core"), plate: uniform("Plate"),
 			rim: uniform("Rim"), shadow: uniform("Shadow"),
 		},
 	}, nil
@@ -251,6 +254,7 @@ func (r *Renderer) Draw(p *ui.Painter, bounds ui.Rect, snapshot Snapshot, dark b
 		Float(u.live, finiteClamp(pose.Live, 0, 1)).
 		Float(u.cool, finiteClamp(pose.Cool, 0, 1)).
 		Float(u.dark, boolFloat(dark)).
+		Float(u.shift, finiteClamp(pose.Shift, -width, width)).
 		Vec4(u.base, palette.base[0], palette.base[1], palette.base[2], 1).
 		Vec4(u.core, palette.core[0], palette.core[1], palette.core[2], 1).
 		Vec4(u.plate, palette.plate[0], palette.plate[1], palette.plate[2], palette.plate[3]).

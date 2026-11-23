@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from release_version import apply_release_identity, apply_versions, bundle_version
-from verify_app_bundle import REQUIRED, SIRI
+from verify_app_bundle import REQUIRED, REQUIRED_EXPORTS, SIRI
 from verify_release import SIRI_ABI_HOST_GATE, verify_build_info, verify_release, verify_source, verify_versions
 
 
@@ -142,7 +142,8 @@ def verify_fixture(bundle: Path, arch: str, profile: str, host: dict | None = No
             name = Path(command[-1]).name
             if name == SIRI:
                 return "_mimac_siri_glass_abi_version\n_mimac_siri_glass_update_frame\n_mimac_siri_glass_update\n"
-            return "_" + REQUIRED[name] + "\n"
+            symbols = [REQUIRED[name], *REQUIRED_EXPORTS.get(name, ())]
+            return "".join("_" + symbol + "\n" for symbol in symbols)
         raise AssertionError("unexpected command: " + " ".join(command))
 
     def fake_run(command, **kwargs):
