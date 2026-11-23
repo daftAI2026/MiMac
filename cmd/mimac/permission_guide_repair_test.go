@@ -84,15 +84,34 @@ func TestDragRegistrationPreparationConsumesOnlyMatchingFreshProofOnce(t *testin
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.Local)
 	newPreparation := func() *permissionGuideDragRegistrationPreparation {
 		return &permissionGuideDragRegistrationPreparation{
-			id: permissionGuideInput, bundle: bundle, generation: 7, preparedAt: now.Add(-time.Second),
+			id: permissionGuideInput, bundle: bundle, generation: 7, preparedAt: now.Add(-time.Second), result: make(chan *permissionguide.DragRegistrationProof, 1),
 			ready: true, proof: &permissionguide.DragRegistrationProof{},
 		}
 	}
 	prep := newPreparation()
-	prep.proof = nil // No stale identity was found; de-duplicate this probe briefly.
-	if prep.reusable(now, permissionGuideInput, 7, bundle) == false {
-		t.Fatal("matching preparation was not reusable")
+	prep.proof = nil // A completed negative preflight must be refreshed at drag threshold.
+	if prep.reusable(now, permissionGuideInput, 7, bundle) {
+		t.Fatal("completed negative preparation was reused")
 	}
+	pending := newPreparation()
+	pending.ready = false
+	pending.proof = nil
+	if !pending.reusable(now, permissionGuideInput, 7, bundle) {
+		t.Fatal("in-flight preparation was not reused")
+	}
+	publishedNegative := newPreparation()
+	publishedNegative.ready = false
+	publishedNegative.proof = nil
+	publishedNegative.result <- nil
+	if publishedNegative.reusable(now, permissionGuideInput, 7, bundle) || !publishedNegative.ready {
+		t.Fatal("published negative result was reused before the queued completion")
+	}
+	negative := newPreparation()
+	negative.proof = nil
+	if _, ok := negative.take(now, permissionGuideInput, 7, bundle); ok {
+		t.Fatal("completed negative preparation was reported as a proof")
+	}
+	prep = newPreparation()
 	prep.proof = &permissionguide.DragRegistrationProof{}
 	proof, taken := prep.take(now, permissionGuideInput, 7, bundle)
 	if !taken || proof == nil {
@@ -125,8 +144,8 @@ func TestDragRegistrationPreparationConsumesOnlyMatchingFreshProofOnce(t *testin
 	}
 
 	expired := newPreparation()
-	if _, ok := expired.take(now.Add(permissionGuideDragRegistrationPreparationTTL), permissionGuideInput, 7, bundle); !ok {
-		t.Fatal("expired matching prep should be consumed as a no-op")
+	if _, ok := expired.take(now.Add(permissionGuideDragRegistrationPreparationTTL), permissionGuideInput, 7, bundle); ok {
+		t.Fatal("expired preparation was reported as a proof")
 	}
 	if expired.proof != nil {
 		t.Fatal("expired proof remained available")

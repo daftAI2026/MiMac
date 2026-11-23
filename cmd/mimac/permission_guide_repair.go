@@ -84,7 +84,18 @@ func (p *permissionGuideDragRegistrationPreparation) reusable(now time.Time, id 
 		p.preparedAt.IsZero() || now.Before(p.preparedAt) || now.Sub(p.preparedAt) >= permissionGuideDragRegistrationPreparationTTL {
 		return false
 	}
-	return p.proof == nil || p.proof.Valid(now)
+	if !p.ready {
+		if p.result == nil {
+			return false
+		}
+		select {
+		case p.proof = <-p.result:
+			p.ready = true
+		default:
+			return true
+		}
+	}
+	return p.proof != nil && p.proof.Valid(now)
 }
 
 func (p *permissionGuideDragRegistrationPreparation) take(now time.Time, id permissionGuideID, generation uint64, bundle string) (*permissionguide.DragRegistrationProof, bool) {
@@ -94,9 +105,12 @@ func (p *permissionGuideDragRegistrationPreparation) take(now time.Time, id perm
 	p.consumed = true
 	proof := p.proof
 	p.proof = nil
+	if proof == nil {
+		return nil, false
+	}
 	if now.Before(p.preparedAt) || now.Sub(p.preparedAt) >= permissionGuideDragRegistrationPreparationTTL {
 		permissionguide.DiscardDragRegistrationProof(proof)
-		return nil, true
+		return nil, false
 	}
 	return proof, true
 }

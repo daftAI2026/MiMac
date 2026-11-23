@@ -3,11 +3,76 @@ package permissionguide
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRegistrationProbeReceiptRequiresOneCompleteStatusLine(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		data       string
+		wantStatus string
+		wantError  bool
+		wantWait   bool
+	}{
+		{name: "denied", data: "denied\n", wantStatus: "denied"},
+		{name: "granted", data: "granted\n", wantStatus: "granted"},
+		{name: "explicit unknown", data: "unknown\n", wantStatus: "unknown"},
+		{name: "closed empty", data: "", wantError: true, wantWait: true},
+		{name: "partial line", data: "denied", wantError: true, wantWait: true},
+		{name: "extra content", data: "unknown\nextra\n", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipt")
+			if err := os.WriteFile(path, []byte(test.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if test.wantWait {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = canceled
+			}
+			got, err := readRegistrationProbeReceipt(ctx, path)
+			if test.wantWait && !errors.Is(err, context.Canceled) {
+				t.Fatalf("incomplete receipt = %q, %v; want bounded wait, not a status", got, err)
+			}
+			if test.wantWait {
+				return
+			}
+			if (err != nil) != test.wantError || got != test.wantStatus {
+				t.Fatalf("receipt = %q, %v; want %q, error=%t", got, err, test.wantStatus, test.wantError)
+			}
+		})
+	}
+}
+
+func TestRegistrationProbeReceiptWaitsForACompleteFreshResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	writeErr := make(chan error, 1)
+	timer := time.AfterFunc(20*time.Millisecond, func() {
+		writeErr <- os.WriteFile(path, []byte("unknown\n"), 0600)
+	})
+	defer timer.Stop()
+	startedAt := time.Now()
+	got, err := readRegistrationProbeReceipt(ctx, path)
+	if err != nil || got != "unknown" {
+		t.Fatalf("waited receipt = %q, %v", got, err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+		t.Fatalf("receipt wait added a fixed delay: %v", elapsed)
+	}
+}
 
 func TestListenRegistrationLiveEvidenceMustFollowFreshProbe(t *testing.T) {
 	const bundle = "dev.mimac.app.dev"

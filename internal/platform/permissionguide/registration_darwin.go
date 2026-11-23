@@ -4,6 +4,7 @@ package permissionguide
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -69,7 +70,11 @@ func PrepareDragRegistration(ctx context.Context, bundlePath string, service Reg
 	}
 
 	probe, err := runRegistrationProbe(ctx, runningBundle, service)
-	if err != nil || probe.status != "denied" {
+	if err != nil {
+		DiscardDragRegistrationProof(proof)
+		return nil, err
+	}
+	if probe.status != "denied" {
 		DiscardDragRegistrationProof(proof)
 		return nil, nil
 	}
@@ -152,22 +157,51 @@ func runRegistrationProbe(ctx context.Context, bundle string, service Registrati
 	args := []string{"-n", "-g", "-W", "--stdout", receipt, bundle, "--args", RegistrationProbeFlag, string(service)}
 	// Keep -W: it waits for the fresh probe process to exit and close its
 	// stdout receipt before this read. A nonzero `open` result alone is
-	// inconclusive; the unique receipt must still contain one complete status.
-	if err := exec.CommandContext(ctx, "/usr/bin/open", args...).Run(); err != nil && ctx.Err() != nil {
-		return registrationProbe{}, ctx.Err()
-	}
+	// inconclusive; a launched probe can still finish writing its unique receipt.
+	_ = exec.CommandContext(ctx, "/usr/bin/open", args...).Run()
 	if ctx.Err() != nil {
 		return registrationProbe{}, ctx.Err()
 	}
-	data, err := os.ReadFile(receipt)
+	status, err := readRegistrationProbeReceipt(ctx, receipt)
 	if err != nil {
 		return registrationProbe{}, err
 	}
-	fields := strings.Fields(string(data))
-	if len(fields) != 1 || (fields[0] != "denied" && fields[0] != "granted" && fields[0] != "unknown") {
-		return registrationProbe{}, errors.New("fresh permission probe returned an invalid result")
+	return registrationProbe{status: status, startedAt: startedAt}, nil
+}
+
+func readRegistrationProbeReceipt(ctx context.Context, receipt string) (string, error) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		data, err := os.ReadFile(receipt)
+		if err == nil && bytes.IndexByte(data, '\n') >= 0 {
+			if status, complete := completeRegistrationProbeReceipt(data); complete {
+				return status, nil
+			}
+			return "", errors.New("fresh permission probe returned an invalid complete status")
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", errors.New("fresh permission probe receipt could not be read")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	return registrationProbe{status: fields[0], startedAt: startedAt}, nil
+}
+
+func completeRegistrationProbeReceipt(data []byte) (string, bool) {
+	switch string(data) {
+	case "denied\n":
+		return "denied", true
+	case "granted\n":
+		return "granted", true
+	case "unknown\n":
+		return "unknown", true
+	default:
+		return "", false
+	}
 }
 
 func registrationBundleHash(ctx context.Context, bundle string) (string, error) {
