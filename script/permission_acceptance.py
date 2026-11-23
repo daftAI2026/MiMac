@@ -199,7 +199,7 @@ class Acceptance:
     def restore_settings_focus_once(self, state, *, app_pid, settings_pid, page, stage, visit_id=None):
         if not self.focus_recovery_candidate(state, app_pid, settings_pid, page):
             self.record("settings_focus_recovery_blocked", {
-                "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+                "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
                 "expected_page": page, "observation": focus_probe_summary(state),
                 "activation_performed": False,
             })
@@ -211,7 +211,7 @@ class Acceptance:
         key = (visit_id, app_pid, settings_pid, page)
         if key in self.focus_recovery_attempts:
             self.record("settings_focus_recovery_blocked", {
-                "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+                "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
                 "expected_page": page, "visit_id": visit_id,
                 "observation": focus_probe_summary(state),
                 "activation_performed": False, "reason": "one_attempt_already_used",
@@ -220,7 +220,7 @@ class Acceptance:
         self.focus_recovery_attempts.add(key)
 
         request = {
-            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
             "expected_page": page, "visit_id": visit_id, "attempt": 1,
             "initial_frontmost_pid": state.get("front"),
             "initial_frontmost_bundle_id": state.get("frontmost_bundle_id"),
@@ -254,7 +254,7 @@ class Acceptance:
             readback, app_pid, settings_pid, page, self.identifier, str(self.bundle)
         )
         self.record("settings_focus_recovery_readback", {
-            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
             "expected_page": page, "readback": focus_probe_summary(readback),
             "settings_frontmost": readback.get("front") == settings_pid,
             "exact_page_verified": readback.get("page") == page,
@@ -278,7 +278,7 @@ class Acceptance:
         self.current_focus_visit_id = f"{stage}:{self.focus_visit_sequence}"
         native_initial_focus_verified = state.get("front") == settings_pid
         self.record("settings_page_opened", {
-            "stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+            "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
             "page": page, "front_at_first_probe": state.get("front"),
             "native_initial_focus_verified": native_initial_focus_verified,
             "settings_page_opened": True,

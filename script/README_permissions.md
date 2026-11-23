@@ -121,6 +121,10 @@ This first-use regression covers a system-requested restart after the first gran
 
 If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. For the canonical Dev, pass its verified bundle receipt with `--fixed-dev-receipt` and use a fresh Dev test profile. Complete this run before freezing the Dev source for a user-installed Preview. Keep Preview authorization with the user.
 
+For the frozen Dev, pass its canonical `--fixed-dev-receipt`. Use `--general-permissions` for the ordinary Settings route. Add `--two-list-permissions-only` to exercise both native file drops while tracking Bluetooth separately. A pass in this scope confirms Input Monitoring and Device Control on both the card and the General page.
+
+If another app takes focus before a drop, the runner can reactivate the exact Settings page opened by the permission action once per visit. It checks for authentication or restart UI and verifies the page and foreground again before dragging. For a focus-only readback on an existing attached card and Settings page, use `--focus-check` with a fresh output directory.
+
 ## Clean Finder first install
 
 Run this gate in a clean arm64 macOS guest or on a clean test Mac with an active Finder session. Both installation paths and the test account's MiMac preferences must be absent. Use the same frozen image and executable hashes as the release receipt.
