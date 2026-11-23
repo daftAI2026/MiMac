@@ -170,44 +170,23 @@ func (s *shell) mappingSettings(c *ui.Context, a appearance) {
 }
 
 func (s *shell) mappingVoiceSelection(c *ui.Context, a appearance, active []*voiceTool, width, height float32) {
-	switch len(active) {
-	case 0:
+	if len(active) == 0 {
 		button := appButton(c, a, "选择语音工具", false).Label("选择语音工具").Width(width).MinHeight(height).Padding(controlInset, spaceSM)
 		if button.Clicked() {
 			s.endShortcutRecording()
 			s.showPage(pageVoice)
 		}
-	case 1:
-		tool := active[0]
-		if tool.id == s.currentVoiceTool {
-			if tool.requiredInputSource == nil {
-				ui.Text(c, tool.name).FontSize(a.fonts.body).Width(width).MinHeight(height)
-				return
-			}
-			button := ui.ButtonBase(c).Label("重新选择：" + tool.name).
-				Width(width).MinHeight(height).Padding(0).FocusRing(false).Justify(ui.Start).AlignItems(ui.Center)
-			button.Children(func() { ui.Text(c, tool.name).FontSize(a.fonts.body) })
-			if button.Clicked() && !s.toolLoadFailed {
+		return
+	}
+	appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark, accessoryIconSize), func(menu *ui.Menu) {
+		for _, tool := range active {
+			item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
+			reselectCurrent := tool.id == s.currentVoiceTool && tool.requiredInputSource != nil
+			if item.Chosen() && (tool.id != s.currentVoiceTool || reselectCurrent) && !s.toolLoadFailed {
 				s.chooseMappingVoiceTool(c, tool)
 			}
-			return
 		}
-		button := appButton(c, a, "使用", s.toolLoadFailed).Label("使用："+tool.name).
-			Width(width).MinHeight(height).Padding(controlInset, spaceSM)
-		if button.Clicked() && !s.toolLoadFailed {
-			s.chooseMappingVoiceTool(c, tool)
-		}
-	default:
-		appMenuButton(c, a, s.voiceSelectionLabel(), s.toolLoadFailed, s.systemSymbol("chevron.up.chevron.down", a.theme.Dark, accessoryIconSize), func(menu *ui.Menu) {
-			for _, tool := range active {
-				item := menu.Item(tool.name).Checked(tool.id == s.currentVoiceTool)
-				reselectCurrent := tool.id == s.currentVoiceTool && tool.requiredInputSource != nil
-				if item.Chosen() && (tool.id != s.currentVoiceTool || reselectCurrent) && !s.toolLoadFailed {
-					s.chooseMappingVoiceTool(c, tool)
-				}
-			}
-		}).Label("选择语音工具").Width(width).MinHeight(height).Padding(controlInset, spaceSM)
-	}
+	}).Label("选择语音工具").Width(width).MinHeight(height).Padding(controlInset, spaceSM)
 }
 
 func (s *shell) chooseMappingVoiceTool(c *ui.Context, tool *voiceTool) {
