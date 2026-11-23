@@ -226,7 +226,15 @@ class Acceptance:
                 })
                 raise RuntimeError("timed out waiting for the exact Settings page and foreground readback")
             time.sleep(min(FOCUS_READBACK_INTERVAL, remaining))
-            current = self.probe()
+            try:
+                current = self.probe()
+            except RuntimeError as error:
+                self.record("settings_focus_readback_failed", {
+                    "flow_stage": flow_stage, "reason": "probe_failed",
+                    "error": str(error), "observation": focus_probe_summary(current),
+                    "samples": samples,
+                })
+                raise
 
     def restore_settings_focus_once(self, state, *, app_pid, settings_pid, page, stage, visit_id=None):
         if not self.focus_recovery_candidate(state, app_pid, settings_pid, page):
@@ -281,10 +289,19 @@ class Acceptance:
                 action.get("already_frontmost") is not True):
             raise RuntimeError("the native helper neither activated Settings nor found it already frontmost")
 
-        readback, readback_samples = self.wait_for_settings_focus_readback(
-            self.probe(), app_pid=app_pid, settings_pid=settings_pid, page=page,
-            original_state=state, flow_stage=stage,
-        )
+        try:
+            readback, readback_samples = self.wait_for_settings_focus_readback(
+                self.probe(), app_pid=app_pid, settings_pid=settings_pid, page=page,
+                original_state=state, flow_stage=stage,
+            )
+        except RuntimeError as error:
+            self.record("settings_focus_recovery_readback_failed", {
+                "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
+                "expected_page": page, "error": str(error),
+                "activation_performed": action.get("activation_performed") is True,
+                "permission_change_requested": False, "native_drag_performed": False,
+            })
+            raise
         readback_ok = True
         self.record("settings_focus_recovery_readback", {
             "flow_stage": stage, "app_pid": app_pid, "settings_pid": settings_pid,
@@ -366,6 +383,7 @@ class Acceptance:
         except RuntimeError as error:
             self.record("FOCUS_CHECK_READBACK_FAILED", {
                 "app": app_pid, "settings": settings_pid, "page": page,
+                "flow_stage": "focus-check-verification",
                 "error": str(error), "permission_change_requested": False,
                 "native_drag_performed": False,
             })
