@@ -394,6 +394,16 @@ func (s *onboardingState) completePermissionVisit(previous, next permissionGuide
 	return true, finishSettingsVisit
 }
 
+// The final Start Using action adopts the selected remote even if it is
+// temporarily disconnected. The welcome-page skip never calls this path.
+func (s *shell) startOnboardingRemote() {
+	if s.closing || s.plugins == nil || s.selectedProfile == "" || s.remoteEnabled() ||
+		s.powerInputBlocked() || s.remoteBusy() || s.toggleRecoveryNeeded() {
+		return
+	}
+	s.enableRemote(false)
+}
+
 func (s *shell) finishOnboarding() {
 	if s.onboarding.window == nil || s.onboarding.window.IsDestroyed() {
 		return

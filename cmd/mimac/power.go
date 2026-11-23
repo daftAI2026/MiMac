@@ -13,7 +13,7 @@ import (
 type powerState struct {
 	sleeping, locked            bool
 	resumeRemote, resumeMonitor bool
-	stopping, resuming          bool
+	stopping                    bool
 	off                         []func()
 }
 
@@ -101,12 +101,10 @@ func (s *shell) restorePowerIntent() {
 	if s.remoteNeedsRestart() || s.remoteState.err != nil {
 		return
 	}
-	s.powerState.resuming = true
-	defer func() { s.powerState.resuming = false }()
 	if remote {
 		s.enableRemote(false)
 	} else if monitor {
-		if err := s.plugins.Enable(xiaomiPlugin); err != nil {
+		if err := s.enableInputPlugin(xiaomiPlugin, false); err != nil {
 			s.remoteState.err = err
 			s.deviceNeedsPermission = errors.Is(err, xiaomi.ErrInputMonitoringRequired)
 			s.deviceNeedsRestart = errors.Is(err, xiaomi.ErrMonitorRestartRequired) || s.plugins.Failure(xiaomiPlugin) != nil

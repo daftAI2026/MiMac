@@ -24,6 +24,7 @@ const (
 	onboardingActionSize          float32 = 16
 	onboardingLineHeight          float32 = 20
 	onboardingMarkOffsetY         float32 = 4
+	onboardingDragFallbackHeight  float32 = 28
 	onboardingWelcomeActionsGap   float32 = 22
 	onboardingInsetX              float32 = 20
 	onboardingHeadingGap          float32 = 12
@@ -58,6 +59,8 @@ func onboardingBalancedTextWidth(c *ui.Context, text string, size float32, weigh
 }
 
 func (s *shell) onboardingView(c *ui.Context) {
+	defer onboardingTitleBarDragRegion(c)
+
 	a := appAppearance(c.Theme().Dark, s.preferencesState.value.TextSize)
 	a.fonts = fontSizes{caption: onboardingCaptionSize, body: onboardingBodySize, title: onboardingTitleSize}
 	c.SetTheme(&a.theme)
@@ -83,7 +86,7 @@ func (s *shell) onboardingView(c *ui.Context) {
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
-		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
+		ui.Box(c).FillWidth().Height(onboardingDragFallbackHeight).Shrink(0)
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(availableWidth).MinWidth(0).Children(func() {
 				s.onboardingPageHeader(c, a, availableWidth, onboardingStepHeading(s.onboarding.step), onboardingStepSubheading(s.onboarding.step))
@@ -115,6 +118,17 @@ func (s *shell) onboardingView(c *ui.Context) {
 		})
 		ui.Text(c, onboardingStepPosition(s.onboarding.step)).FillWidth().FontSize(onboardingCaptionSize).TextAlign(ui.Center).TextColor(a.theme.TextMuted)
 	})
+}
+
+func onboardingTitleBarDragHeight(titleBarHeight float32) float32 {
+	return max(titleBarHeight, onboardingDragFallbackHeight)
+}
+
+// Keep the drag target on the root so it spans the native title bar from the
+// window's top edge without changing the onboarding content's layout.
+func onboardingTitleBarDragRegion(c *ui.Context) ui.Element {
+	return ui.Box(c).Absolute().Top(0).Left(0).Right(0).
+		Height(onboardingTitleBarDragHeight(c.TitleBar().Height)).DragWindow()
 }
 
 func onboardingTextHeader(c *ui.Context, a appearance, width, titleSize float32, heading, description string) {
@@ -158,7 +172,7 @@ func (s *shell) onboardingWelcomeView(c *ui.Context, a appearance) {
 	windowWidth, _ := c.Size()
 	availableWidth := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
-		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
+		ui.Box(c).FillWidth().Height(onboardingDragFallbackHeight).Shrink(0)
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(availableWidth).AlignItems(ui.Center).Children(func() {
 				s.onboardingPageHeader(c, a, availableWidth, onboardingStepHeading(onboardingStepWelcome), onboardingWelcomeDescription)

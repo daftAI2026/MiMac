@@ -13,6 +13,29 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
+func TestOnboardingTitleBarDragRegionUsesTheFullNativeHeight(t *testing.T) {
+	tests := []struct {
+		name       string
+		titleBar   ui.TitleBar
+		wantHeight float32
+	}{
+		{name: "hidden native title bar", titleBar: ui.TitleBar{Height: 56}, wantHeight: 56},
+		{name: "fallback when native title bar is absent", wantHeight: onboardingDragFallbackHeight},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := ui.NewTester(func(c *ui.Context) {
+				onboardingTitleBarDragRegion(c).Label("onboarding title bar drag region")
+			}, windowWidth, windowHeight)
+			v.SetTitleBar(tt.titleBar)
+			r, ok := v.Find("onboarding title bar drag region")
+			if !ok || r != (ui.Rect{X: 0, Y: 0, W: windowWidth, H: tt.wantHeight}) {
+				t.Fatalf("drag region = %+v, found=%t; want full-width top region with height %g", r, ok, tt.wantHeight)
+			}
+		})
+	}
+}
+
 func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 	for _, dark := range []bool{false, true} {
 		for step := onboardingStepDevice; step <= onboardingStepPermissions; step++ {
@@ -37,6 +60,7 @@ func TestOnboardingPagesFitTheMinimumWindow(t *testing.T) {
 				}
 				primeOnboardingTestSymbols(s, s.onboarding.permissionSnapshot.rows)
 				v := ui.NewTester(s.onboardingView, windowMinWidth, windowMinHeight)
+				v.SetTitleBar(ui.TitleBar{Height: 56})
 				v.SetDark(dark)
 				heading, ok := v.Find(onboardingStepHeading(step))
 				if !ok || math.Abs(float64(heading.X+heading.W/2-450)) > 1 {

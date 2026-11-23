@@ -59,7 +59,7 @@ func (s *shell) onboardingCompletionView(c *ui.Context, a appearance) {
 	windowWidth, _ := c.Size()
 	width := min(windowWidth-2*onboardingInsetX, onboardingContentWidth)
 	ui.Column(c).Fill().Background(a.theme.Background).Padding(20, onboardingInsetX, 24, onboardingInsetX).Children(func() {
-		ui.Box(c).FillWidth().Height(28).Shrink(0).DragWindow()
+		ui.Box(c).FillWidth().Height(onboardingDragFallbackHeight).Shrink(0)
 		ui.Column(c).FillWidth().Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Column(c).Width(width).AlignItems(ui.Center).Children(func() {
 				s.onboardingCompletionArtwork(c, a)
@@ -86,6 +86,7 @@ func (s *shell) onboardingCompletionView(c *ui.Context, a appearance) {
 				}
 				ui.Box(c).Height(onboardingActionsTop).Shrink(0)
 				if s.onboardingPrimaryButton(c, a, "开始使用 "+mygo.App.Name(), false).Clicked() {
+					s.startOnboardingRemote()
 					s.finishOnboarding()
 				}
 				ui.Box(c).Height(onboardingWelcomeActionsGap).Shrink(0)

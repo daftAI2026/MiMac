@@ -71,3 +71,70 @@ func TestOnboardingCompletionUsesCurrentMappingsAndFits(t *testing.T) {
 		}
 	}
 }
+
+func TestOnboardingHandoffStartsSelectedRemote(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		step       onboardingStep
+		button     string
+		connected  bool
+		denied     bool
+		wantActive bool
+	}{
+		{"complete-connected", onboardingStepCompletion, "开始使用 " + mygo.App.Name(), true, false, true},
+		{"complete-offline", onboardingStepCompletion, "开始使用 " + mygo.App.Name(), false, false, true},
+		{"complete-without-input-access", onboardingStepCompletion, "开始使用 " + mygo.App.Name(), false, true, false},
+		{"skip", onboardingStepWelcome, "稍后设置", true, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, factory, _, _ := newPowerPermissionRecoveryShell(t)
+			factory.connectAt[1] = test.connected
+			if test.denied {
+				factory.failAt[1] = xiaomi.ErrInputMonitoringRequired
+			}
+			s.onboarding.step = test.step
+			s.navigationSymbols = make(map[symbolKey]*ui.Bitmap)
+			primeOnboardingTestSymbols(s, nil)
+			view := ui.NewTester(s.onboardingView, 900, 660)
+			if factory.starts != 0 {
+				t.Fatal("showing the page started the remote")
+			}
+			if err := view.Click(test.button); err != nil {
+				t.Fatal(err)
+			}
+			if s.remoteEnabled() != test.wantActive || s.deviceNeedsPermission != test.denied {
+				t.Fatalf("active=%t needs input access=%t error=%v", s.remoteEnabled(), s.deviceNeedsPermission, s.remoteState.err)
+			}
+			if test.wantActive {
+				if err := view.Click(test.button); err != nil {
+					t.Fatal(err)
+				}
+				if !s.remoteEnabled() || factory.starts != 1 || s.remoteHasReservation() != test.connected {
+					t.Fatalf("repeated completion: active=%t starts=%d reserved=%t", s.remoteEnabled(), factory.starts, s.remoteHasReservation())
+				}
+				if !test.connected && s.remoteLabel() != "等待遥控器" {
+					t.Fatalf("offline remote status = %q", s.remoteLabel())
+				}
+			} else if test.step == onboardingStepWelcome && factory.starts != 0 {
+				t.Fatal("skipping setup started the remote")
+			}
+		})
+	}
+}
+
+func TestOnboardingInputCheckKeepsExplicitPermissionRequestAvailable(t *testing.T) {
+	s := &shell{}
+	var silent []bool
+	if err := s.setupPluginsWith(func(func(xiaomi.MonitorEvent)) (hidMonitor, error) {
+		silent = append(silent, s.remoteState.suppressInputPrompt)
+		return nil, xiaomi.ErrInputMonitoringRequired
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.plugins.Close() })
+	s.startOnboardingRemote()
+	s.toggleRemote()
+	if len(silent) != 2 || !silent[0] || silent[1] || s.remoteState.suppressInputPrompt {
+		t.Fatalf("input monitor prompt suppression on completion and explicit retry = %v", silent)
+	}
+}

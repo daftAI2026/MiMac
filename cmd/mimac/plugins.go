@@ -29,7 +29,7 @@ func (s *shell) setupPlugins() error {
 	s.remoteState.postMain = mygo.RunOnMain
 	return s.setupPluginsWith(func(onEvent func(xiaomi.MonitorEvent)) (hidMonitor, error) {
 		start := xiaomi.StartMonitor
-		if s.powerState.resuming {
+		if s.remoteState.suppressInputPrompt {
 			start = xiaomi.StartMonitorWithoutPrompt
 		}
 		monitor, err := start(onEvent)
@@ -38,6 +38,14 @@ func (s *shell) setupPlugins() error {
 		}
 		return monitor, nil
 	})
+}
+
+// The runtime starts input dependencies synchronously on the host thread.
+func (s *shell) enableInputPlugin(id string, requestPermission bool) error {
+	previous := s.remoteState.suppressInputPrompt
+	s.remoteState.suppressInputPrompt = !requestPermission
+	defer func() { s.remoteState.suppressInputPrompt = previous }()
+	return s.plugins.Enable(id)
 }
 
 func (s *shell) setupPluginsWith(start startHIDMonitor) error {

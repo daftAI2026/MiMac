@@ -45,6 +45,7 @@ type remoteState struct {
 	reserveInFlight       bool
 	cleanupInFlight       bool
 	stopPending           bool
+	suppressInputPrompt   bool
 	reportRecovery        bool
 	err                   error
 }
@@ -402,7 +403,7 @@ func (s *shell) enableRemote(requestPermission bool) {
 		// leaves remote mappings available; voice actions retain their live gate.
 		_ = s.ensureSelectedVoiceInputSource()
 	}
-	if err := s.plugins.Enable(remotePlugin); err != nil {
+	if err := s.enableInputPlugin(remotePlugin, requestPermission); err != nil {
 		s.remoteState.err = err
 		if errors.Is(err, xiaomi.ErrInputMonitoringRequired) {
 			s.deviceNeedsPermission = true
