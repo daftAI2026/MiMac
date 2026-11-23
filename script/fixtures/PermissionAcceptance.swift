@@ -5,8 +5,7 @@ import Security
 let settingsID = "com.apple.systempreferences"
 let bluetoothRequestID = "com.apple.UserNotificationCenter"
 let bluetoothRequestPath = "/System/Library/CoreServices/UserNotificationCenter.app"
-let bluetoothPermissionNames = ["Bluetooth", "蓝牙", "藍牙"]
-let bluetoothAllowLabels = ["Allow", "允许"]
+let bluetoothAllowLabels = ["Allow"]
 let inputPage = ["Input Monitoring", "输入监控"]
 let controlPage = ["Device Control and Data Access", "Accessibility", "设备控制和数据访问", "辅助功能"]
 let restartTitles = ["Quit & Reopen", "退出并重新打开"]
@@ -360,10 +359,10 @@ func appleTrustedBluetoothRequestApp(_ app: NSRunningApplication) -> (Bool, Stri
     return (true, "Apple_signed_exact_system_bundle")
 }
 
-func bluetoothPromptText(_ root: AXUIElement) -> String {
+func bluetoothPromptLines(_ root: AXUIElement) -> [String] {
     elements([root]).flatMap { element in
         ["AXTitle", "AXValue", "AXDescription", "AXHelp"].map { property(element, $0) }
-    }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }.filter { !$0.isEmpty }
 }
 
 func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [String: Any] {
@@ -382,13 +381,12 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
     guard isTrusted else { stop("the system Bluetooth request owner failed its Apple identity check: \(trustResult)") }
     let requestPID = requestApp.processIdentifier
     let requestWindows = windows(requestPID).filter { property($0, "AXRole") == "AXWindow" }
+    let expectedPromptLine = "Allow “\(name)” to use Bluetooth?"
     let candidates = requestWindows.compactMap { window -> (AXUIElement, String)? in
-        let text = bluetoothPromptText(window)
-        guard text.localizedCaseInsensitiveContains(name),
-              bluetoothPermissionNames.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
+        guard let matchedLine = bluetoothPromptLines(window).first(where: { $0 == expectedPromptLine }) else {
             return nil
         }
-        return (window, text)
+        return (window, matchedLine)
     }
     if candidates.isEmpty {
         if frontPID == requestPID || !requestWindows.isEmpty {
@@ -403,7 +401,7 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
                 "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
                 "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true]
     }
-    guard candidates.count == 1, let (window, promptText) = candidates.first else {
+    guard candidates.count == 1, let (window, matchedPromptLine) = candidates.first else {
         stop("more than one system window matches this app's Bluetooth permission text")
     }
     guard frontPID == requestPID else {
@@ -417,7 +415,7 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
             .contains(where: { bluetoothAllowLabels.contains($0) })
     }
     guard allowButtons.count == 1, let allowButton = allowButtons.first else {
-        stop("the exact Bluetooth permission request does not expose one enabled Allow / 允许 button")
+        stop("the exact Bluetooth permission request does not expose one enabled Allow button")
     }
     let buttonLabel = [property(allowButton, "AXTitle"), property(allowButton, "AXDescription")]
         .first(where: { bluetoothAllowLabels.contains($0) }) ?? ""
@@ -428,7 +426,7 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
         "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true,
         "system_process_trust_result": trustResult, "frontmost_bundle_id": front?.bundleIdentifier ?? "",
         "request_window_title": property(window, "AXTitle"),
-        "request_text": promptText, "bluetooth_text_matched": true,
+        "matched_prompt_line": matchedPromptLine, "exact_prompt_line_matched": true,
         "requested_app_name_matched": true, "allow_button_label": buttonLabel,
         "allow_button_count": allowButtons.count,
     ]
@@ -445,7 +443,8 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
         "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
         "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true,
         "system_process_trust_result": trustResult, "request_window_title": property(window, "AXTitle"),
-        "bluetooth_text_matched": true, "requested_app_name_matched": true,
+        "matched_prompt_line": matchedPromptLine,
+        "exact_prompt_line_matched": true, "requested_app_name_matched": true,
         "button_label": buttonLabel, "allow_button_count": allowButtons.count,
         "ax_press_started_at": startedAt,
         "ax_press_completed_at": completedAt,

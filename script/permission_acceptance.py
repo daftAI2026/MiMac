@@ -68,6 +68,11 @@ def read_json(path):
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
+def bluetooth_prompt_matches(lines, app_name):
+    expected = f"Allow “{app_name}” to use Bluetooth?"
+    return isinstance(lines, (list, tuple)) and expected in lines
+
+
 class Acceptance:
     def __init__(self, args):
         self.bundle = args.bundle.resolve(strict=True)
@@ -1132,10 +1137,11 @@ class Acceptance:
                 action.get("system_process_trusted") is not True or
                 action.get("system_bundle_id") != BLUETOOTH_REQUEST_BUNDLE or
                 action.get("system_bundle_path") != BLUETOOTH_REQUEST_PATH or
-                action.get("bluetooth_text_matched") is not True or
+                not bluetooth_prompt_matches([action.get("matched_prompt_line")], self.name) or
+                action.get("exact_prompt_line_matched") is not True or
                 action.get("requested_app_name_matched") is not True or
                 action.get("allow_button_count") != 1 or
-                action.get("button_label") not in ("Allow", "允许")):
+                action.get("button_label") != "Allow"):
                 raise RuntimeError("the native Bluetooth Allow action did not prove the exact target and AX button")
             self.record("bluetooth_system_allow_action", {"scope": scope, **action})
         else:
@@ -1195,6 +1201,9 @@ class Acceptance:
                 raise RuntimeError("the Bluetooth authorization request changed the verified Dev process")
             request = capture(self.driver, "inspect-bluetooth-request", self.bundle, str(pid))
             if request.get("status") == "ready" and target["state"] == "pending" and request_expected:
+                if (request.get("exact_prompt_line_matched") is not True or
+                    not bluetooth_prompt_matches([request.get("matched_prompt_line")], self.name)):
+                    raise RuntimeError("the system request title is not the exact Bluetooth prompt for this app")
                 return {"kind": "request", "request": request, "target": target}
             if request.get("status") == "absent" and target["state"] == "granted":
                 return {"kind": "granted", "target": target}

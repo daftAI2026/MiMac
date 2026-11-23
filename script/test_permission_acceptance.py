@@ -23,6 +23,7 @@ from permission_acceptance import (
     ordinary_permission_counts,
     first_use_permission_counts,
     bluetooth_permission_target,
+    bluetooth_prompt_matches,
     cancel_reentry_permission_counts,
     permission_rows_unchanged,
     non_target_permission_rows_unchanged,
@@ -1644,6 +1645,20 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         nodes.append(dict(card_row))
         self.assertIsNone(bluetooth_permission_target(nodes, self.name, "ordinary-general-full"))
 
+    def test_prompt_match_requires_the_complete_english_title_line_and_exact_app_name(self):
+        exact = "Allow “MiMac Dev” to use Bluetooth?"
+        self.assertTrue(bluetooth_prompt_matches([exact], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["Allow “MiMac Dev Test” to use Bluetooth?"], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["Allow “MiMac Developer” to use Bluetooth?"], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["Allow “MiMac Dev” to use Microphone?"], self.name))
+        self.assertFalse(bluetooth_prompt_matches([
+            "Allow “MiMac Dev” to use Microphone?",
+            "Bluetooth access is used to connect to the remote.",
+        ], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["Allow ‘MiMac Dev’ to use Bluetooth?"], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["Allow “MiMac Dev” to access Bluetooth"], self.name))
+        self.assertFalse(bluetooth_prompt_matches(["允许“MiMac Dev”使用蓝牙？"], self.name))
+
     def test_two_list_scope_still_accepts_bluetooth_pending_without_handling_it(self):
         nodes = ordinary_permission_nodes(
             input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True,
@@ -1688,7 +1703,8 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         request = {
             "status": "ready", "target_app_pid": 101, "target_bundle_id": "dev.mimac.app.dev",
             "requested_app": self.name, "system_process_trusted": True,
-            "system_bundle_id": "com.apple.UserNotificationCenter", "bluetooth_text_matched": True,
+            "system_bundle_id": "com.apple.UserNotificationCenter", "exact_prompt_line_matched": True,
+            "matched_prompt_line": "Allow “MiMac Dev” to use Bluetooth?",
         }
         instance = self.acceptance("runner", nodes)
         row_presses = []
@@ -1707,8 +1723,9 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
             "target_bundle_path": str(instance.bundle), "system_process_trusted": True,
             "system_bundle_id": "com.apple.UserNotificationCenter",
             "system_bundle_path": "/System/Library/CoreServices/UserNotificationCenter.app",
-            "bluetooth_text_matched": True, "requested_app_name_matched": True,
+            "exact_prompt_line_matched": True, "requested_app_name_matched": True,
             "allow_button_count": 1,
+            "matched_prompt_line": "Allow “MiMac Dev” to use Bluetooth?",
         }
         with patch("permission_acceptance.capture", side_effect=({"status": "absent"}, action)) as native:
             instance.ensure_bluetooth_permission(101, scope="ordinary-general-full")
@@ -1731,7 +1748,8 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         request = {
             "status": "ready", "target_app_pid": 101, "target_bundle_id": "dev.mimac.app.dev",
             "requested_app": self.name, "system_process_trusted": True,
-            "system_bundle_id": "com.apple.UserNotificationCenter", "bluetooth_text_matched": True,
+            "system_bundle_id": "com.apple.UserNotificationCenter", "exact_prompt_line_matched": True,
+            "matched_prompt_line": "Allow “MiMac Dev” to use Bluetooth?",
         }
         instance = self.acceptance("user", nodes)
         instance.press_permission_row = lambda *_args: {"ax_press_started_at": 1.0, "ax_press_completed_at": 1.1}
