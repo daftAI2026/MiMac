@@ -101,6 +101,33 @@ class ReleaseVersionTests(unittest.TestCase):
             self.assertIn("mode=plan-only\n", output.read_text())
             self.assertIn("release_identity=v0.2026.11.20.08.17.stable_01\n", output.read_text())
 
+    def test_stable_plan_orders_legacy_date_records_from_release_api_before_new_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "releases.json"
+            history.write_text(json.dumps([
+                [{"tag_name": "v2026.11.20", "draft": False}],
+                [
+                    {"tag_name": "v2026.11.20.2", "draft": True},
+                    {"tag_name": "v2026.11.20.stable_09", "draft": False},
+                ],
+            ]))
+            output = root / "stable-plan.txt"
+            missing_config = root / "mygo.json"
+            sha = "0" * 40
+            args = ["--train", "2026.11.20.08.17", "--source-revision", sha,
+                    "--existing-releases", str(history), "--config", str(missing_config),
+                    "--output", str(output), "--stable-revision", "00"]
+            with patch("release_version.subprocess.run", return_value=SimpleNamespace(stdout="")), \
+                 patch("release_version.subprocess.check_output",
+                       side_effect=lambda command, **_: "" if command[1] == "status" else sha):
+                main(args)
+
+            self.assertFalse(missing_config.exists())
+            plan = output.read_text()
+            self.assertIn("mode=plan-only\n", plan)
+            self.assertIn("release_identity=v0.2026.11.20.08.17.stable_00\n", plan)
+
     def test_preview_uses_one_release_identity_and_same_numeric_version(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
