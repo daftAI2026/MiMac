@@ -223,7 +223,8 @@ def prepare(args):
             raise RuntimeError("fixed Dev cannot be combined with an installed Beta or source-build reuse")
         if beta_manifest_path and (backend is not None or args.reuse_build or args.previous_run):
             raise RuntimeError("installed Beta cannot use a backend override or source-build reuse")
-        if not beta_manifest_path and tool in TOOL_INPUT_SOURCES and backend != "mimac-compat":
+        if (not beta_manifest_path and tool in TOOL_INPUT_SOURCES and backend != "mimac-compat"
+                and not (dev_receipt and backend is None)):
             raise RuntimeError("input-method route requires explicit --audio-backend mimac-compat")
         recovery = user_data / "voice-mapping-recovery.plist"
         if recovery.exists():
@@ -257,7 +258,7 @@ def prepare(args):
         stage = "installed_beta_launch" if beta_manifest_path else "build"
         with (directory / "build.log").open("w") as log:
             app_arguments = ["--show-settings", "--host-report", str(directory / "host.json"), "--voice-overlay-report", str(directory / "voice.json")]
-            if not beta_manifest_path:
+            if not beta_manifest_path and (not dev_receipt or backend is not None):
                 app_arguments += ["--audio-backend", backend or ""]
             if args.source_check:
                 app_arguments += ["--source-check-report", str(directory / "source-check.json")]

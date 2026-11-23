@@ -1,9 +1,11 @@
 flowchart TD
     entry["live_acceptance.py prepare"] --> plan["记录本轮预设句子与工具；不启动收音"]
-    plan --> fixed{"选择日用源码或安装版身份"}
+    plan --> fixed{"选择本轮验证的应用身份"}
     fixed -->|源码| build["正式构建 / 按前轮 SHA 复用"]
     fixed -->|安装版| installed["核对发布清单与签名，沿用日用配置启动"]
     build --> identity["身份、六库、PID 与映射 inode"]
+    fixed -->|冻结 Dev| dev["核验固定包，交接遥控器，按正常配置选用已安装音频组件"]
+    dev --> identity
     installed --> identity
     identity --> native["冻结诊断源码，构建独立夹具"]
     native --> route["在按键映射启用遥控器并核对当次连接"]
