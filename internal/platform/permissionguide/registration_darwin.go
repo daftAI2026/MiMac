@@ -187,6 +187,39 @@ type registrationLogWatcher struct {
 	evidence  chan RegistrationEvidence
 	done      chan struct{}
 	readyOnce sync.Once
+	lastStale RegistrationEvidence
+}
+
+func (w *registrationLogWatcher) observeRegistrationEvidence(proof *DragRegistrationProof, event RegistrationEvidence) bool {
+	if event.Mutated || event.CurrentWrite {
+		proof.invalidated.Store(true)
+		return false
+	}
+	if !event.Stale {
+		return true
+	}
+
+	// A single failed code-requirement check can be repeated by read-only TCC
+	// probes. Keep the newest timestamp for that exact service/hash signature
+	// in one slot; a different stale identity means the stream is ambiguous.
+	// Only the stream reader writes lastStale or publishes to evidence.
+	if w.lastStale.Stale {
+		if !strings.EqualFold(w.lastStale.StaleCodeHash, event.StaleCodeHash) ||
+			!strings.EqualFold(w.lastStale.CurrentCodeHash, event.CurrentCodeHash) {
+			proof.invalidated.Store(true)
+			return false
+		}
+		if !event.StaleAt.After(w.lastStale.StaleAt) {
+			return true
+		}
+	}
+	w.lastStale = event
+	select {
+	case <-w.evidence:
+	default:
+	}
+	w.evidence <- event // The single publisher has just made room.
+	return true
 }
 
 func (w *registrationLogWatcher) signalReady(err error) {
@@ -237,7 +270,7 @@ func startRegistrationChangeWatcher(proof *DragRegistrationProof, currentHash st
 		return nil
 	}
 	watcher := &registrationLogWatcher{
-		ready: make(chan error, 1), evidence: make(chan RegistrationEvidence, 32), done: make(chan struct{}),
+		ready: make(chan error, 1), evidence: make(chan RegistrationEvidence, 1), done: make(chan struct{}),
 	}
 	proof.watcherCancel = cancel
 	go func() {
@@ -255,20 +288,9 @@ func startRegistrationChangeWatcher(proof *DragRegistrationProof, currentHash st
 				continue
 			}
 			event := registrationEvidenceFromStreamEvent(message, proof.bundleID, proof.service, currentHash, at)
-			if event.Mutated || event.CurrentWrite {
-				proof.invalidated.Store(true)
+			if !watcher.observeRegistrationEvidence(proof, event) {
 				cancel()
-				break
-			}
-			if event.Stale {
-				select {
-				case watcher.evidence <- event:
-				default:
-					// An incomplete stream cannot prove the registration is still stale.
-					proof.invalidated.Store(true)
-					cancel()
-					break scan
-				}
+				break scan
 			}
 		}
 		scanErr := scanner.Err()
