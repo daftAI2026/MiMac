@@ -17,12 +17,15 @@ flowchart TD
     match --> frame
     idle --> frame
 
-    preference["通用设置：MiMac 语音球 / 跟随语音工具"] --> enabled{"语音提示插件已启用？"}
+    preference["通用设置：MiMac 语音球 / 点阵语音条 / 跟随语音工具"] --> enabled{"语音提示插件已启用？"}
     enabled -.-> status["插件页显示状态，设置入口共用通用设置"]
     frame --> enabled
     enabled -->|否| hidden["关闭 MiMac 面板和频谱分析"]
     hidden --> toolDisplay["语音工具自行决定是否显示原生提示"]
-    enabled -->|是| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
+    enabled -->|语音球| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
+    enabled -->|点阵语音条| dots["鼠标穿透、不抢键盘；只读取当前会话 RMS，无频谱计算"]
+    dots --> motion["收音随音量；收尾变窄；确认交付或错误才显示终态"]
+    motion --> rest["退场后隐藏并停止请求帧；新会话重置点阵"]
     panel --> gate{"arm64 + macOS26公开API下限？"}
     gate -->|是| capability{"原生符号、布局与witness兼容？"}
     capability -->|是| renderer["siriglass：显示倍率×5一次 → 原生 audioMeters 数组入口"]

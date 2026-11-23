@@ -12,10 +12,12 @@ type Layout struct {
 
 // State is the host's source of truth. Appearance is system, light, or dark.
 type State struct {
-	Login        bool
-	Dock         bool
-	VoiceOverlay bool
-	Appearance   string
+	Login bool
+	Dock  bool
+	// VoicePresentation is the selection index exposed by the native Picker:
+	// 0 MiMac sphere, 1 dot bar, 2 follow the selected voice tool.
+	VoicePresentation int
+	Appearance        string
 	// Dark is the effective theme state and does not select the Appearance segment.
 	Dark bool
 	// TextSize is -1 for small, 0 for standard, and 1 for large.
@@ -40,7 +42,7 @@ type PermissionRow struct {
 type Callbacks struct {
 	Login             func(bool)
 	Dock              func(bool)
-	VoiceOverlay      func(bool)
+	VoicePresentation func(int)
 	Appearance        func(string)
 	TextSize          func(int)
 	ManagePermissions func(int32)

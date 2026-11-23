@@ -11,14 +11,23 @@ import (
 	"github.com/egoist/mygo"
 )
 
-const preferencesVersion = 1
+const preferencesVersion = 2
+const legacyPreferencesVersion = 1
+
+type voicePresentationMode string
+
+const (
+	voicePresentationMiMacSphere voicePresentationMode = "mimac-sphere"
+	voicePresentationDotBar      voicePresentationMode = "dot-bar"
+	voicePresentationFollowTool  voicePresentationMode = "follow-tool"
+)
 
 type hostPreferences struct {
-	Version          int              `json:"version"`
-	ShowInDock       bool             `json:"show_in_dock"`
-	ShowVoiceOverlay bool             `json:"show_voice_overlay"`
-	Appearance       mygo.ThemeSource `json:"appearance"`
-	TextSize         int              `json:"text_size,omitempty"`
+	Version           int                   `json:"version"`
+	ShowInDock        bool                  `json:"show_in_dock"`
+	VoicePresentation voicePresentationMode `json:"voice_presentation"`
+	Appearance        mygo.ThemeSource      `json:"appearance"`
+	TextSize          int                   `json:"text_size,omitempty"`
 }
 
 type preferencesState struct {
@@ -32,15 +41,19 @@ type preferencesState struct {
 }
 
 type preferencesDocument struct {
-	Version          int               `json:"version"`
-	ShowInDock       *bool             `json:"show_in_dock"`
-	ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
-	Appearance       *mygo.ThemeSource `json:"appearance"`
-	TextSize         int               `json:"text_size,omitempty"`
+	Version           int                    `json:"version"`
+	ShowInDock        *bool                  `json:"show_in_dock"`
+	ShowVoiceOverlay  *bool                  `json:"show_voice_overlay"`
+	VoicePresentation *voicePresentationMode `json:"voice_presentation"`
+	Appearance        *mygo.ThemeSource      `json:"appearance"`
+	TextSize          int                    `json:"text_size,omitempty"`
 }
 
 func defaultHostPreferences() hostPreferences {
-	return hostPreferences{Version: preferencesVersion, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}
+	return hostPreferences{
+		Version: preferencesVersion, VoicePresentation: voicePresentationMiMacSphere,
+		Appearance: mygo.ThemeSystem,
+	}
 }
 
 func hostPreferencesPath() (string, error) {
@@ -82,26 +95,48 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	if err := d.Decode(&extra); err != io.EOF {
 		return hostPreferences{}, errors.New("trailing preferences data")
 	}
-	if doc.Version != preferencesVersion || doc.ShowInDock == nil {
+	if doc.ShowInDock == nil {
 		return hostPreferences{}, errors.New("unsupported preferences file")
 	}
 	appearance := mygo.ThemeSystem
 	if doc.Appearance != nil {
 		appearance = *doc.Appearance
 	}
-	showVoiceOverlay := true
-	if doc.ShowVoiceOverlay != nil {
-		showVoiceOverlay = *doc.ShowVoiceOverlay
+	voicePresentation := voicePresentationMiMacSphere
+	switch doc.Version {
+	case legacyPreferencesVersion:
+		if doc.VoicePresentation != nil {
+			return hostPreferences{}, errors.New("unsupported preferences file")
+		}
+		if doc.ShowVoiceOverlay != nil && !*doc.ShowVoiceOverlay {
+			voicePresentation = voicePresentationFollowTool
+		}
+	case preferencesVersion:
+		if doc.VoicePresentation == nil || doc.ShowVoiceOverlay != nil {
+			return hostPreferences{}, errors.New("unsupported preferences file")
+		}
+		voicePresentation = *doc.VoicePresentation
+	default:
+		return hostPreferences{}, errors.New("unsupported preferences file")
+	}
+	if !validVoicePresentationMode(voicePresentation) {
+		return hostPreferences{}, errors.New("unsupported voice presentation preference")
 	}
 	if !validAppearance(appearance) || !validTextSize(doc.TextSize) {
 		return hostPreferences{}, errors.New("unsupported appearance preference")
 	}
-	return hostPreferences{Version: preferencesVersion, ShowInDock: *doc.ShowInDock, ShowVoiceOverlay: showVoiceOverlay, Appearance: appearance, TextSize: doc.TextSize}, nil
+	return hostPreferences{
+		Version: preferencesVersion, ShowInDock: *doc.ShowInDock,
+		VoicePresentation: voicePresentation, Appearance: appearance, TextSize: doc.TextSize,
+	}, nil
 }
 
 func saveHostPreferences(path string, value hostPreferences) error {
 	if value.Version != preferencesVersion {
 		return errors.New("unsupported preferences version")
+	}
+	if !validVoicePresentationMode(value.VoicePresentation) {
+		return errors.New("unsupported voice presentation preference")
 	}
 	if !validAppearance(value.Appearance) || !validTextSize(value.TextSize) {
 		return errors.New("unsupported appearance preference")
@@ -143,6 +178,41 @@ func validAppearance(source mygo.ThemeSource) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validVoicePresentationMode(mode voicePresentationMode) bool {
+	switch mode {
+	case voicePresentationMiMacSphere, voicePresentationDotBar, voicePresentationFollowTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func voicePresentationIndex(mode voicePresentationMode) (int, bool) {
+	switch mode {
+	case voicePresentationMiMacSphere:
+		return 0, true
+	case voicePresentationDotBar:
+		return 1, true
+	case voicePresentationFollowTool:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func voicePresentationModeForIndex(index int) (voicePresentationMode, bool) {
+	switch index {
+	case 0:
+		return voicePresentationMiMacSphere, true
+	case 1:
+		return voicePresentationDotBar, true
+	case 2:
+		return voicePresentationFollowTool, true
+	default:
+		return "", false
 	}
 }
 
@@ -241,11 +311,15 @@ func (s *shell) applyAppearancePreference(source mygo.ThemeSource) error {
 	return nil
 }
 
-// applyVoiceOverlayPreference persists before changing the optional display.
+// applyVoicePresentationPreference persists before changing the display.
 // A failed save leaves both the stored preference and visible state untouched.
-func (s *shell) applyVoiceOverlayPreference(enabled bool) error {
+func (s *shell) applyVoicePresentationPreference(mode voicePresentationMode) error {
+	if !validVoicePresentationMode(mode) {
+		s.preferencesState.errorText = "语音提示选项无效"
+		return errors.New("unsupported voice presentation preference")
+	}
 	next := s.preferencesState.value
-	next.ShowVoiceOverlay = enabled
+	next.VoicePresentation = mode
 	if err := s.savePreferences(next); err != nil {
 		return err
 	}

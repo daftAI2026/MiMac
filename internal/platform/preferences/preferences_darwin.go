@@ -269,8 +269,8 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 				c.callbacks.TextSize(int(value))
 			}
 		case 5:
-			if callback, ok := boolCallback(c.callbacks.VoiceOverlay, value); ok {
-				callback()
+			if value >= 0 && value <= 2 && c.callbacks.VoicePresentation != nil {
+				c.callbacks.VoicePresentation(int(value))
 			}
 		case 6:
 			if c.callbacks.ManagePermissions != nil {

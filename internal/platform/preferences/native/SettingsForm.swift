@@ -13,7 +13,7 @@ private struct PermissionRow: Decodable {
 private struct PreferencesState: Decodable {
     var Login = false
     var Dock = false
-    var VoiceOverlay = true
+    var VoicePresentation = 0
     var Appearance = "system"
     var Dark = false
     var TextSize = 0
@@ -22,6 +22,27 @@ private struct PreferencesState: Decodable {
     var Permissions: [PermissionRow] = []
     var Disabled = true
     var Error = ""
+}
+
+private enum VoicePresentationChoice: Int, CaseIterable {
+    case miMacSphere = 0
+    case dotBar = 1
+    case followVoiceTool = 2
+
+    var title: String {
+        switch self {
+        case .miMacSphere: return "MiMac 语音球"
+        case .dotBar: return "点阵语音条"
+        case .followVoiceTool: return "跟随语音工具"
+        }
+    }
+}
+
+@discardableResult
+private func emitVoicePresentationSelection(_ index: Int, changed: (Int32, Int32) -> Void) -> Bool {
+    guard VoicePresentationChoice(rawValue: index) != nil else { return false }
+    changed(5, Int32(index))
+    return true
 }
 
 private typealias PreferenceCallback = @convention(c) (UInt64, Int32, Int32) -> Void
@@ -43,6 +64,10 @@ private struct SettingsForm: View {
         Binding(get: { state.TextSize }, set: { changed(4, Int32($0)) })
     }
 
+    private var voicePresentation: Binding<Int> {
+        Binding(get: { state.VoicePresentation }, set: { emitVoicePresentationSelection($0, changed: changed) })
+    }
+
     var body: some View {
         Form {
             Section {
@@ -51,9 +76,10 @@ private struct SettingsForm: View {
             }
 
             Section {
-                Picker("语音提示", selection: toggle(state.VoiceOverlay, kind: 5)) {
-                    Text("MiMac 语音球").tag(true)
-                    Text("跟随语音工具").tag(false)
+                Picker("语音提示", selection: voicePresentation) {
+                    ForEach(VoicePresentationChoice.allCases, id: \.rawValue) { choice in
+                        Text(choice.title).tag(choice.rawValue)
+                    }
                 }
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("voice-overlay-row")
@@ -165,6 +191,7 @@ private final class PreferencesHost {
               state.BodySize.isFinite, state.BodySize >= 12,
               state.CaptionSize.isFinite, state.CaptionSize >= 12,
               (-1...1).contains(state.TextSize),
+              VoicePresentationChoice(rawValue: state.VoicePresentation) != nil,
               ["system", "light", "dark"].contains(state.Appearance) else { return 1 }
         view.rootView = SettingsForm(state: state, changed: { [weak self] kind, value in
             guard let self, !self.closed else { return }

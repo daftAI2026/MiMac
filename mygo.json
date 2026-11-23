@@ -17,6 +17,7 @@
   "resources": [
     "Assets/Social/NOTICE.md",
     "Assets/Licenses/go-plist.txt",
+    "internal/platform/dotscope/LICENSE.txt",
     "internal/adapters/wetype/assets/wetype-icon-NOTICE.md",
     "internal/adapters/typeless/assets/typeless-icon-NOTICE.md"
   ]

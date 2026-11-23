@@ -18,11 +18,12 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 		errorText = p.loginError
 	}
 	a := appAppearance(mygo.Theme.IsDark(), p.value.TextSize)
+	presentationIndex, _ := voicePresentationIndex(p.value.VoicePresentation)
 	permissions := s.snapshot
 	if s.guideWindow == nil || !s.guideWindow.IsVisible() {
 		permissions = s.readPermissionGuideSnapshot()
 	}
-	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoiceOverlay: p.value.ShowVoiceOverlay, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions)}
+	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoicePresentation: presentationIndex, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions)}
 }
 
 func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.PermissionRow {
@@ -58,8 +59,10 @@ func (s *shell) syncGeneralControls() {
 			s.syncGeneralControls()
 		},
 		Dock: func(enabled bool) { _ = s.applyDockPreference(enabled); s.syncGeneralControls() },
-		VoiceOverlay: func(enabled bool) {
-			_ = s.applyVoiceOverlayPreference(enabled)
+		VoicePresentation: func(index int) {
+			if mode, ok := voicePresentationModeForIndex(index); ok {
+				_ = s.applyVoicePresentationPreference(mode)
+			}
 			s.syncGeneralControls()
 		},
 		Appearance: func(source string) {

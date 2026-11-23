@@ -13,10 +13,10 @@ flowchart LR
     sourceRecovery["source 故障按实际音频会话限次恢复\nCore 空闲且无按键时 retire / close / 重建音频 owner\n仅成功 SourceDrained 后重新开放一次；权限/状态拒绝不自动重试\n不重启 HID、不补发按键"]
     tools["语音工具发现与动作快照"]
     text["辅助功能文本输出适配器"]
-    prefs["show_voice_overlay 持久偏好"]
+    prefs["voice_presentation 持久偏好"]
     measurement["可选 PCM 观测\n通用 audiometer；不改变音频"]
-    projection["Host 语音呈现投影\nCore Snapshot + 当前完整 token 频谱"]
-    panel["MyGo 非激活 Panel\n可见时 30 Hz；鼠标穿透"]
+    projection["Host 语音呈现投影\nCore Snapshot + 当前 token 响度 / 球体频谱"]
+    panel["MyGo 非激活 Panel\n显示时请求帧；鼠标穿透"]
     glass["siriglass 可选材质 renderer\narm64 + macOS26公开API下限 / 当前原生能力检查"]
     fault["显示故障只关闭呈现\nCore 与音频会话继续"]
     future["未来：厂商语音条接管\n完整 Siri 前景与业务语义"]
@@ -42,6 +42,7 @@ flowchart LR
     measurement --> projection
     prefs --> projection
     projection --> panel
+    panel --> dots["点阵语音条：RMS 驱动点场；收起后停止请求帧"]
     panel --> glass
     glass --> fault
     glass -.-> future

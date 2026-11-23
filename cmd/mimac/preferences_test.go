@@ -11,19 +11,19 @@ import (
 	"github.com/egoist/mygo"
 )
 
-func TestReadHostPreferencesMissingDefaultsToHiddenDockAndVoiceOverlay(t *testing.T) {
+func TestReadHostPreferencesMissingDefaultsToHiddenDockAndMiMacSphere(t *testing.T) {
 	got, err := readHostPreferences(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != preferencesVersion || got.ShowInDock || !got.ShowVoiceOverlay || got.Appearance != mygo.ThemeSystem {
-		t.Fatalf("default preferences = %+v, want version %d, hidden Dock, voice overlay enabled, and system appearance", got, preferencesVersion)
+	if got.Version != preferencesVersion || got.ShowInDock || got.VoicePresentation != voicePresentationMiMacSphere || got.Appearance != mygo.ThemeSystem {
+		t.Fatalf("default preferences = %+v, want version %d, hidden Dock, MiMac sphere, and system appearance", got, preferencesVersion)
 	}
 }
 
 func TestSaveAndReadHostPreferencesUsesPrivateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "MiMac", "preferences.json")
-	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeDark}
+	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, VoicePresentation: voicePresentationDotBar, Appearance: mygo.ThemeDark}
 	if err := saveHostPreferences(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestSaveAndReadHostPreferencesUsesPrivateFile(t *testing.T) {
 	}
 }
 
-func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemWithoutMigrationWrite(t *testing.T) {
+func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemAndMiMacSphereWithoutMigrationWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	original := []byte("{\"version\":1,\"show_in_dock\":true}\n")
 	if err := os.WriteFile(path, original, 0600); err != nil {
@@ -53,7 +53,7 @@ func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemWithoutMigrat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}) {
+	if got != (hostPreferences{Version: preferencesVersion, ShowInDock: true, VoicePresentation: voicePresentationMiMacSphere, Appearance: mygo.ThemeSystem}) {
 		t.Fatalf("read legacy preferences = %+v", got)
 	}
 	after, err := os.ReadFile(path)
@@ -85,17 +85,21 @@ func TestMarkFirstRunSettingsShownPersistsWithoutChangingOtherPreferences(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	var previousStrictSchema struct {
-		Version          int               `json:"version"`
-		ShowInDock       *bool             `json:"show_in_dock"`
-		ShowVoiceOverlay *bool             `json:"show_voice_overlay"`
-		Appearance       *mygo.ThemeSource `json:"appearance"`
-		TextSize         int               `json:"text_size,omitempty"`
+	var savedSchema struct {
+		Version           int                   `json:"version"`
+		ShowInDock        *bool                 `json:"show_in_dock"`
+		VoicePresentation voicePresentationMode `json:"voice_presentation"`
+		ShowVoiceOverlay  *bool                 `json:"show_voice_overlay"`
+		Appearance        *mygo.ThemeSource     `json:"appearance"`
+		TextSize          int                   `json:"text_size,omitempty"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&previousStrictSchema); err != nil {
-		t.Fatalf("saved preferences are unreadable by the previous strict v1 schema: %v", err)
+	if err := decoder.Decode(&savedSchema); err != nil {
+		t.Fatalf("saved preferences are unreadable by the current v2 schema: %v", err)
+	}
+	if savedSchema.Version != preferencesVersion || savedSchema.VoicePresentation != voicePresentationMiMacSphere || savedSchema.ShowVoiceOverlay != nil {
+		t.Fatalf("saved preference schema = %+v, want v2 enum with no legacy boolean", savedSchema)
 	}
 }
 
@@ -169,7 +173,7 @@ func TestSaveHostPreferencesRejectsUnknownVersionWithoutReplacingFile(t *testing
 	if err := os.WriteFile(path, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveHostPreferences(path, hostPreferences{Version: preferencesVersion + 1, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}); err == nil {
+	if err := saveHostPreferences(path, hostPreferences{Version: preferencesVersion + 1, ShowInDock: true, VoicePresentation: voicePresentationMiMacSphere, Appearance: mygo.ThemeSystem}); err == nil {
 		t.Fatal("saveHostPreferences accepted an unsupported version")
 	}
 	after, err := os.ReadFile(path)
@@ -178,6 +182,26 @@ func TestSaveHostPreferencesRejectsUnknownVersionWithoutReplacingFile(t *testing
 	}
 	if string(after) != string(original) {
 		t.Fatalf("existing preferences changed: got %q, want %q", after, original)
+	}
+}
+
+func TestSaveHostPreferencesRejectsUnknownVoicePresentationWithoutReplacingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	original := []byte("keep me\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	value := defaultHostPreferences()
+	value.VoicePresentation = "unknown"
+	if err := saveHostPreferences(path, value); err == nil {
+		t.Fatal("saveHostPreferences accepted an unsupported voice presentation")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("invalid replacement changed preferences: got %q, want %q", after, original)
 	}
 }
 
@@ -191,7 +215,7 @@ func TestSaveHostPreferencesRenameFailureLeavesDestinationUntouched(t *testing.T
 	if err := os.WriteFile(sentinel, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveHostPreferences(path, hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeSystem}); err == nil {
+	if err := saveHostPreferences(path, hostPreferences{Version: preferencesVersion, ShowInDock: true, VoicePresentation: voicePresentationMiMacSphere, Appearance: mygo.ThemeSystem}); err == nil {
 		t.Fatal("saveHostPreferences replaced a directory")
 	}
 	after, err := os.ReadFile(sentinel)
@@ -244,7 +268,7 @@ func TestSavePreferencesRetainsIndependentSettingsAcrossChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeLight}
+	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, VoicePresentation: voicePresentationMiMacSphere, Appearance: mygo.ThemeLight}
 	if got != want || s.preferencesState.value != want {
 		t.Fatalf("preferences after independent changes = %+v, in-memory=%+v, want %+v", got, s.preferencesState.value, want)
 	}
@@ -259,7 +283,7 @@ func TestApplyAppearancePreferenceWriteFailureRetainsStoredValue(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "sentinel"), original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, ShowVoiceOverlay: true, Appearance: mygo.ThemeLight}
+	want := hostPreferences{Version: preferencesVersion, ShowInDock: true, VoicePresentation: voicePresentationMiMacSphere, Appearance: mygo.ThemeLight}
 	s := shell{preferencesState: preferencesState{value: want, path: path}}
 	if err := s.applyAppearancePreference(mygo.ThemeDark); err == nil {
 		t.Fatal("applyAppearancePreference succeeded while destination is a directory")
@@ -279,19 +303,18 @@ func TestApplyAppearancePreferenceWriteFailureRetainsStoredValue(t *testing.T) {
 	}
 }
 
-func TestApplyVoiceOverlayPreferenceWriteFailureRetainsStoredValue(t *testing.T) {
+func TestApplyVoicePresentationPreferenceWriteFailureRetainsStoredValue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
 	want := defaultHostPreferences()
-	want.ShowVoiceOverlay = true
 	s := shell{preferencesState: preferencesState{value: want, path: path}}
-	if err := s.applyVoiceOverlayPreference(false); err == nil {
-		t.Fatal("applyVoiceOverlayPreference succeeded while destination is a directory")
+	if err := s.applyVoicePresentationPreference(voicePresentationDotBar); err == nil {
+		t.Fatal("applyVoicePresentationPreference succeeded while destination is a directory")
 	}
 	if s.preferencesState.value != want {
-		t.Fatalf("failed voice overlay save changed stored value: got %+v, want %+v", s.preferencesState.value, want)
+		t.Fatalf("failed voice presentation save changed stored value: got %+v, want %+v", s.preferencesState.value, want)
 	}
 	if s.preferencesState.errorText != "保存失败，设置未更改" {
 		t.Fatalf("user error text = %q", s.preferencesState.errorText)

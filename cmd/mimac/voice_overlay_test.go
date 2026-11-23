@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/platform/dotscope"
 	"mimac.local/mimac/internal/platform/siriglass"
 	"os"
 	"path/filepath"
@@ -140,7 +141,7 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	s.syncVoiceOverlay()
 	runHostTask(t, tasks)
 	token := s.coordinator.core.Snapshot().Session.Token
-	if err := s.applyVoiceOverlayPreference(false); err != nil {
+	if err := s.applyVoicePresentationPreference(voicePresentationFollowTool); err != nil {
 		t.Fatal(err)
 	}
 	if s.voicePresentationActive() || !s.plugins.Active(audioSessionPlugin) ||
@@ -156,21 +157,51 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	if !s.coordinator.core.Snapshot().HasSession || s.coordinator.core.Snapshot().Session.Token != token {
 		t.Fatal("preference replaced the audio session")
 	}
-	if err := s.applyVoiceOverlayPreference(true); err != nil {
+	if err := s.applyVoicePresentationPreference(voicePresentationMiMacSphere); err != nil {
 		t.Fatal(err)
 	}
 	if !s.voicePresentationActive() || opens != 2 || len(views[1].frames) != 1 || views[1].frames[0].Token != token {
 		t.Fatal("re-enable did not render the same live session")
+	}
+	if err := s.applyVoicePresentationPreference(voicePresentationDotBar); err != nil {
+		t.Fatal(err)
+	}
+	if opens != 3 || views[1].closes != 1 || views[2].frames[0].Token != token || s.voiceOverlay.meter.enabled {
+		t.Fatal("dot selection must replace the sphere on the same token without its spectrum analysis")
+	}
+	source.samples <- []int16{16384, -16384}
+	select {
+	case output := <-sink.writes:
+		if len(output) != 2 || output[0] != 16384 || output[1] != -16384 {
+			t.Fatalf("switch altered PCM: %v", output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dot selection interrupted delivery")
+	}
+	now := time.Now()
+	reading := s.voiceOverlayFrameAt(now)
+	if reading.Phase != bridge.PhaseCapturing || reading.Token != token || reading.DB < -6.1 || reading.DB > -5.9 {
+		t.Fatalf("dot input did not read this audio session: %+v", reading)
+	}
+	if stale := s.voiceOverlayFrameAt(now.Add(time.Second)); stale.DB != dotscope.Loudness(0) {
+		t.Fatalf("dot reused stale input: %v", stale.DB)
+	}
+	dot := voiceDotView{model: dotscope.New(), visible: true}
+	for i := 0; i < 45; i++ {
+		dot.advance(now.Add(time.Duration(i)*voiceDotPeriod), reading, false)
+	}
+	if dot.model.Snapshot().Pose.Level <= 0 || dot.model.Snapshot().Pose.Opacity < 0.95 {
+		t.Fatal("dot field did not react to the captured PCM")
 	}
 	badPath := filepath.Join(t.TempDir(), "directory")
 	if err := os.Mkdir(badPath, 0700); err != nil {
 		t.Fatal(err)
 	}
 	s.preferencesState.path = badPath
-	if err := s.applyVoiceOverlayPreference(false); err == nil {
+	if err := s.applyVoicePresentationPreference(voicePresentationFollowTool); err == nil {
 		t.Fatal("write failure was ignored")
 	}
-	if !s.preferencesState.value.ShowVoiceOverlay || views[1].closes != 0 {
+	if s.preferencesState.value.VoicePresentation != voicePresentationDotBar || views[2].closes != 0 {
 		t.Fatal("failed save changed visible state")
 	}
 	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
@@ -251,4 +282,51 @@ func TestVoiceOverlayProjectsCaptureOwnershipWithoutGuessingThinking(t *testing.
 	check(true, false, true)
 	runHostTask(t, tasks)
 	check(false, false, false)
+}
+
+func TestDotViewFinishesOnlyTheSessionThatReported(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	press := beginHostVoice(t, s)
+	runHostTask(t, tasks)
+	token := s.coordinator.core.Snapshot().Session.Token
+	now := time.Now()
+	drain := voiceOverlayFrame{Visible: true, Token: token, Phase: bridge.PhaseDraining}
+	view := voiceDotView{model: dotscope.New(), visible: true}
+	view.advance(now, drain, true)
+	view.finish(bridge.SessionToken{}, true, now)
+	if !view.terminalUntil.IsZero() {
+		t.Fatal("an unrelated completion reached the displayed session")
+	}
+	view.finish(token, false, now)
+	view.advance(now.Add(60*time.Millisecond), voiceOverlayFrame{}, true)
+	if view.stage != dotscope.StageProcessing {
+		t.Fatal("quick delivery skipped the processing transition")
+	}
+	view.advance(now.Add(210*time.Millisecond), voiceOverlayFrame{}, true)
+	if view.stage != dotscope.StageDone {
+		t.Fatal("confirmed delivery did not render completion")
+	}
+	// An error before the first paint must survive the deferred motion setup.
+	view.begin(token)
+	view.finish(token, true, now)
+	view.advance(now.Add(50*time.Millisecond), voiceOverlayFrame{}, true)
+	if view.stage != dotscope.StageFailed {
+		t.Fatal("failure before first paint was lost")
+	}
+	view.begin(token)
+	view.advance(now.Add(time.Second), drain, true)
+	idle := voiceOverlayFrame{}
+	for tick := 0; tick < 120; tick++ {
+		if !view.advance(now.Add(time.Second+time.Duration(tick)*voiceDotPeriod), idle, true) {
+			if view.stage == dotscope.StageDone || view.stage == dotscope.StageFailed {
+				t.Fatal("an ordinary drain reported a transcription result")
+			}
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks)
+			return
+		}
+	}
+	t.Fatal("closing the session never stopped requesting frames")
 }

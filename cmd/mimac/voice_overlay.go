@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/platform/dotscope"
 	"mimac.local/mimac/internal/platform/siriglass"
 	"mimac.local/mimac/internal/pluginrt"
 )
@@ -16,6 +17,7 @@ import (
 type voiceOverlayFrame struct {
 	Visible  bool
 	Token    bridge.SessionToken
+	Phase    bridge.Phase
 	Label    string
 	DB       float32
 	Spectrum siriglass.Spectrum
@@ -33,13 +35,14 @@ type voiceOverlayState struct {
 	view  voiceOverlayView
 	err   error // Optional display failure, never an audio/core failure.
 	meter voiceSpectrumState
+	mode  voicePresentationMode
 }
 
 const voicePresentationPlugin = "voice-presentation"
 
 func (s *shell) voicePresentationManifest() pluginrt.Manifest {
 	return pluginrt.Manifest{ID: voicePresentationPlugin, Start: func() (pluginrt.StopFunc, error) {
-		s.voiceOverlay.meter.setEnabled(s.voiceOverlay.err == nil)
+		s.voiceOverlay.meter.setEnabled(s.voiceOverlay.err == nil && s.voiceOverlay.mode == voicePresentationMiMacSphere)
 		return func() error {
 			s.voiceOverlay.meter.setEnabled(false)
 			return s.releaseVoiceOverlay()
@@ -55,12 +58,26 @@ func (s *shell) applyVoicePresentationSelection() {
 	if s.plugins == nil {
 		return
 	}
-	if s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed && !s.closing {
-		if !s.voicePresentationActive() {
-			s.recordVoiceOverlayError(s.plugins.Enable(voicePresentationPlugin))
+	mode := s.preferencesState.value.VoicePresentation
+	if mode != s.voiceOverlay.mode {
+		// Retire the previous surface before opening the next on the same token.
+		if err := s.releaseVoiceOverlay(); err != nil {
+			s.recordVoiceOverlayError(err)
+			return
 		}
-	} else {
+		s.voiceOverlay.mode = mode
+		s.voiceOverlay.err = nil
+		s.report.VoiceOverlayError = ""
+	}
+	local := mode == voicePresentationMiMacSphere || mode == voicePresentationDotBar
+	if !local || s.preferencesState.loadFailed || s.closing {
 		s.stopVoicePresentation()
+		return
+	}
+	if !s.voicePresentationActive() {
+		s.recordVoiceOverlayError(s.plugins.Enable(voicePresentationPlugin))
+	} else {
+		s.voiceOverlay.meter.setEnabled(s.voiceOverlay.err == nil && mode == voicePresentationMiMacSphere)
 	}
 	s.syncVoiceOverlay()
 }
@@ -73,6 +90,9 @@ func (s *shell) stopVoicePresentation() {
 
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 	frame := voiceOverlayFrame{DB: -60}
+	if s.voiceOverlay.mode == voicePresentationDotBar {
+		frame.DB = dotscope.Loudness(0)
+	}
 	if !s.voicePresentationActive() || s.voiceOverlay.err != nil || s.closing ||
 		s.powerInputBlocked() || s.remoteState.stopPending || s.liveAudio.retiring || s.coordinator == nil ||
 		s.audioSession == nil || s.audioSession.runtime == nil {
@@ -87,19 +107,24 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 		return frame
 	}
 	frame.Visible, frame.Token, frame.Label = true, snapshot.Session.Token, phase.label
+	frame.Phase = snapshot.Session.Phase
 	frame.Input = siriglass.InputState{
 		IsRecording:            snapshot.Session.Phase == bridge.PhaseCapturing,
 		HasVoiceInputOwnership: snapshot.HasSession,
 	}
-	if snapshot.Session.Phase == bridge.PhaseCapturing || snapshot.Session.Phase == bridge.PhaseDraining {
+	if s.voiceOverlay.mode == voicePresentationMiMacSphere && (frame.Phase == bridge.PhaseCapturing || frame.Phase == bridge.PhaseDraining) {
 		frame.Spectrum = s.voiceOverlay.meter.snapshot(frame.Token, now)
 	}
 	level := presentVoiceInput(snapshot, s.coordinator.audio)
-	if level == nil || level.RMS <= 0 || math.IsNaN(float64(level.RMS)) || math.IsInf(float64(level.RMS), 0) ||
+	if level == nil || level.RMS < 0 || math.IsNaN(float64(level.RMS)) || math.IsInf(float64(level.RMS), 0) ||
 		now.Before(level.ObservedAt) || now.Sub(level.ObservedAt) > 100*time.Millisecond {
 		return frame
 	}
-	frame.DB = float32(max(-60, min(0, 20*math.Log10(float64(level.RMS)))))
+	if s.voiceOverlay.mode == voicePresentationDotBar {
+		frame.DB = dotscope.Loudness(level.RMS)
+	} else if level.RMS > 0 {
+		frame.DB = float32(max(-60, min(0, 20*math.Log10(float64(level.RMS)))))
+	}
 	return frame
 }
 
@@ -131,6 +156,15 @@ func (s *shell) syncVoiceOverlay() {
 	}
 	if err := state.view.Update(frame); err != nil {
 		s.failVoiceOverlay(err)
+	}
+}
+
+// Report an explicit outcome only to renderers that can present it.
+func (s *shell) finishVoiceOverlay(token bridge.SessionToken, failed bool) {
+	if view, ok := s.voiceOverlay.view.(interface {
+		finish(bridge.SessionToken, bool, time.Time)
+	}); ok {
+		view.finish(token, failed, time.Now())
 	}
 }
 

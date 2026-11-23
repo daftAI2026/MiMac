@@ -316,12 +316,19 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 	if s.plugins != nil && s.plugins.Active(corePlugin) {
 		coreStatus = "运行中"
 	}
-	displayStatus := "跟随语音工具"
-	if s.preferencesState.value.ShowVoiceOverlay && !s.preferencesState.loadFailed {
-		if s.voicePresentationActive() && s.voiceOverlay.err == nil {
-			displayStatus = "MiMac 语音球"
-		} else {
-			displayStatus = "暂不可用"
+	displayStatus := "暂不可用"
+	if !s.preferencesState.loadFailed {
+		switch s.preferencesState.value.VoicePresentation {
+		case voicePresentationMiMacSphere:
+			if s.voicePresentationActive() && s.voiceOverlay.err == nil {
+				displayStatus = "MiMac 语音球"
+			}
+		case voicePresentationDotBar:
+			if s.voicePresentationActive() && s.voiceOverlay.err == nil {
+				displayStatus = "点阵语音条"
+			}
+		case voicePresentationFollowTool:
+			displayStatus = "跟随语音工具"
 		}
 	}
 	pluginSection("系统插件",

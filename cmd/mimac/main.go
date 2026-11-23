@@ -161,6 +161,9 @@ func (s *shell) ready(ctx context.Context, show, showSpecified bool, smoke time.
 		return
 	}
 	s.voiceOverlay.open = func(read func() voiceOverlayFrame, failed func(error)) (voiceOverlayView, error) {
+		if s.voiceOverlay.mode == voicePresentationDotBar {
+			return newVoiceDotView(read)
+		}
 		view, err := newVoiceOverlayView(read, failed)
 		if native, ok := view.(*mygoVoiceOverlay); ok {
 			native.trace = s.voiceOverlay.meter.trace

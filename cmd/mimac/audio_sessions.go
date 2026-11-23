@@ -243,8 +243,10 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio &&
 					completion.Event == bridge.SourceDrained(before.Session.Token)
 				var deliveryErr error
+				var attemptedText bool
 				if result := completion.Transcript; result != nil {
 					if before.HasSession && before.Session.Token == result.Token && before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
+						attemptedText = result.Text != ""
 						deliveryErr = host.deliver(result.Token, result.Text)
 						if deliveryErr != nil {
 							s.outputNeedsPermission = errors.Is(deliveryErr, textoutput.ErrPermissionDenied)
@@ -262,6 +264,15 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					s.report.AudioError = err.Error()
 				}
 				after := s.coordinator.core.Snapshot()
+				if before.HasSession && !after.HasSession {
+					token := before.Session.Token
+					switch {
+					case completion.Event == bridge.SourceFailed(token):
+						s.finishVoiceOverlay(token, true)
+					case successfulAudioDrain && attemptedText:
+						s.finishVoiceOverlay(token, err != nil)
+					}
+				}
 				if connection := s.liveAudio.connection; connection != nil {
 					// A ready route does not rearm recovery. Only a matching,
 					// successfully drained audio session proves that the rebuilt
