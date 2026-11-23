@@ -121,7 +121,18 @@ This first-use regression covers a system-requested restart after the first gran
 
 If the run stops after recording the second drag, pass `--finish` with the same identity and output directory. It verifies the existing handoff and finishes the same onboarding session. It never repeats a recorded drag. Keep the evidence and use a fresh diagnostic identity if an earlier phase must be run again. For the canonical Dev, pass its verified bundle receipt with `--fixed-dev-receipt` and use a fresh Dev test profile. Complete this run before freezing the Dev source for a user-installed Preview. Keep Preview authorization with the user.
 
-For the frozen Dev, pass its canonical `--fixed-dev-receipt`. Use `--general-permissions` for the ordinary Settings route. Add `--two-list-permissions-only` to exercise both native file drops while tracking Bluetooth separately. A pass in this scope confirms Input Monitoring and Device Control on both the card and the General page.
+For the frozen Dev, pass its canonical `--fixed-dev-receipt`. The full first-use and full `--general-permissions` routes now handle a Bluetooth row when the selected Dev profile exposes one: they press only that row's action, match a request naming the same Dev and Bluetooth under the Apple-signed UserNotificationCenter process, and AX-press its unique Allow / 允许 control. They then require that same Dev PID's permission card to read Bluetooth as authorized. An already-authorized row is read back without a click. `--two-list-permissions-only` remains limited to the two native file drops and records Bluetooth separately; `--existing-input` keeps its existing preconditions.
+
+To run only the Bluetooth stage after another scope, keep the exact Dev permission card open and pass the fixed Dev receipt. This entry reads the current full-first-use or ordinary-General card, then calls the same Bluetooth helper used by both full routes; it does not reopen or reset any permission. The default `runner` actor presses Allow only after all request checks pass. Use `--bluetooth-allow-actor user` when the user performed this turn's Allow; the journal records that declaration separately, and if the row is already authorized the stage performs readback only.
+
+```sh
+python3 script/permission_acceptance.py \
+  --bundle "$dev_app" --sha256 "$frozen_executable_sha" \
+  --fixed-dev-receipt "$dev_receipt" --output "$bluetooth_output" \
+  --interact --bluetooth-only --bluetooth-allow-actor user
+```
+
+The Bluetooth helper refuses unrelated or ambiguous system requests, credential sheets, a changed Dev process, and unreadable or inconsistent permission rows. It never resets TCC or presses another authentication control. Use a new output directory for each invocation.
 
 If another app takes focus before a drop, the runner can reactivate the exact Settings page opened by the permission action once per visit. It checks for authentication or restart UI and verifies the page and foreground again before dragging. For a focus-only readback on an existing visible card and Settings page, use `--focus-check` with a fresh output directory.
 

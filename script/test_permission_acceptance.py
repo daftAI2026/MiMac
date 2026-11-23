@@ -21,6 +21,8 @@ from permission_acceptance import (
     ordinary_general_surface_ready,
     ordinary_permission_surfaces,
     ordinary_permission_counts,
+    first_use_permission_counts,
+    bluetooth_permission_target,
     cancel_reentry_permission_counts,
     permission_rows_unchanged,
     non_target_permission_rows_unchanged,
@@ -1611,6 +1613,140 @@ class CancelReentryTests(unittest.TestCase):
         self.assertFalse(passed["business_grant_verified"])
         self.assertEqual(passed["permission_rows_before"], passed["permission_rows_after_cancel"])
         self.assertEqual(passed["permission_rows_before"], passed["permission_rows_after_reentry"])
+
+
+class BluetoothPermissionAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.name = "MiMac Dev"
+
+    def test_target_reads_only_a_consistent_bluetooth_row_on_both_full_surfaces(self):
+        first_use = first_use_permission_nodes(
+            input_pending=True, bluetooth=True, bluetooth_pending=True,
+        )
+        self.assertEqual(bluetooth_permission_target(first_use, self.name, "full-first-use")["state"], "pending")
+        self.assertEqual(first_use_permission_counts(first_use, self.name)["rows"]["bluetooth"], "pending")
+
+        ordinary = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True,
+        )
+        self.assertEqual(bluetooth_permission_target(ordinary, self.name, "ordinary-general-full")["state"], "pending")
+        self.assertIsNone(bluetooth_permission_target(ordinary, self.name, "two-list-permissions-only"))
+
+        granted = ordinary_permission_nodes(bluetooth=True)
+        self.assertEqual(bluetooth_permission_target(granted, self.name, "ordinary-general-full")["state"], "granted")
+        self.assertEqual(bluetooth_permission_target(
+            ordinary_permission_nodes(), self.name, "ordinary-general-full",
+        )["state"], "not_present")
+
+    def test_duplicate_bluetooth_row_is_rejected(self):
+        nodes = ordinary_permission_nodes(bluetooth=True, bluetooth_pending=True)
+        card_row = next(item for item in nodes if item.get("description") == BLUETOOTH_ROW_TITLES[0])
+        nodes.append(dict(card_row))
+        self.assertIsNone(bluetooth_permission_target(nodes, self.name, "ordinary-general-full"))
+
+    def test_two_list_scope_still_accepts_bluetooth_pending_without_handling_it(self):
+        nodes = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True,
+        )
+        self.assertEqual(general_input_action_target(
+            nodes, self.name, allow_bluetooth_pending=True,
+        ), INPUT_ROW_TITLE)
+        self.assertIsNone(general_input_action_target(nodes, self.name))
+
+    def acceptance(self, actor, nodes):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.identifier = "dev.mimac.app.dev"
+        instance.bundle = Path("/tmp/MiMac Dev.app")
+        instance.driver = Path("/tmp/permission-driver")
+        instance.auth_timeout = 5
+        instance.bluetooth_allow_actor = actor
+        instance.records = []
+        instance.view = lambda _pid: nodes
+        instance.probe = lambda: {"app": 101, "bundle_id": instance.identifier}
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        return instance
+
+    def test_already_granted_is_readback_only_and_records_declared_user_actor(self):
+        instance = self.acceptance("user", ordinary_permission_nodes(bluetooth=True))
+        instance.press_permission_row = lambda *_args: self.fail("granted Bluetooth must not be pressed")
+        with patch("permission_acceptance.capture") as capture_native:
+            instance.ensure_bluetooth_permission(101, scope="ordinary-general-full")
+        capture_native.assert_not_called()
+        readback = next(values for stage, values in instance.records if stage == "bluetooth_permission_readback")
+        self.assertEqual(readback["authorization_actor"], "user")
+        self.assertEqual(readback["actor_source"], "operator_declaration")
+        self.assertEqual(readback["action"], "readback_only")
+
+    def test_pending_request_allow_is_scoped_and_actor_is_recorded(self):
+        nodes = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True,
+        )
+        target = bluetooth_permission_target(nodes, self.name, "ordinary-general-full")
+        granted = ordinary_permission_nodes(bluetooth=True)
+        final_target = bluetooth_permission_target(granted, self.name, "ordinary-general-full")
+        request = {
+            "status": "ready", "target_app_pid": 101, "target_bundle_id": "dev.mimac.app.dev",
+            "requested_app": self.name, "system_process_trusted": True,
+            "system_bundle_id": "com.apple.UserNotificationCenter", "bluetooth_text_matched": True,
+        }
+        instance = self.acceptance("runner", nodes)
+        row_presses = []
+        instance.press_permission_row = lambda pid, title: (row_presses.append((pid, title)) or {
+            "ax_press_started_at": 1.0, "ax_press_completed_at": 1.1,
+        })
+        outcomes = iter((
+            {"kind": "request", "request": request, "target": target},
+            {"kind": "granted", "target": final_target},
+        ))
+        instance.wait_for_bluetooth_state = lambda *_args, **_kwargs: next(outcomes)
+        action = {
+            "performed": "AXPress Allow", "authorization_actor": "acceptance_runner",
+            "requested_app": self.name, "target_bundle_id": instance.identifier,
+            "target_app_pid": 101, "button_label": "Allow",
+            "target_bundle_path": str(instance.bundle), "system_process_trusted": True,
+            "system_bundle_id": "com.apple.UserNotificationCenter",
+            "system_bundle_path": "/System/Library/CoreServices/UserNotificationCenter.app",
+            "bluetooth_text_matched": True, "requested_app_name_matched": True,
+            "allow_button_count": 1,
+        }
+        with patch("permission_acceptance.capture", side_effect=({"status": "absent"}, action)) as native:
+            instance.ensure_bluetooth_permission(101, scope="ordinary-general-full")
+        self.assertEqual(row_presses, [(101, BLUETOOTH_ROW_TITLES[0])])
+        self.assertEqual(native.call_count, 2)
+        saved_action = next(values for stage, values in instance.records if stage == "bluetooth_system_allow_action")
+        self.assertEqual(saved_action["authorization_actor"], "acceptance_runner")
+        readback = next(values for stage, values in instance.records if stage == "bluetooth_permission_readback")
+        self.assertEqual(readback["authorization_actor"], "acceptance_runner")
+        self.assertEqual(readback["action"], "AXPress Allow")
+
+    def test_user_actor_waits_for_same_row_without_automating_allow(self):
+        nodes = ordinary_permission_nodes(
+            input_pending=True, control_pending=True, bluetooth=True, bluetooth_pending=True,
+        )
+        target = bluetooth_permission_target(nodes, self.name, "ordinary-general-full")
+        final_target = bluetooth_permission_target(
+            ordinary_permission_nodes(bluetooth=True), self.name, "ordinary-general-full",
+        )
+        request = {
+            "status": "ready", "target_app_pid": 101, "target_bundle_id": "dev.mimac.app.dev",
+            "requested_app": self.name, "system_process_trusted": True,
+            "system_bundle_id": "com.apple.UserNotificationCenter", "bluetooth_text_matched": True,
+        }
+        instance = self.acceptance("user", nodes)
+        instance.press_permission_row = lambda *_args: {"ax_press_started_at": 1.0, "ax_press_completed_at": 1.1}
+        outcomes = iter((
+            {"kind": "request", "request": request, "target": target},
+            {"kind": "granted", "target": final_target},
+        ))
+        instance.wait_for_bluetooth_state = lambda *_args, **_kwargs: next(outcomes)
+        with patch("permission_acceptance.capture", return_value={"status": "absent"}) as native:
+            instance.ensure_bluetooth_permission(101, scope="ordinary-general-full")
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(native.call_args.args[1], "inspect-bluetooth-request")
+        readback = next(values for stage, values in instance.records if stage == "bluetooth_permission_readback")
+        self.assertEqual(readback["authorization_actor"], "user")
+        self.assertEqual(readback["action"], "manual_allow_observed")
 
 
 if __name__ == "__main__":

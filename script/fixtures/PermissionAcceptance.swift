@@ -1,7 +1,12 @@
 import AppKit
 import ApplicationServices
+import Security
 
 let settingsID = "com.apple.systempreferences"
+let bluetoothRequestID = "com.apple.UserNotificationCenter"
+let bluetoothRequestPath = "/System/Library/CoreServices/UserNotificationCenter.app"
+let bluetoothPermissionNames = ["Bluetooth", "蓝牙", "藍牙"]
+let bluetoothAllowLabels = ["Allow", "允许"]
 let inputPage = ["Input Monitoring", "输入监控"]
 let controlPage = ["Device Control and Data Access", "Accessibility", "设备控制和数据访问", "辅助功能"]
 let restartTitles = ["Quit & Reopen", "退出并重新打开"]
@@ -102,9 +107,11 @@ let args = CommandLine.arguments
 guard args.count >= 3, AXIsProcessTrusted() else { stop("AX is unavailable or the bundle path is missing") }
 let operation = args[1]
 let focusOperation = operation == "recover-settings-focus"
+let bluetoothRequestOperation = operation == "inspect-bluetooth-request" || operation == "allow-bluetooth"
 guard (operation == "cancel-auth" && args.count == 5) ||
       (focusOperation && args.count == 6) ||
-      (operation != "cancel-auth" && !focusOperation && args.count == 3) else {
+      (bluetoothRequestOperation && args.count == 4) ||
+      (operation != "cancel-auth" && !focusOperation && !bluetoothRequestOperation && args.count == 3) else {
     stop("unexpected arguments for permission operation")
 }
 let bundleURL = URL(fileURLWithPath: args[2]).resolvingSymlinksInPath()
@@ -330,6 +337,127 @@ if operation == "probe" || focusOperation {
     } ?? false
 } else {
     extraAccessWarning = false
+}
+
+func appleTrustedBluetoothRequestApp(_ app: NSRunningApplication) -> (Bool, String) {
+    guard app.bundleIdentifier == bluetoothRequestID,
+          let url = app.bundleURL?.resolvingSymlinksInPath(), url.path == bluetoothRequestPath,
+          Bundle(url: url)?.bundleIdentifier == bluetoothRequestID else {
+        return (false, "unexpected_bundle_identity_or_path")
+    }
+    var staticCode: SecStaticCode?
+    guard SecStaticCodeCreateWithPath(url as CFURL, SecCSFlags(), &staticCode) == errSecSuccess,
+          let staticCode else {
+        return (false, "system_bundle_signature_unavailable")
+    }
+    var requirement: SecRequirement?
+    let requirementText = "anchor apple generic and identifier \"\(bluetoothRequestID)\"" as CFString
+    guard SecRequirementCreateWithString(requirementText, SecCSFlags(), &requirement) == errSecSuccess,
+          let requirement,
+          SecStaticCodeCheckValidity(staticCode, SecCSFlags(), requirement) == errSecSuccess else {
+        return (false, "system_bundle_is_not_Apple_signed_for_the_expected_identifier")
+    }
+    return (true, "Apple_signed_exact_system_bundle")
+}
+
+func bluetoothPromptText(_ root: AXUIElement) -> String {
+    elements([root]).flatMap { element in
+        ["AXTitle", "AXValue", "AXDescription", "AXHelp"].map { property(element, $0) }
+    }.filter { !$0.isEmpty }.joined(separator: "\n")
+}
+
+func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [String: Any] {
+    guard expectedAppPID > 0, apps.count == 1, candidates.count == 1, appPID == expectedAppPID,
+          apps.first?.bundleURL?.resolvingSymlinksInPath().path == bundleURL.path,
+          apps.first?.bundleIdentifier == id else {
+        stop("Bluetooth authorization is bound to the unique exact tested app process")
+    }
+    let requestApps = NSRunningApplication.runningApplications(withBundleIdentifier: bluetoothRequestID)
+    guard requestApps.count <= 1 else { stop("the trusted Bluetooth request process is ambiguous") }
+    guard let requestApp = requestApps.first else {
+        return ["status": "absent", "target_app_pid": Int(expectedAppPID),
+                "target_bundle_id": id, "requested_app": name]
+    }
+    let (isTrusted, trustResult) = appleTrustedBluetoothRequestApp(requestApp)
+    guard isTrusted else { stop("the system Bluetooth request owner failed its Apple identity check: \(trustResult)") }
+    let requestPID = requestApp.processIdentifier
+    let requestWindows = windows(requestPID).filter { property($0, "AXRole") == "AXWindow" }
+    let candidates = requestWindows.compactMap { window -> (AXUIElement, String)? in
+        let text = bluetoothPromptText(window)
+        guard text.localizedCaseInsensitiveContains(name),
+              bluetoothPermissionNames.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
+            return nil
+        }
+        return (window, text)
+    }
+    if candidates.isEmpty {
+        if frontPID == requestPID || !requestWindows.isEmpty {
+            return ["status": "unmatched", "target_app_pid": Int(expectedAppPID),
+                    "target_bundle_id": id, "requested_app": name,
+                    "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
+                    "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true,
+                    "accessible_window_count": requestWindows.count]
+        }
+        return ["status": "absent", "target_app_pid": Int(expectedAppPID),
+                "target_bundle_id": id, "requested_app": name,
+                "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
+                "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true]
+    }
+    guard candidates.count == 1, let (window, promptText) = candidates.first else {
+        stop("more than one system window matches this app's Bluetooth permission text")
+    }
+    guard frontPID == requestPID else {
+        stop("the exact Bluetooth request is not the frontmost system window; no activation or click was attempted")
+    }
+    let windowElements = elements([window])
+    let allowButtons = windowElements.filter { element in
+        property(element, "AXRole") == "AXButton" &&
+        attribute(element, "AXEnabled") as? Bool == true &&
+        [property(element, "AXTitle"), property(element, "AXDescription")]
+            .contains(where: { bluetoothAllowLabels.contains($0) })
+    }
+    guard allowButtons.count == 1, let allowButton = allowButtons.first else {
+        stop("the exact Bluetooth permission request does not expose one enabled Allow / 允许 button")
+    }
+    let buttonLabel = [property(allowButton, "AXTitle"), property(allowButton, "AXDescription")]
+        .first(where: { bluetoothAllowLabels.contains($0) }) ?? ""
+    let evidence: [String: Any] = [
+        "status": "ready", "target_app_pid": Int(expectedAppPID), "target_bundle_id": id,
+        "target_bundle_path": bundleURL.path, "requested_app": name,
+        "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
+        "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true,
+        "system_process_trust_result": trustResult, "frontmost_bundle_id": front?.bundleIdentifier ?? "",
+        "request_window_title": property(window, "AXTitle"),
+        "request_text": promptText, "bluetooth_text_matched": true,
+        "requested_app_name_matched": true, "allow_button_label": buttonLabel,
+        "allow_button_count": allowButtons.count,
+    ]
+    guard performAllow else { return evidence }
+    let startedAt = Date().timeIntervalSince1970
+    guard AXUIElementPerformAction(allowButton, kAXPressAction as CFString) == .success else {
+        stop("AXPress on the exact Bluetooth Allow button failed")
+    }
+    let completedAt = Date().timeIntervalSince1970
+    return [
+        "performed": "AXPress Allow", "authorization_actor": "acceptance_runner",
+        "target_app_pid": Int(expectedAppPID), "target_bundle_id": id,
+        "target_bundle_path": bundleURL.path, "requested_app": name,
+        "system_process_pid": Int(requestPID), "system_bundle_id": bluetoothRequestID,
+        "system_bundle_path": bluetoothRequestPath, "system_process_trusted": true,
+        "system_process_trust_result": trustResult, "request_window_title": property(window, "AXTitle"),
+        "bluetooth_text_matched": true, "requested_app_name_matched": true,
+        "button_label": buttonLabel, "allow_button_count": allowButtons.count,
+        "ax_press_started_at": startedAt,
+        "ax_press_completed_at": completedAt,
+        "ax_press_duration_ms": (completedAt - startedAt) * 1_000,
+    ]
+}
+
+if bluetoothRequestOperation {
+    guard let expectedAppPID = Int32(args[3]) else { stop("Bluetooth request inspection needs the exact app PID") }
+    let result = inspectBluetoothRequest(expectedAppPID: expectedAppPID, performAllow: operation == "allow-bluetooth")
+    emit(result)
+    exit(0)
 }
 
 if operation == "cancel-auth" {

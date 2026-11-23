@@ -27,6 +27,8 @@ CONTROL_ROW_TITLES = (
 CONTROL_PERMISSION_NAMES = tuple(title.removeprefix("在系统设置中管理") for title in CONTROL_ROW_TITLES)
 BLUETOOTH_PERMISSION_NAMES = ("蓝牙", "藍牙", "Bluetooth")
 BLUETOOTH_ROW_TITLES = tuple("在系统设置中管理" + name for name in BLUETOOTH_PERMISSION_NAMES)
+BLUETOOTH_REQUEST_BUNDLE = "com.apple.UserNotificationCenter"
+BLUETOOTH_REQUEST_PATH = "/System/Library/CoreServices/UserNotificationCenter.app"
 GENERAL_INPUT_MANAGE = "管理输入监控"
 GENERAL_CONTROL_MANAGE = tuple("管理" + title for title in CONTROL_PERMISSION_NAMES)
 GENERAL_BLUETOOTH_MANAGE = tuple("管理" + title for title in BLUETOOTH_PERMISSION_NAMES)
@@ -81,14 +83,22 @@ class Acceptance:
         self.cancel_reentry = getattr(args, "cancel_reentry", False)
         self.focus_check = getattr(args, "focus_check", False)
         self.two_list_permissions_only = getattr(args, "two_list_permissions_only", False)
+        self.bluetooth_only = getattr(args, "bluetooth_only", False)
+        self.bluetooth_allow_actor = getattr(args, "bluetooth_allow_actor", None) or "runner"
+        if getattr(args, "bluetooth_allow_actor", None) and (
+            self.existing_input or self.two_list_permissions_only or self.cancel_reentry or
+            self.drag_regressions_only or self.focus_check or self.resume_input_drop or args.finish
+        ):
+            raise RuntimeError("--bluetooth-allow-actor is only valid for full first-use, full general permissions, or --bluetooth-only")
         if self.two_list_permissions_only and not self.general_permissions:
             raise RuntimeError("--two-list-permissions-only requires --general-permissions")
         self.focus_recovery_attempts = set()
         self.focus_visit_sequence = 0
         selected_scopes = sum((self.existing_input, self.general_permissions, self.resume_input_drop,
-                               self.drag_regressions_only, self.cancel_reentry, self.focus_check, args.finish))
+                               self.drag_regressions_only, self.cancel_reentry, self.focus_check,
+                               self.bluetooth_only, args.finish))
         if selected_scopes > 1:
-            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only, --focus-check and --finish are separate acceptance scopes")
+            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only, --focus-check, --bluetooth-only and --finish are separate acceptance scopes")
         if self.existing_input and not self.fixed_dev:
             raise RuntimeError("--existing-input requires the verified canonical Dev receipt")
         if self.general_permissions and not self.fixed_dev:
@@ -101,6 +111,8 @@ class Acceptance:
             raise RuntimeError("--drag-regressions-only requires the verified canonical Dev receipt")
         if self.focus_check and not self.fixed_dev:
             raise RuntimeError("--focus-check requires the verified canonical Dev receipt")
+        if self.bluetooth_only and not self.fixed_dev:
+            raise RuntimeError("--bluetooth-only requires the verified canonical Dev receipt")
         if self.fixed_dev:
             from live_acceptance import verify_fixed_dev
             fixed, _ = verify_fixed_dev(args.fixed_dev_receipt)
@@ -122,7 +134,7 @@ class Acceptance:
         self.config = Path.home() / "Library/Application Support" / self.name
         if self.config.exists() and not (args.finish or self.existing_input or self.general_permissions or
                                          self.cancel_reentry or self.resume_input_drop or self.drag_regressions_only or
-                                         self.focus_check):
+                                         self.focus_check or self.bluetooth_only):
             raise RuntimeError("use a fresh verification identity with an unused configuration directory")
         self.output = args.output.resolve()
         if not self.output.is_relative_to(CACHE.resolve()):
@@ -144,7 +156,7 @@ class Acceptance:
             self.resume_input_args = resume_input_drop_args(entries, identity)
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
-        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry or self.focus_check:
+        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry or self.focus_check or self.bluetooth_only:
             self.output.mkdir()
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             if not self.focus_check:
@@ -152,6 +164,7 @@ class Acceptance:
             mode = (
                 "drag-regressions-only" if self.drag_regressions_only else
                 "focus-recovery-only" if self.focus_check else
+                "bluetooth-only" if self.bluetooth_only else
                 "ordinary-cancel-reentry" if self.cancel_reentry else
                 "ordinary-general-two-list-only" if self.two_list_permissions_only else
                 "ordinary-general-permissions"
@@ -454,6 +467,9 @@ class Acceptance:
             )
         if not ordinary_permission_guide_card_present(nodes, self.name):
             self.press(pid, "管理输入监控")
+
+        if not allow_bluetooth_pending:
+            self.ensure_bluetooth_permission(pid, scope="ordinary-general-full")
 
         initial_nodes = wait_for(
             lambda: (current if general_input_action_target(
@@ -1039,6 +1055,159 @@ class Acceptance:
         })
         return result
 
+    def ensure_bluetooth_permission(self, pid, *, scope):
+        actor_requested = getattr(self, "bluetooth_allow_actor", "runner")
+        initial = wait_for(
+            lambda: bluetooth_permission_target(self.view(pid), self.name, scope),
+            "the exact Dev permission rows, including any Bluetooth row",
+        )
+        if initial["state"] == "not_present":
+            self.record("bluetooth_permission_readback", {
+                "scope": scope, "app": pid, "permission": "bluetooth",
+                "status": "not_applicable", "authorization_actor": "not_applicable",
+                "action": "none", "permission_rows": initial["counts"],
+                "source": "same_app_accessibility_row_snapshot",
+            })
+            return initial
+        if initial["state"] == "granted":
+            actor = "user" if actor_requested == "user" else "preexisting_or_external"
+            self.record("bluetooth_permission_readback", {
+                "scope": scope, "app": pid, "permission": "bluetooth",
+                "status": "granted_before_run", "authorization_actor": actor,
+                "actor_source": "operator_declaration" if actor == "user" else "not_observed_by_this_run",
+                "action": "readback_only", "permission_rows": initial["counts"],
+                "source": "same_app_accessibility_row_snapshot",
+            })
+            return initial
+        if initial["state"] != "pending" or not initial.get("row_title"):
+            raise RuntimeError("the exact Dev Bluetooth row is not in a readable pending or granted state")
+
+        existing_request = capture(self.driver, "inspect-bluetooth-request", self.bundle, str(pid))
+        if existing_request.get("status") == "ready":
+            press = None
+        elif existing_request.get("status") == "absent":
+            press = self.press_permission_row(pid, initial["row_title"])
+        else:
+            raise RuntimeError("an unrelated or ambiguous system request is visible; no Allow button was pressed")
+        request_event = {
+            "scope": scope, "app": pid, "permission": "bluetooth",
+            "row_title": initial["row_title"],
+            "authorization_actor_requested": actor_requested,
+            "permission_state_before": initial["state"],
+            "existing_system_request": press is None,
+        }
+        if press is not None:
+            request_event.update({
+                "row_press_started_at": press["ax_press_started_at"],
+                "row_press_completed_at": press["ax_press_completed_at"],
+            })
+        self.record("bluetooth_permission_request", request_event)
+        outcome = self.wait_for_bluetooth_state(
+            pid, scope, timeout=self.auth_timeout, request_expected=True,
+        )
+        if outcome["kind"] == "granted":
+            actor = "user" if actor_requested == "user" else "external_before_runner"
+            self.record("bluetooth_permission_readback", {
+                "scope": scope, "app": pid, "permission": "bluetooth",
+                "status": "granted", "authorization_actor": actor,
+                "actor_source": "user_mode_and_state_transition" if actor == "user" else "grant_seen_before_runner_action",
+                "action": "manual_allow_observed" if actor == "user" else "no_runner_action",
+                "system_request": outcome.get("request"), "permission_rows": outcome["target"]["counts"],
+                "source": "same_app_accessibility_row_snapshot",
+            })
+            return outcome["target"]
+
+        request = outcome["request"]
+        self.record("bluetooth_system_request_matched", {
+            "scope": scope, "app": pid, "permission": "bluetooth", **request,
+        })
+        if actor_requested == "runner":
+            action = capture(self.driver, "allow-bluetooth", self.bundle, str(pid))
+            if (action.get("performed") != "AXPress Allow" or
+                action.get("authorization_actor") != "acceptance_runner" or
+                action.get("requested_app") != self.name or
+                action.get("target_bundle_id") != self.identifier or
+                action.get("target_app_pid") != pid or
+                action.get("target_bundle_path") != str(self.bundle) or
+                action.get("system_process_trusted") is not True or
+                action.get("system_bundle_id") != BLUETOOTH_REQUEST_BUNDLE or
+                action.get("system_bundle_path") != BLUETOOTH_REQUEST_PATH or
+                action.get("bluetooth_text_matched") is not True or
+                action.get("requested_app_name_matched") is not True or
+                action.get("allow_button_count") != 1 or
+                action.get("button_label") not in ("Allow", "允许")):
+                raise RuntimeError("the native Bluetooth Allow action did not prove the exact target and AX button")
+            self.record("bluetooth_system_allow_action", {"scope": scope, **action})
+        else:
+            print("请只在已核对的 macOS 蓝牙授权窗口中点击 Allow / 允许；验收脚本不会代点。", file=sys.stderr, flush=True)
+
+        final_timeout = self.auth_timeout if actor_requested == "user" else 12
+        final = self.wait_for_bluetooth_state(pid, scope, timeout=final_timeout)
+        if final["kind"] != "granted":
+            raise RuntimeError("the same Dev permission row did not read Bluetooth as authorized after Allow")
+        final = final["target"]
+        self.record("bluetooth_permission_readback", {
+            "scope": scope, "app": pid, "permission": "bluetooth",
+            "status": "granted", "authorization_actor": "acceptance_runner" if actor_requested == "runner" else "user",
+            "actor_source": "native_ax_press" if actor_requested == "runner" else "operator_selected_manual_mode",
+            "action": "AXPress Allow" if actor_requested == "runner" else "manual_allow_observed",
+            "system_request": request, "permission_rows": final["counts"],
+            "source": "same_app_accessibility_row_snapshot",
+        })
+        return final
+
+    def run_bluetooth_only(self):
+        state = self.preflight_no_existing_sheet("bluetooth-only")
+        pid = state["app"]
+        if not pid:
+            raise RuntimeError("--bluetooth-only could not find the canonical Dev process")
+        nodes = self.view(pid)
+        scope = "full-first-use" if self.name + " 首次设置" in window_names(nodes) else "ordinary-general-full"
+        target = bluetooth_permission_target(nodes, self.name, scope)
+        if target is None:
+            raise RuntimeError("--bluetooth-only requires the exact Dev permission card already open")
+        if target["state"] == "not_present":
+            self.record("BLUETOOTH_ONLY_NOT_APPLICABLE", {
+                "app": pid, "scope": scope, "permission_rows": target["counts"],
+                "action_performed": False,
+            })
+            raise RuntimeError("the current Dev device profile has no Bluetooth permission row")
+        final = self.ensure_bluetooth_permission(pid, scope=scope)
+        if final is None or final["state"] != "granted":
+            raise RuntimeError("--bluetooth-only did not read back the same Dev Bluetooth row as authorized")
+        self.record("BLUETOOTH_ONLY_PASS", {
+            "app": pid, "bundle_id": self.identifier, "bundle": str(self.bundle),
+            "executable_sha256": self.sha, "scope": scope,
+            "authorization_actor_requested": getattr(self, "bluetooth_allow_actor", "runner"),
+            "permission_rows": final["counts"], "same_app_authorized_row_verified": True,
+            "other_permissions_reset": False,
+        })
+
+    def wait_for_bluetooth_state(self, pid, scope, *, timeout, request_expected=False):
+        actor_requested = getattr(self, "bluetooth_allow_actor", "runner")
+        deadline = None if timeout == 0 else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
+            target = bluetooth_permission_target(self.view(pid), self.name, scope)
+            if target is None or target["state"] not in ("pending", "granted"):
+                raise RuntimeError("the Dev Bluetooth permission row changed identity or became unreadable")
+            state = self.probe()
+            if state.get("app") != pid or state.get("bundle_id") != self.identifier:
+                raise RuntimeError("the Bluetooth authorization request changed the verified Dev process")
+            request = capture(self.driver, "inspect-bluetooth-request", self.bundle, str(pid))
+            if request.get("status") == "ready" and target["state"] == "pending" and request_expected:
+                return {"kind": "request", "request": request, "target": target}
+            if request.get("status") == "absent" and target["state"] == "granted":
+                return {"kind": "granted", "target": target}
+            if request.get("status") not in ("absent", "ready"):
+                raise RuntimeError("an unrelated or ambiguous system request is visible; no Allow button was pressed")
+            time.sleep(0.18)
+        self.record("BLUETOOTH_AUTH_TIMEOUT", {
+            "scope": scope, "app": pid, "authorization_actor_requested": actor_requested,
+            "permission_state": "pending", "request_expected": request_expected,
+            "system_action_performed_by_runner": False,
+        })
+        raise RuntimeError("the exact Dev Bluetooth request or authorized row did not appear")
+
     def window_observations(self):
         path = self.output / "windows.ndjson"
         if not path.is_file():
@@ -1386,6 +1555,7 @@ class Acceptance:
                  has_button(self.view(pid), "授权…"), "permission summary")
         self.press(pid, "授权…")
         wait_for(lambda: self.permission_row_available(pid, INPUT_ROW_TITLE), "input-monitoring permission row")
+        self.ensure_bluetooth_permission(pid, scope="full-first-use")
         initial_permission_nodes = self.view(pid)
         if first_use_input_target(initial_permission_nodes, self.name) != INPUT_ROW_TITLE:
             summary = first_use_progress_summary(initial_permission_nodes)
@@ -1978,6 +2148,13 @@ def first_use_progress_summary(nodes, total=None):
     if len(unique) == 1:
         return unique[0]
     if total is not None:
+        all_granted = [
+            value for node in nodes
+            for value in (node.get("title"), node.get("value"), node.get("description"))
+            if value == "全部已授权"
+        ]
+        if len(set(all_granted)) == 1:
+            return total, total, "全部已授权"
         not_yet_authorized = [
             value for node in nodes
             for value in (node.get("title"), node.get("value"), node.get("description"))
@@ -2001,6 +2178,63 @@ def ordinary_permission_counts(nodes, name):
         "granted_row_count": sum(state == "granted" for state in states.values()),
         "rows": {kind: states[kind] for kind in sorted(states)},
     }
+
+
+def first_use_permission_counts(nodes, name):
+    """Read the first-use card as one internally consistent set of permission rows."""
+    names = window_names(nodes)
+    panel_title = name + " 系统权限"
+    if names.count(name + " 首次设置") != 1 or names.count(panel_title) != 1:
+        return None
+    panel_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == panel_title)
+    card = nodes_in_window(nodes, panel_window)
+    rows = permission_route_rows(card) if card is not None else None
+    required = {"input", "device_control"}
+    if rows is None or not required.issubset(rows) or not set(rows).issubset(required | {"bluetooth"}):
+        return None
+    states = {kind: permission_row_state(card, row) for kind, row in rows.items()}
+    granted_count = sum(state == "granted" for state in states.values())
+    pending_count = sum(state == "pending" for state in states.values())
+    if any(state not in ("granted", "pending") for state in states.values()):
+        return None
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != pending_count:
+        return None
+    summary = first_use_progress_summary(nodes, len(rows))
+    if summary is None or summary[:2] != (granted_count, len(rows)):
+        return None
+    return {
+        "row_count": len(states), "granted_row_count": granted_count,
+        "rows": {kind: states[kind] for kind in sorted(states)},
+    }
+
+
+def bluetooth_permission_target(nodes, name, scope):
+    """Return the exact Bluetooth card row and status for a full acceptance surface."""
+    if scope == "full-first-use":
+        counts = first_use_permission_counts(nodes, name)
+        panel_title = name + " 系统权限"
+        if counts is None:
+            return None
+        panel_window = next(node for node in nodes if node.get("role") == "AXWindow" and node.get("title") == panel_title)
+        card = nodes_in_window(nodes, panel_window)
+        rows = permission_route_rows(card) if card is not None else None
+    elif scope == "ordinary-general-full":
+        counts = ordinary_permission_counts(nodes, name)
+        surfaces = ordinary_permission_surfaces(nodes, name)
+        if counts is None or surfaces is None:
+            return None
+        card_rows = surfaces[3]
+        rows = card_rows
+    else:
+        return None
+    if "bluetooth" not in counts["rows"]:
+        return {"state": "not_present", "row_title": None, "counts": counts}
+    if not isinstance(rows, dict) or "bluetooth" not in rows:
+        return None
+    state = counts["rows"]["bluetooth"]
+    if state not in ("pending", "granted"):
+        return None
+    return {"state": state, "row_title": rows["bluetooth"]["route_title"], "counts": counts}
 
 
 def cancel_reentry_permission_counts(nodes, name):
@@ -2482,12 +2716,16 @@ def main():
                         help="exercise the canonical Dev bundle after verifying all frozen artifacts")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--auth-timeout", default=120, type=int)
+    parser.add_argument("--bluetooth-allow-actor", choices=("runner", "user"),
+                        help="record the Bluetooth Allow actor; runner mode AXPresses only the exact verified request, user mode waits for a manual Allow")
+    parser.add_argument("--bluetooth-only", action="store_true",
+                        help="handle only Bluetooth on the already-open fixed Dev permission card")
     parser.add_argument("--interact", required=True, action="store_true",
                         help="allow the isolated flow to use system settings and the pointer")
     parser.add_argument("--existing-input", action="store_true",
                         help="verify device control with input monitoring already granted; any Bluetooth row must also be granted")
     parser.add_argument("--general-permissions", action="store_true",
-                        help="cold-enter ordinary General settings and grant Input Monitoring, with any Bluetooth row already granted")
+                        help="cold-enter ordinary General settings and grant Input Monitoring; handle Bluetooth through its exact Dev request when present")
     parser.add_argument("--two-list-permissions-only", action="store_true",
                         help="with --general-permissions, grant both ordinary list rows while recording Bluetooth status separately")
     parser.add_argument("--cancel-reentry", action="store_true",
@@ -2504,7 +2742,9 @@ def main():
     try:
         acceptance = Acceptance(args)
         with acceptance.observe_feedback():
-            if args.existing_input:
+            if args.bluetooth_only:
+                acceptance.run_bluetooth_only()
+            elif args.existing_input:
                 acceptance.run_existing_input()
             elif args.general_permissions:
                 acceptance.run_general_permissions()
