@@ -186,7 +186,7 @@ private struct SettingsForm: View {
                     Text("实验室").font(.system(size: state.BodySize, weight: .semibold))
                 } footer: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("支持豆包输入法和微信输入法")
+                        Text("独占提示支持豆包输入法")
                             .font(.system(size: state.CaptionSize))
                             .accessibilityIdentifier("voice-prompt-suppression-status")
                         if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue,

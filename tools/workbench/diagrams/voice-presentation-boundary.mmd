@@ -63,7 +63,7 @@ flowchart TD
     material --> localReady["本次会话的本地提示已显示"]
     dots --> localReady
     localReady --> exclusive["按当前偏好，由已选工具处理自己的录音条"]
-    exclusive --> externalBar["已选工具：豆包或微信输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
+    exclusive --> externalBar["已选工具：豆包输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
     baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
-    park -->|微信听写或收尾时自行移回| moved["监听同一录音窗的移动与缩放，核对身份、中心线和高度后再移开"]
+    exclusive -->|微信及其他尚无已验适配的工具| leave
     baseline -->|候选窗或匹配不确定| leave["保留原窗"]

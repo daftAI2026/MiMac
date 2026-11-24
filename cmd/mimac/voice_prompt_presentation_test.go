@@ -268,8 +268,11 @@ func TestVoicePromptSuppressionIsRegisteredPerTool(t *testing.T) {
 	if doubaoTool == nil || doubaoTool.voicePromptSuppressor == nil || doubaoTool.voicePromptBundleID != compatDoubaoBundleID {
 		t.Fatal("verified Doubao adapter has no registered prompt suppressor")
 	}
-	if wetypeTool == nil || wetypeTool.voicePromptSuppressor == nil || wetypeTool.voicePromptBundleID != compatWeTypeBundleID || wetypeTool.voicePromptBundleID == doubaoTool.voicePromptBundleID {
-		t.Fatal("WeType needs its own registered recording-window identity")
+	if wetypeTool == nil || wetypeTool.audioRouteFactory == nil || !wetypeTool.releaseReady {
+		t.Fatal("WeType dictation route must remain available")
+	}
+	if wetypeTool.voicePromptSuppressor != nil || wetypeTool.voicePromptBundleID != "" {
+		t.Fatal("WeType must retain its native recording window until dismissal is verified")
 	}
 }
 

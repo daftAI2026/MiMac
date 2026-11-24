@@ -29,17 +29,3 @@ func wetypeAudioRouteFactory(ctx context.Context, config audioRouteConfig) (live
 		compatAudioRouteTarget{bundleID: compatWeTypeBundleID, bundleName: "WeType.app", executableName: "WeType", name: "WeType"},
 		executablePath, config.Locator, deps)
 }
-
-func newWeTypeVoicePromptSuppressor(pid int32, executable string) voicePromptSuppressor {
-	baseline := wetype.CaptureRecordingBarBaseline(pid, executable)
-	if baseline == nil {
-		return nil
-	}
-	return suppressRecordingWindow(func(ctx context.Context) (voicePromptLease, string, error) {
-		lease, outcome, err := baseline.Suppress(ctx)
-		if lease == nil {
-			return nil, string(outcome), err
-		}
-		return lease, string(outcome), err
-	})
-}
