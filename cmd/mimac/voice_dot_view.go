@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -25,6 +27,13 @@ type voiceDotView struct {
 	read                      func() voiceOverlayFrame
 	model                     *dotscope.Model
 	renderer                  *dotscope.Renderer
+	caption                   voiceCaptionView
+	newCaption                func() (voiceCaptionView, error)
+	captionErr                error // Optional subtitle failure never disables the dot HUD.
+	captionDraft              voiceInterimDraft
+	captionToken              bridge.SessionToken
+	captionFadeStarted        time.Time
+	hudBounds, screenBounds   mygo.Rectangle
 	token                     bridge.SessionToken
 	epoch, previousPaint      time.Time
 	started, submitted, ended bool
@@ -48,7 +57,7 @@ func openVoiceDotView(read func() voiceOverlayFrame, library string) (voiceOverl
 	if err != nil {
 		return nil, err
 	}
-	v := &voiceDotView{read: read, model: model, renderer: renderer}
+	v := &voiceDotView{read: read, model: model, renderer: renderer, newCaption: newVoiceCaptionView}
 	v.window = mygo.NewWindow(mygo.WindowOptions{
 		Title: "点阵语音条", Width: voiceDotWidth, Height: voiceDotHeight,
 		UseContentSize: true, Panel: true, PanelPointerOnly: true, IgnoreMouseEvents: true,
@@ -70,10 +79,8 @@ func (v *voiceDotView) Update(frame voiceOverlayFrame) error {
 		v.selectToken(frame.Token, now)
 		display := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
 		if display.WorkArea.Width > 0 {
-			v.window.SetBounds(mygo.Rectangle{
-				X: display.Bounds.X + (display.Bounds.Width-voiceDotWidth)/2, Y: display.WorkArea.Y,
-				Width: voiceDotWidth, Height: voiceDotHeight,
-			})
+			v.hudBounds, v.screenBounds = voiceDotHUDBounds(display.Bounds, display.WorkArea)
+			v.window.SetBounds(v.hudBounds)
 		}
 	}
 	if frame.Phase == bridge.PhaseDraining {
@@ -83,6 +90,10 @@ func (v *voiceDotView) Update(frame voiceOverlayFrame) error {
 		v.visible = true
 		v.window.ShowInactive()
 	}
+	if frame.ShowLiveText {
+		v.ensureCaption()
+	}
+	v.syncCaption(frame, time.Now())
 	v.window.Invalidate()
 	return nil
 }
@@ -96,6 +107,7 @@ func (v *voiceDotView) selectToken(token bridge.SessionToken, now time.Time) {
 	if v.started && !v.ended {
 		v.retire(now)
 	}
+	v.clearCaption()
 	v.token = token
 	v.started, v.submitted, v.ended = false, false, false
 }
@@ -131,6 +143,9 @@ func (v *voiceDotView) job() uint64 {
 
 func (v *voiceDotView) retire(now time.Time) {
 	v.model.Cancel(v.job(), v.seconds(now))
+	// A neutral retirement is cancellation or an unacknowledged end. Drop the
+	// preview immediately; only an explicit successful finish gets the 150 ms fade.
+	v.clearCaption()
 	v.ended = true
 }
 
@@ -143,6 +158,7 @@ func (v *voiceDotView) finish(token bridge.SessionToken, failed bool, now time.T
 	v.start(now)
 	if failed {
 		v.model.Fail(v.job(), v.seconds(now))
+		v.clearCaption()
 	} else {
 		v.submit(now)
 		v.model.Done(v.job(), v.seconds(now))
@@ -182,7 +198,16 @@ func (v *voiceDotView) draw(c *ui.Context) {
 		if v.closed || !v.visible {
 			return
 		}
-		if !v.advance(time.Now(), v.read(), reduce) {
+		now := time.Now()
+		frame := v.read()
+		continues := v.advance(now, frame, reduce)
+		captionFading := v.syncCaption(frame, now)
+		if !continues {
+			if captionFading {
+				p.AnimationFrameRate(60)
+				return
+			}
+			v.clearCaption()
 			v.visible = false
 			v.previousPaint = time.Time{}
 			v.token = bridge.SessionToken{}
@@ -208,13 +233,127 @@ func (v *voiceDotView) Hide() error {
 }
 
 func (v *voiceDotView) Close() error {
+	if v == nil {
+		return nil
+	}
+	var err error
 	if !v.closed {
 		v.closed, v.visible = true, false
-		if !v.window.IsDestroyed() {
+		if v.window != nil && !v.window.IsDestroyed() {
 			v.window.Hide()
 			v.window.Close()
 		}
 		v.model.Close()
 	}
-	return nil
+	if v.caption != nil {
+		if closeErr := v.caption.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		} else {
+			v.caption = nil
+		}
+	}
+	return err
+}
+
+func voiceDotHUDBounds(screen, workArea mygo.Rectangle) (mygo.Rectangle, mygo.Rectangle) {
+	hud := mygo.Rectangle{
+		X: screen.X + (screen.Width-voiceDotWidth)/2, Y: workArea.Y,
+		Width: voiceDotWidth, Height: voiceDotHeight,
+	}
+	return hud, screen
+}
+
+func (v *voiceDotView) syncCaption(frame voiceOverlayFrame, now time.Time) bool {
+	if v.captionErr != nil {
+		return false
+	}
+	if !frame.ShowLiveText {
+		v.clearCaption()
+		return false
+	}
+	if frame.Visible {
+		if v.captionToken != (bridge.SessionToken{}) && v.captionToken != frame.Token {
+			v.clearCaption()
+		}
+		if strings.TrimSpace(frame.InterimStable) == "" && strings.TrimSpace(frame.InterimTentative) == "" {
+			return false // Blank first updates do not erase words already shown.
+		}
+		v.captionDraft = voiceInterimDraft{Stable: frame.InterimStable, Tentative: frame.InterimTentative}
+		v.captionToken = frame.Token
+		v.captionFadeStarted = time.Time{}
+		v.ensureCaption()
+		if v.caption == nil {
+			return false
+		}
+		if err := v.caption.Update(v.captionDraft.Stable, v.captionDraft.Tentative,
+			voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds), 1); err != nil {
+			v.disableCaption(err)
+		}
+		return false
+	}
+	if v.captionDraft.Stable == "" && v.captionDraft.Tentative == "" {
+		v.clearCaption()
+		return false
+	}
+	if v.captionFadeStarted.IsZero() {
+		v.captionFadeStarted = now
+	}
+	elapsed := now.Sub(v.captionFadeStarted)
+	if elapsed >= voiceCaptionFade {
+		v.clearCaption()
+		return false
+	}
+	opacity := 1 - float64(elapsed)/float64(voiceCaptionFade)
+	if v.caption == nil {
+		return false
+	}
+	if err := v.caption.Update(v.captionDraft.Stable, v.captionDraft.Tentative,
+		voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds), opacity); err != nil {
+		v.disableCaption(err)
+		return false
+	}
+	return true
+}
+
+func (v *voiceDotView) ensureCaption() {
+	if v.caption != nil || v.captionErr != nil {
+		return
+	}
+	factory := v.newCaption
+	if factory == nil {
+		factory = newVoiceCaptionView
+	}
+	caption, err := factory()
+	if err == nil && caption == nil {
+		err = errors.New("voice caption: no renderer returned")
+	}
+	if err != nil {
+		v.disableCaption(err)
+		return
+	}
+	v.caption = caption
+}
+
+func (v *voiceDotView) clearCaption() {
+	v.captionDraft = voiceInterimDraft{}
+	v.captionToken = bridge.SessionToken{}
+	v.captionFadeStarted = time.Time{}
+	if v.caption != nil {
+		if err := v.caption.Hide(); err != nil {
+			v.disableCaption(err)
+		}
+	}
+}
+
+func (v *voiceDotView) disableCaption(err error) {
+	if err == nil {
+		return
+	}
+	if v.captionErr == nil {
+		log.Printf("voice caption unavailable: %v", err)
+	}
+	v.captionErr = err
+	if v.caption != nil {
+		_ = v.caption.Hide()
+	}
 }

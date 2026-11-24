@@ -279,7 +279,7 @@ func TestAudioRouteFactoryDispatchesForDifferentToolID(t *testing.T) {
 	}
 
 	generation := s.coordinator.core.Snapshot().Generation
-	factory := bindAudioRouteFactory(tool.audioRouteFactory, "/test/resources", s.toolLocator)
+	factory := bindAudioRouteFactory(tool.audioRouteFactory, "/test/resources", s.toolLocator, s.voiceOverlay.interim.Publish)
 	connection := newLiveAudioConnection(func(ctx context.Context) (liveAudioRoute, error) {
 		return factory(ctx, generation, tool.snapshot.AppPath)
 	})

@@ -97,6 +97,30 @@ func TestVoicePresentationPreferenceThreeModeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLiveTextPreferenceDefaultsOffAndRemainsIndependent(t *testing.T) {
+	if defaultHostPreferences().ShowLiveText {
+		t.Fatal("live text should be opt-in")
+	}
+	for _, mode := range []voicePresentationMode{voicePresentationMiMacSphere, voicePresentationDotBar, voicePresentationFollowTool} {
+		t.Run(string(mode), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "preferences.json")
+			value := defaultHostPreferences()
+			value.VoicePresentation = mode
+			value.ShowLiveText = true
+			if err := saveHostPreferences(path, value); err != nil {
+				t.Fatal(err)
+			}
+			got, err := readHostPreferences(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != value {
+				t.Fatalf("live text preference was coupled to presentation mode: got %+v, want %+v", got, value)
+			}
+		})
+	}
+}
+
 func TestVoicePresentationNativeSelectionMapsThreeModesAndRejectsInvalidValues(t *testing.T) {
 	cases := []struct {
 		mode  voicePresentationMode

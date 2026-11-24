@@ -35,3 +35,9 @@ flowchart LR
     terminal -->|是| retryAsset["记录本轮结果；允许显式重试"]
     retryAsset --> assets
     preparing -->|成功| sequence
+
+    selected -->|Hex| localStream["本机服务能力检查；按下时绑定文本目标"]
+    localStream --> create["本次会话创建识别流，16 kHz 单声道 PCM"]
+    create -->|临时结果| captions["当前会话的点阵字幕"]
+    create -->|成功完成| finalText["经现有文本投递入口写入一次"]
+    create -->|取消| discard["取消识别流并作废迟到结果"]

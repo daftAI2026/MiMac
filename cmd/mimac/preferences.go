@@ -26,6 +26,7 @@ type hostPreferences struct {
 	Version           int                   `json:"version"`
 	ShowInDock        bool                  `json:"show_in_dock"`
 	VoicePresentation voicePresentationMode `json:"voice_presentation"`
+	ShowLiveText      bool                  `json:"show_live_text,omitempty"`
 	Appearance        mygo.ThemeSource      `json:"appearance"`
 	TextSize          int                   `json:"text_size,omitempty"`
 }
@@ -45,6 +46,7 @@ type preferencesDocument struct {
 	ShowInDock        *bool                  `json:"show_in_dock"`
 	ShowVoiceOverlay  *bool                  `json:"show_voice_overlay"`
 	VoicePresentation *voicePresentationMode `json:"voice_presentation"`
+	ShowLiveText      *bool                  `json:"show_live_text"`
 	Appearance        *mygo.ThemeSource      `json:"appearance"`
 	TextSize          int                    `json:"text_size,omitempty"`
 }
@@ -103,6 +105,10 @@ func readHostPreferences(path string) (hostPreferences, error) {
 		appearance = *doc.Appearance
 	}
 	voicePresentation := voicePresentationMiMacSphere
+	showLiveText := false
+	if doc.ShowLiveText != nil {
+		showLiveText = *doc.ShowLiveText
+	}
 	switch doc.Version {
 	case legacyPreferencesVersion:
 		if doc.VoicePresentation != nil {
@@ -127,7 +133,8 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	}
 	return hostPreferences{
 		Version: preferencesVersion, ShowInDock: *doc.ShowInDock,
-		VoicePresentation: voicePresentation, Appearance: appearance, TextSize: doc.TextSize,
+		VoicePresentation: voicePresentation, ShowLiveText: showLiveText,
+		Appearance: appearance, TextSize: doc.TextSize,
 	}, nil
 }
 
@@ -324,6 +331,19 @@ func (s *shell) applyVoicePresentationPreference(mode voicePresentationMode) err
 		return err
 	}
 	s.applyVoicePresentationSelection()
+	return nil
+}
+
+// applyLiveTextPreference persists the independent display choice before
+// allowing provider callbacks to publish interim text for the HUD.
+func (s *shell) applyLiveTextPreference(enabled bool) error {
+	next := s.preferencesState.value
+	next.ShowLiveText = enabled
+	if err := s.savePreferences(next); err != nil {
+		return err
+	}
+	s.configureVoiceInterim()
+	s.syncVoiceOverlay()
 	return nil
 }
 

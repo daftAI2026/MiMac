@@ -211,7 +211,7 @@ def prepare(args):
         if tool not in tools.get("enabled", []):
             raise RuntimeError("current voice tool is not enabled")
         expected_source = TOOL_INPUT_SOURCES.get(tool)
-        if tool not in [*TOOL_INPUT_SOURCES, "voice-apple-speech"]:
+        if tool not in [*TOOL_INPUT_SOURCES, "voice-apple-speech", "voice-hex-stream"]:
             raise RuntimeError("this tool has no acceptance contract yet")
         if tool in TOOL_INPUT_SOURCES and not args.target_pid:
             raise RuntimeError("--target-pid is required for input-method receiver evidence")
@@ -229,6 +229,18 @@ def prepare(args):
         recovery = user_data / "voice-mapping-recovery.plist"
         if recovery.exists():
             raise RuntimeError("disable the remote and finish its cleanup before building")
+        if tool == "voice-hex-stream":
+            if args.target_pid is not None or args.audio_backend is not None:
+                raise RuntimeError("Hex uses its local stream, omit --target-pid and --audio-backend")
+            stage = "hex_engine_readiness"
+            # Reserve and immediately cancel an empty stream before taking the device.
+            # /capabilities alone is also true when the engine has no loaded model.
+            try:
+                run(args.go or os.environ.get("MIMAC_GO", "go"), "-C", ROOT, "run", "./script/fixtures/hex-ready", timeout=30,
+                    stderr=subprocess.STDOUT, env={**os.environ, "GOWORK": "off"})
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError(error.output.strip() or "Hex readiness probe failed") from error
+            write(directory / "hex-before.json", {"empty_stream_created_and_cancelled": True})
         if beta_manifest_path:
             stage = "installed_beta_identity"
             bundle = INSTALLED_BETA

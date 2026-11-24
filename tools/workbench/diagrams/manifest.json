@@ -59,7 +59,7 @@
   {
     "id": "key-and-pcm-paths",
     "title": "物理按键与 PCM 双通路",
-    "summary": "等待接收器与 Core 期间只填有界 FIFO，双门后才输出；源停止与 EOF 完成后按有限尾部时长排空。217c47d 固定包两轮真实豆包整句追加，109680/93360 源样本与已知输出接受数分别相等；旧偶发缺字与 Siri 观感仍待。 豆包控制服务在现有资源 worker 内、Sink.Prepare 后准备：原生应用启动完成及一次 UUID 配置应答，身份复核后才发布资源 Ready。不是录音/选路 ACK；Core、MyGo 主循环与实际 PID/UID 门保持。独立冷暖合成范围与正式 App 验收分别记录。 豆包与微信共用应用身份装饰器，将尚未注册音频的唯一应用识别为准备前空闲；原生查询错误继续拒绝。 宿主按钮诊断只统计协调器接受的设备事件，启动前检查失败仍保留边沿计数；诊断计数不代表动作或音频启动成功。 日用普通启动在缺少后端配置时可自动复用已经验证的兼容端点和受支持工具，显式空值保留快捷键路径。",
+    "summary": "等待接收器与 Core 期间只填有界 FIFO，双门后才输出；源停止与 EOF 完成后按有限尾部时长排空。217c47d 固定包两轮真实豆包整句追加，109680/93360 源样本与已知输出接受数分别相等；旧偶发缺字与 Siri 观感仍待。 豆包控制服务在现有资源 worker 内、Sink.Prepare 后准备：原生应用启动完成及一次 UUID 配置应答，身份复核后才发布资源 Ready。不是录音/选路 ACK；Core、MyGo 主循环与实际 PID/UID 门保持。独立冷暖合成范围与正式 App 验收分别记录。 豆包与微信共用应用身份装饰器，将尚未注册音频的唯一应用识别为准备前空闲；原生查询错误继续拒绝。 宿主按钮诊断只统计协调器接受的设备事件，启动前检查失败仍保留边沿计数；诊断计数不代表动作或音频启动成功。 日用普通启动在缺少后端配置时可自动复用已经验证的兼容端点和受支持工具，显式空值保留快捷键路径。 正常排空为各语音路由恢复一次音源重建机会。日用阶段日志可关联宿主按压、接收端和会话失败。",
     "sourcePaths": [
       "cmd/mimac/device.go",
       "cmd/mimac/coordinator.go",
@@ -93,7 +93,9 @@
       "cmd/mimac/live_audio_application.go",
       "cmd/mimac/wetype_voice_tool.go",
       "internal/audiobackendprefs/backend.go",
-      "cmd/mimac/audio_setup.go"
+      "cmd/mimac/audio_setup.go",
+      "cmd/mimac/audio_session_trace.go",
+      "internal/audiosession/failure_stage.go"
     ]
   },
   {
@@ -156,7 +158,7 @@
   {
     "id": "voice-tool-selection",
     "title": "语音工具启用与选择",
-    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。",
+    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。 选择 Hex 时，宿主使用本机 /streams 服务接收遥控器 PCM，最终结果交给按下时捕获的文本目标。",
     "sourcePaths": [
       "cmd/mimac/voice_tools.go",
       "cmd/mimac/voice_binding.go",
@@ -173,7 +175,10 @@
       "internal/platform/inputsource/select.go",
       "cmd/mimac/apple_voice_tool.go",
       "cmd/mimac/apple_voice_lifecycle_test.go",
-      "cmd/mimac/apple_voice_existing_api_test.go"
+      "cmd/mimac/apple_voice_existing_api_test.go",
+      "internal/adapters/hex/discovery.go",
+      "internal/adapters/hex/streams.go",
+      "cmd/mimac/hex_audio.go"
     ]
   },
   {
@@ -220,7 +225,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。",
+    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。 点阵可独立开启实时字幕，只显示当前会话的临时识别文字，由无键盘焦点的单行窗口呈现。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
@@ -258,7 +263,9 @@
       "internal/platform/siriglass/native/Sources/SiriGlassModel/ReferenceChatInput.swift",
       "internal/platform/siriglass/native/Sources/SiriGlassRenderer/ChatThinkingScale.swift",
       "cmd/mimac/plugins.go",
-      "cmd/mimac/settings_mapping.go"
+      "cmd/mimac/settings_mapping.go",
+      "cmd/mimac/voice_caption_view.go",
+      "cmd/mimac/voice_interim.go"
     ]
   },
   {

@@ -318,17 +318,17 @@ func (s *shell) remoteStatus() (string, statusTone) {
 		}
 		return "正在连接", toneNeutral
 	}
-	if _, err := s.selectedVoiceAction(); err != nil && !s.appleVoiceSelected() {
+	if _, err := s.selectedVoiceAction(); err != nil && !s.directTextVoiceSelected() {
 		label := s.remoteSetupPrompt()
 		return label, toneNeutral
 	}
 	if s.outputFaulted() {
 		return "输出已暂停", toneWarning
 	}
-	if s.appleVoiceSelected() && s.outputNeedsPermission {
+	if s.directTextVoiceSelected() && s.outputNeedsPermission {
 		return "请允许辅助功能权限", toneNeutral
 	}
-	if !s.appleVoiceSelected() && (!s.plugins.Active(outputPlugin) || s.coordinator.sink == nil) {
+	if !s.directTextVoiceSelected() && (!s.plugins.Active(outputPlugin) || s.coordinator.sink == nil) {
 		return "输出未就绪", toneWarning
 	}
 	if s.voiceStartBlocked != "" {
@@ -431,7 +431,7 @@ func (s *shell) refreshRemoteOutput(requestPermission bool) {
 	if s.plugins == nil || s.coordinator == nil || !s.remoteHasReservation() {
 		return
 	}
-	if s.appleVoiceSelected() {
+	if s.directTextVoiceSelected() {
 		s.outputNeedsPermission = !textoutput.HasAccess()
 		if s.outputNeedsPermission {
 			if requestPermission {

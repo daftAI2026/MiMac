@@ -17,6 +17,8 @@ type State struct {
 	// VoicePresentation is the selection index exposed by the native Picker:
 	// 0 MiMac sphere, 1 dot bar, 2 follow the selected voice tool.
 	VoicePresentation int
+	// ShowLiveText is an independent dot-bar interim caption preference.
+	ShowLiveText bool
 	Appearance        string
 	// Dark is the effective theme state and does not select the Appearance segment.
 	Dark bool
@@ -43,6 +45,7 @@ type Callbacks struct {
 	Login             func(bool)
 	Dock              func(bool)
 	VoicePresentation func(int)
+	ShowLiveText      func(bool)
 	Appearance        func(string)
 	TextSize          func(int)
 	ManagePermissions func(int32)

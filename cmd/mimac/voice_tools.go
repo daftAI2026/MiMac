@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/chatgpt"
 	"mimac.local/mimac/internal/adapters/doubao"
+	hexapi "mimac.local/mimac/internal/adapters/hex"
 	"mimac.local/mimac/internal/adapters/shandian"
 	"mimac.local/mimac/internal/adapters/typeless"
 	"mimac.local/mimac/internal/adapters/wetype"
@@ -26,6 +27,7 @@ type voiceTool struct {
 	discover             func(context.Context, voicetools.Locator) voicetools.Snapshot
 	locateApplication    func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
 	audioRouteFactory    audioRouteFactory
+	directText           bool
 	fallbackIconPNG      []byte
 	systemArtwork        string
 	prepareAssets        func(context.Context, voicetools.Locator) voicetools.Snapshot
@@ -218,13 +220,40 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, systemArtwork: "apple.logo", releaseReady: true},
+		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, directText: true, systemArtwork: "apple.logo", releaseReady: true},
+		{id: hexStreamToolID, name: "Hex 本地识别", kind: voiceRecognition, discover: hexapi.Discover, audioRouteFactory: hexAudioRouteFactory, directText: true, systemArtwork: "waveform", releaseReady: true},
 		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, fallbackIconPNG: doubao.IconPNG, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
 		{id: "voice-wetype", name: "微信输入法", installURL: "https://z.weixin.qq.com/", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}
+}
+
+func (s *shell) selectedVoiceTool() *voiceTool {
+	if s == nil {
+		return nil
+	}
+	for _, tool := range s.tools {
+		if tool.id == s.currentVoiceTool {
+			return tool
+		}
+	}
+	return nil
+}
+
+func (s *shell) selectedVoiceUsesDirectText() bool {
+	tool := s.selectedVoiceTool()
+	return voiceToolUsesDirectText(tool)
+}
+
+func (s *shell) directTextVoiceSelected() bool {
+	tool := s.selectedVoiceTool()
+	return voiceToolUsesDirectText(tool) && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready
+}
+
+func voiceToolUsesDirectText(tool *voiceTool) bool {
+	return tool != nil && (tool.directText || tool.id == appleSpeechToolID)
 }
 
 // Discovery is one cancellable read per activation or explicit refresh. MyGo
@@ -590,6 +619,24 @@ func voiceToolStatus(tool *voiceTool) string {
 			return "此 Mac 暂不支持"
 		default:
 			return "准备失败，请重试"
+		}
+	}
+	if tool.id == hexStreamToolID {
+		if !tool.active {
+			return "未启用"
+		}
+		if tool.busy {
+			return "正在检查 Hex 本地服务"
+		}
+		switch tool.snapshot.State {
+		case voicetools.Ready:
+			return "服务已连接；模型由 Hex 管理"
+		case voicetools.NotRunning:
+			return "Hex 本地服务未运行"
+		case voicetools.Unsupported:
+			return "Hex 服务版本不支持"
+		default:
+			return "无法连接 Hex 本地服务"
 		}
 	}
 	if !tool.active {

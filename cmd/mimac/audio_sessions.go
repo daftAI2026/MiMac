@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/audiooutput"
+	hexapi "mimac.local/mimac/internal/adapters/hex"
 	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
@@ -146,11 +147,11 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			started := time.Now()
 			err := errors.Join(beforeStart(ctx), ctx.Err())
 			log.Printf("audio route: before_start elapsed=%s error=%v", time.Since(started), err)
-			if s.appleVoiceSelected() {
+			if s.directTextVoiceSelected() {
 				// A text target problem is local to this press, not a failed
 				// audio connection that requires reconnecting the remote.
 				s.report.AudioError = ""
-				s.voiceStartBlocked = appleTextTargetPrompt(err)
+				s.voiceStartBlocked = directTextTargetPrompt(err)
 				s.outputNeedsPermission = errors.Is(err, textoutput.ErrPermissionDenied)
 				if s.outputNeedsPermission {
 					if errors.Is(err, textoutput.ErrPostEventPermissionDenied) {
@@ -192,7 +193,7 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 	}}
 }
 
-func appleTextTargetPrompt(err error) string {
+func directTextTargetPrompt(err error) string {
 	switch {
 	case err == nil:
 		return ""
@@ -215,11 +216,11 @@ func appleTextTargetPrompt(err error) string {
 
 // A native error can occur after accepting text. Unknown errors must not
 // assert that nothing was inserted or invite an automatic duplicate attempt.
-func appleTextDeliveryPrompt(err error) string {
+func directTextDeliveryPrompt(err error) string {
 	switch {
 	case errors.Is(err, textoutput.ErrPermissionDenied), errors.Is(err, textoutput.ErrUnsupportedText),
 		errors.Is(err, textoutput.ErrSecureInput), errors.Is(err, textoutput.ErrTargetChanged):
-		return appleTextTargetPrompt(err)
+		return directTextTargetPrompt(err)
 	case errors.Is(err, textoutput.ErrEventPayload):
 		return "文字未写入，此输入方式暂不可用"
 	default:
@@ -255,7 +256,7 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 						deliveryErr = host.deliver(result.Token, result.Text)
 						if deliveryErr != nil {
 							s.outputNeedsPermission = errors.Is(deliveryErr, textoutput.ErrPermissionDenied)
-							s.voiceStartBlocked = appleTextDeliveryPrompt(deliveryErr)
+							s.voiceStartBlocked = directTextDeliveryPrompt(deliveryErr)
 						}
 					}
 				}
@@ -264,6 +265,9 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 				if completion.CleanupFailed {
 					err = errors.Join(err, s.coordinator.step(bridge.RouteAvailable(false)))
 					s.report.AudioCleanupFailed = true
+				}
+				if errors.Is(completion.Err, hexapi.ErrModelUnavailable) && s.currentVoiceTool == hexStreamToolID {
+					s.voiceStartBlocked = hexModelUnavailableText
 				}
 				if err = errors.Join(completion.Err, err); err != nil {
 					s.report.AudioError = err.Error()

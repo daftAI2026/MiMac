@@ -61,6 +61,10 @@ type Resources struct {
 	Sink       Sink
 	SampleRate int
 	Observer   PCMObserver
+	// DrainTimeout optionally extends the sink-finalization phase for adapters
+	// whose documented finish operation may wait beyond the ordinary tail
+	// deadline. Zero keeps the shared default. It does not extend Source.Stop.
+	DrainTimeout time.Duration
 	// WaitReceiver is supplied by an external-consumer adapter. It must verify
 	// the session's exact input route and active consumer, not merely that a
 	// shortcut was sent. Nil is for routes requiring no external readiness.
@@ -386,7 +390,11 @@ func (r *Runtime) advanceStopDeadlineLocked(s *resource) (Completion, bool) {
 		return r.claimFailureLocked(s)
 	}
 	playout := time.Duration(s.tailSamples) * time.Second / time.Duration(s.resources.SampleRate)
-	r.armStopDeadlineLocked(s, playout+2*time.Second)
+	drainTimeout := s.resources.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 2 * time.Second
+	}
+	r.armStopDeadlineLocked(s, playout+drainTimeout)
 	return Completion{}, false
 }
 

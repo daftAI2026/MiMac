@@ -88,10 +88,12 @@ func (s *shell) audioSetupSnapshot() audioSetupProjection {
 		projection.ComponentMessage = "尚未检查遥控器音频组件"
 		projection.ComponentNextStep = "重新检查音频组件"
 	}
-	if s.currentVoiceTool == appleSpeechToolID {
+	if s.selectedVoiceUsesDirectText() && s.currentVoiceTool == appleSpeechToolID {
 		projection.ComponentNextStep = "Apple语音识别使用自己的语音输入，不需要遥控器音频组件"
+	} else if s.selectedVoiceUsesDirectText() {
+		projection.ComponentNextStep = "Hex 使用遥控器音频，不需要此组件"
 	} else if s.effectiveAudioBackend() == "" {
-		projection.ComponentNextStep = "当前语音工具使用它自己的麦克风设置"
+		projection.ComponentNextStep = "当前语音工具使用它自己的音频设置"
 	}
 
 	var snapshot bridge.Snapshot
@@ -99,7 +101,7 @@ func (s *shell) audioSetupSnapshot() audioSetupProjection {
 		snapshot = s.coordinator.core.Snapshot()
 	}
 	projection.RouteLabel, projection.RouteTone, projection.RouteApplies = s.liveAudioStatus(snapshot)
-	if s.currentVoiceTool != appleSpeechToolID && s.effectiveAudioBackend() == compatibilityAudioBackend &&
+	if !s.selectedVoiceUsesDirectText() && s.effectiveAudioBackend() == compatibilityAudioBackend &&
 		(component == audioComponentMissing || errors.Is(s.liveAudio.audioFailure, errCompatRouteDeviceUID)) {
 		projection.RouteLabel = "没有找到遥控器音频组件"
 		projection.RouteTone = toneError
@@ -162,7 +164,7 @@ func (s *shell) retryAudioSetup() error {
 		if s.selectedAudioRouteTool() == nil {
 			return &audioSetupFailure{message: "当前工具不支持遥控器音频", nextStep: "选择支持的语音工具或使用该工具的Mac麦克风"}
 		}
-		if s.currentVoiceTool != appleSpeechToolID && s.effectiveAudioBackend() == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
+		if !s.selectedVoiceUsesDirectText() && s.effectiveAudioBackend() == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
 			return &audioSetupFailure{message: "没有找到遥控器音频组件", nextStep: "安装音频组件后重新检查"}
 		}
 		s.refreshLiveAudio()

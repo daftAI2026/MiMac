@@ -276,6 +276,10 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 			if c.callbacks.ManagePermissions != nil {
 				c.callbacks.ManagePermissions(value)
 			}
+		case 7:
+			if callback, ok := boolCallback(c.callbacks.ShowLiveText, value); ok {
+				callback()
+			}
 		}
 	})
 }

@@ -222,6 +222,68 @@ func TestVoiceOverlayPreferenceOnlyChangesDisplay(t *testing.T) {
 	s.closeVoiceOverlay()
 }
 
+func TestLiveTextPreferencePublishesOnlyForTheCurrentDotSession(t *testing.T) {
+	s, _, _, _ := newSessionHostTest(t)
+	s.preferencesState.value = defaultHostPreferences()
+	s.preferencesState.value.VoicePresentation = voicePresentationDotBar
+	s.preferencesState.path = filepath.Join(t.TempDir(), "preferences.json")
+	if err := s.applyLiveTextPreference(true); err != nil {
+		t.Fatal(err)
+	}
+	s.applyVoicePresentationSelection()
+	press := beginHostVoice(t, s)
+	first := s.coordinator.core.Snapshot().Session.Token
+	if frame := s.voiceOverlayFrameAt(time.Now()); !frame.ShowLiveText || frame.Token != first {
+		t.Fatalf("live text was not bound to the active dot session: %+v", frame)
+	}
+	if !s.voiceOverlay.interim.Publish(first, "first stable", " tentative") {
+		t.Fatal("active interim publication was rejected")
+	}
+	if frame := s.voiceOverlayFrameAt(time.Now()); frame.InterimStable != "first stable" || frame.InterimTentative != " tentative" {
+		t.Fatalf("live text frame = %+v, want current draft", frame)
+	}
+	if err := s.coordinator.step(bridge.RouteAvailable(false)); err != nil {
+		t.Fatal(err)
+	}
+	if frame := s.voiceOverlayFrameAt(time.Now()); frame.InterimStable != "" || frame.InterimTentative != "" {
+		t.Fatalf("cancelled session retained text: %+v", frame)
+	}
+	if s.voiceOverlay.interim.Publish(first, "late canceled draft", "") {
+		t.Fatal("cancelled session publication was accepted")
+	}
+	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.coordinator.step(bridge.RouteAvailable(true)); err != nil {
+		t.Fatal(err)
+	}
+	device, err := bridge.NewDevice("synthetic-source", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPress, err := bridge.NewPressToken(device, "voice", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.coordinator.step(bridge.VoiceBegan(secondPress)); err != nil {
+		t.Fatal(err)
+	}
+	second := s.coordinator.core.Snapshot().Session.Token
+	if second == first || second.ID() == first.ID() {
+		t.Fatal("Core reused the retired session ID")
+	}
+	frame := s.voiceOverlayFrameAt(time.Now())
+	if !frame.ShowLiveText || frame.InterimStable != "" || frame.InterimTentative != "" || frame.Token != second {
+		t.Fatalf("new session did not start with an empty live-text buffer: %+v", frame)
+	}
+	if s.voiceOverlay.interim.Publish(first, "late old draft", "") || s.voiceOverlay.interim.Snapshot(second) != (voiceInterimDraft{}) {
+		t.Fatal("late old-session text crossed into the new session")
+	}
+	if err := s.coordinator.step(bridge.RouteAvailable(false)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVoiceOverlayRenderErrorHidesWithoutEndingCapture(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()

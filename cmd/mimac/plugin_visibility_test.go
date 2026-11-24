@@ -36,8 +36,8 @@ func TestVoicePluginVisibilityIsBuildSpecificAndPresentationOnly(t *testing.T) {
 			releaseCount++
 		}
 	}
-	if releaseCount != 3 {
-		t.Fatalf("release-visible plugin count = %d, want 3", releaseCount)
+	if releaseCount != 4 {
+		t.Fatalf("release-visible plugin count = %d, want 4", releaseCount)
 	}
 	if s.currentVoiceTool != current {
 		t.Fatalf("release visibility changed current tool: got %q, want %q", s.currentVoiceTool, current)
@@ -53,14 +53,46 @@ func TestVoicePluginVisibilityIsBuildSpecificAndPresentationOnly(t *testing.T) {
 			devCount++
 		}
 	}
-	if devCount != 6 {
-		t.Fatalf("development-visible plugin count = %d, want 6", devCount)
+	if devCount != 7 {
+		t.Fatalf("development-visible plugin count = %d, want 7", devCount)
 	}
 	if s.currentVoiceTool != current {
 		t.Fatalf("development visibility changed current tool: got %q, want %q", s.currentVoiceTool, current)
 	}
 	if !selected.active || selected.snapshot.State != voicetools.Ready {
 		t.Fatal("development visibility changed plugin activation or discovered state")
+	}
+}
+
+func TestHexRecognitionUsesNormalVoicePluginAndDirectTextPath(t *testing.T) {
+	var tool *voiceTool
+	for _, candidate := range builtInVoiceTools() {
+		if candidate.id == hexStreamToolID {
+			tool = candidate
+			break
+		}
+	}
+	if tool == nil || tool.kind != voiceRecognition || !tool.releaseReady || !tool.directText || tool.discover == nil || tool.audioRouteFactory == nil {
+		t.Fatalf("Hex tool registration = %+v", tool)
+	}
+	s := &shell{voiceToolsState: voiceToolsState{tools: []*voiceTool{tool}, currentVoiceTool: hexStreamToolID}}
+	tool.active = true
+	tool.snapshot.State = voicetools.Ready
+	if !s.voicePluginVisible(tool) || !s.selectedVoiceUsesDirectText() || !s.directTextVoiceSelected() {
+		t.Fatal("ready Hex plugin is not available through the direct text selection path")
+	}
+	if got := voiceToolStatus(tool); got != "服务已连接；模型由 Hex 管理" {
+		t.Fatalf("Hex ready status = %q", got)
+	}
+	registered := false
+	for _, manifest := range s.voiceToolManifests() {
+		if manifest.ID == hexStreamToolID {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		t.Fatal("Hex recognition was not registered with the shared voice plugin runtime")
 	}
 }
 

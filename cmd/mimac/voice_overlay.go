@@ -14,14 +14,17 @@ import (
 // This is a render snapshot. Core and the existing PCM owner remain the only
 // sources of session identity, phase and input level.
 type voiceOverlayFrame struct {
-	Visible     bool
-	Token       bridge.SessionToken
-	Phase       bridge.Phase
-	Label       string
-	DB          float32
-	CenteredRMS float32
-	Spectrum    siriglass.Spectrum
-	Input       siriglass.InputState
+	Visible          bool
+	Token            bridge.SessionToken
+	Phase            bridge.Phase
+	Label            string
+	DB               float32
+	CenteredRMS      float32
+	Spectrum         siriglass.Spectrum
+	Input            siriglass.InputState
+	ShowLiveText     bool
+	InterimStable    string
+	InterimTentative string
 }
 
 type voiceOverlayView interface {
@@ -31,11 +34,13 @@ type voiceOverlayView interface {
 }
 
 type voiceOverlayState struct {
-	open  func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
-	view  voiceOverlayView
-	err   error // Optional display failure, never an audio/core failure.
-	meter voiceSpectrumState
-	mode  voicePresentationMode
+	open         func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
+	view         voiceOverlayView
+	err          error // Optional display failure, never an audio/core failure.
+	meter        voiceSpectrumState
+	mode         voicePresentationMode
+	interim      voiceInterimFeed
+	interimToken bridge.SessionToken // Main-thread owner for Begin/End; provider calls use the feed mutex.
 }
 
 const voicePresentationPlugin = "voice-presentation"
@@ -55,6 +60,7 @@ func (s *shell) voicePresentationActive() bool {
 }
 
 func (s *shell) applyVoicePresentationSelection() {
+	s.configureVoiceInterim()
 	if s.plugins == nil {
 		return
 	}
@@ -83,25 +89,64 @@ func (s *shell) applyVoicePresentationSelection() {
 }
 
 func (s *shell) stopVoicePresentation() {
+	s.endVoiceInterim()
+	s.voiceOverlay.interim.SetEnabled(false)
 	if s.voicePresentationActive() {
 		s.recordVoiceOverlayError(s.plugins.Disable(voicePresentationPlugin))
 	}
 }
 
+func (s *shell) configureVoiceInterim() {
+	state := &s.voiceOverlay
+	enabled := !s.closing && !s.preferencesState.loadFailed &&
+		s.preferencesState.value.ShowLiveText && s.preferencesState.value.VoicePresentation == voicePresentationDotBar
+	state.interim.SetEnabled(enabled)
+	if !enabled {
+		state.interimToken = bridge.SessionToken{}
+	}
+}
+
+func (s *shell) beginVoiceInterim(token bridge.SessionToken) {
+	state := &s.voiceOverlay
+	if state.interimToken != token {
+		state.interim.End(state.interimToken)
+		state.interim.Begin(token)
+		state.interimToken = token
+	}
+}
+
+func (s *shell) endVoiceInterim() {
+	state := &s.voiceOverlay
+	state.interim.End(state.interimToken)
+	state.interimToken = bridge.SessionToken{}
+}
+
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 	frame := voiceOverlayFrame{DB: -60}
+	frame.ShowLiveText = !s.closing && !s.preferencesState.loadFailed &&
+		s.preferencesState.value.ShowLiveText && s.preferencesState.value.VoicePresentation == voicePresentationDotBar
 	if !s.voicePresentationActive() || s.voiceOverlay.err != nil || s.closing ||
 		s.powerInputBlocked() || s.remoteState.stopPending || s.liveAudio.retiring || s.coordinator == nil ||
 		s.audioSession == nil || s.audioSession.runtime == nil {
+		s.endVoiceInterim()
 		return frame
 	}
 	snapshot := s.coordinator.core.Snapshot()
 	if !snapshot.HasSession {
+		s.endVoiceInterim()
 		return frame
 	}
 	phase := presentVoiceSession(snapshot)
 	if phase.phase == "" {
+		s.endVoiceInterim()
 		return frame
+	}
+	if frame.ShowLiveText {
+		s.beginVoiceInterim(snapshot.Session.Token)
+		draft := s.voiceOverlay.interim.Snapshot(snapshot.Session.Token)
+		frame.InterimStable, frame.InterimTentative = draft.Stable, draft.Tentative
+	} else {
+		s.endVoiceInterim()
 	}
 	frame.Visible, frame.Token, frame.Label = true, snapshot.Session.Token, phase.label
 	frame.Phase = snapshot.Session.Phase
@@ -185,6 +230,8 @@ func (s *shell) recordVoiceOverlayError(err error) {
 }
 
 func (s *shell) releaseVoiceOverlay() error {
+	s.endVoiceInterim()
+	s.voiceOverlay.interim.Clear()
 	view := s.voiceOverlay.view
 	if view == nil {
 		return nil

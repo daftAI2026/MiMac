@@ -22,6 +22,7 @@ type audioRouteConfig struct {
 	AppPath       string
 	Locator       voicetools.Locator
 	ResourcesPath string
+	OnPartial     func(bridge.SessionToken, string, string) bool
 }
 
 type audioRouteFactory func(context.Context, audioRouteConfig) (liveAudioRoute, error)
@@ -59,10 +60,10 @@ func (s *shell) desiredLiveAudioTool() *voiceTool {
 	}
 	for _, tool := range s.tools {
 		if tool.id == s.currentVoiceTool && tool.audioRouteFactory != nil && tool.active && !tool.busy && tool.snapshot.State == voicetools.Ready {
-			if tool.id != appleSpeechToolID && !s.plugins.Active(outputPlugin) {
+			if !voiceToolUsesDirectText(tool) && !s.plugins.Active(outputPlugin) {
 				return nil
 			}
-			if _, err := s.selectedVoiceAction(); err == nil || tool.id == appleSpeechToolID {
+			if _, err := s.selectedVoiceAction(); err == nil || (voiceToolUsesDirectText(tool) && s.directTextVoiceSelected()) {
 				return tool
 			}
 		}
@@ -100,7 +101,7 @@ func (s *shell) refreshLiveAudio() {
 			s.liveAudio.audioFailure = err
 			return
 		}
-		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator)
+		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator, s.voiceOverlay.interim.Publish)
 		if factory == nil {
 			err := errors.New("selected voice tool has no audio route factory")
 			s.report.AudioError = err.Error()
@@ -283,8 +284,11 @@ func (s *shell) liveAudioStatus(snapshot bridge.Snapshot) (string, statusTone, b
 	if s.liveAudio.retiring {
 		return "正在切换语音工具", toneNeutral, true
 	}
-	if s.currentVoiceTool != appleSpeechToolID && s.effectiveAudioBackend() == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
+	if !s.selectedVoiceUsesDirectText() && s.effectiveAudioBackend() == compatibilityAudioBackend && s.liveAudio.componentStatus == audioComponentMissing {
 		return "没有找到遥控器音频组件", toneError, true
+	}
+	if s.currentVoiceTool == hexStreamToolID && s.voiceStartBlocked == hexModelUnavailableText {
+		return hexModelUnavailableText, toneNeutral, true
 	}
 	if label, ok := liveAudioFailureStatus(s.liveAudio.audioFailure); ok {
 		return label, toneError, true
@@ -351,14 +355,14 @@ func (s *shell) logAudioCompletion(event bridge.Event, failed bool, err error) {
 }
 
 func (s *shell) audioRequested() bool {
-	return s.effectiveAudioBackend() != "" || s.currentVoiceTool == appleSpeechToolID
+	return s.effectiveAudioBackend() != "" || s.selectedVoiceUsesDirectText()
 }
 
 // Ordinary packaged launches can reuse an existing verified endpoint for a
 // supported current tool. A stored or diagnostic opt-out stays shortcut-only.
 func (s *shell) effectiveAudioBackend() string {
 	if s.liveAudio.selectInstalledBackend && s.liveAudio.componentStatus == audioComponentAvailable &&
-		s.currentVoiceTool != appleSpeechToolID && s.selectedAudioRouteTool() != nil {
+		!s.selectedVoiceUsesDirectText() && s.selectedAudioRouteTool() != nil {
 		return compatibilityAudioBackend
 	}
 	return s.liveAudio.backend
@@ -376,13 +380,13 @@ func (s *shell) selectedAudioRouteTool() *voiceTool {
 	return nil
 }
 
-func bindAudioRouteFactory(routeFactory audioRouteFactory, resourcesPath string, locator voicetools.Locator) func(context.Context, uint64, string) (liveAudioRoute, error) {
+func bindAudioRouteFactory(routeFactory audioRouteFactory, resourcesPath string, locator voicetools.Locator, onPartial func(bridge.SessionToken, string, string) bool) func(context.Context, uint64, string) (liveAudioRoute, error) {
 	if routeFactory == nil {
 		return nil
 	}
 	return func(ctx context.Context, generation uint64, appPath string) (liveAudioRoute, error) {
 		return routeFactory(ctx, audioRouteConfig{
-			Generation: generation, AppPath: appPath, Locator: locator, ResourcesPath: resourcesPath,
+			Generation: generation, AppPath: appPath, Locator: locator, ResourcesPath: resourcesPath, OnPartial: onPartial,
 		})
 	}
 }

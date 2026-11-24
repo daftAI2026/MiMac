@@ -89,6 +89,9 @@ func TestOnboardingMissingVoiceToolsRemainVisible(t *testing.T) {
 					if !ok {
 						t.Fatal("continue action missing")
 					}
+					if _, ok := v.Find("Hex 本地识别"); ok {
+						t.Fatal("inactive service-only tool offered before it can be selected")
+					}
 					for _, name := range []string{"Apple 语音识别", "豆包输入法", "微信输入法"} {
 						r, ok := v.Find(name)
 						if !ok || r.Y+r.H > next.Y {

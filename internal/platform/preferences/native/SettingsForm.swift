@@ -14,6 +14,7 @@ private struct PreferencesState: Decodable {
     var Login = false
     var Dock = false
     var VoicePresentation = 0
+    var ShowLiveText = false
     var Appearance = "system"
     var Dark = false
     var TextSize = 0
@@ -136,6 +137,17 @@ private struct SettingsForm: View {
                     }
                 } header: {
                     Text("系统权限").font(.system(size: state.BodySize, weight: .semibold))
+                }
+            }
+
+            if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue {
+                Section {
+                    Toggle("点阵实时字幕", isOn: toggle(state.ShowLiveText, kind: 7))
+                        .accessibilityIdentifier("voice-live-text-row")
+                } header: {
+                    Text("实验室").font(.system(size: state.BodySize, weight: .semibold))
+                } footer: {
+                    Text("语音工具提供实时识别时，在点阵下方显示听写文字")
                 }
             }
 

@@ -53,3 +53,8 @@ flowchart TD
     reset --> material
     resetAnimated --> material
     target["未来：可靠目标思考反馈；当前未知保持false"] -.-> thinkEdge
+
+    dots --> captionPref{"已开启实时字幕？"}
+    captionPref -->|是| caption["点阵下方的非激活字幕窗"]
+    incoming["当前识别工具的匹配会话临时文字"] --> caption
+    caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]

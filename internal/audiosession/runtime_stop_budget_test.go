@@ -87,6 +87,54 @@ func TestRuntimeDrainGetsOwnDeadlineAfterSourceStops(t *testing.T) {
 	}
 }
 
+func TestRuntimeUsesAdapterDrainTimeoutOverride(t *testing.T) {
+	const providerDrainBudget = 3 * time.Second
+	source := newStopDrainBudgetSource()
+	sink := &drainOverrideSink{deadline: make(chan time.Time, 1)}
+	runtime := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+		return Resources{Source: source, Sink: sink, SampleRate: 16000, DrainTimeout: providerDrainBudget}, nil
+	})
+	core, device := newCoreForSessionTest(t, "adapter-drain-timeout-override")
+	press, token, prepare := beginVoiceSession(t, core, device, 1)
+	if err := runtime.Submit(prepare); err != nil {
+		t.Fatal(err)
+	}
+	prepared := waitCompletion(t, runtime)
+	if prepared.Err != nil {
+		t.Fatalf("prepare source: %v", prepared.Err)
+	}
+	applySourceEffects(t, runtime, applyCompletion(t, core, prepared))
+	waitSignal(t, source.readStarted)
+
+	ended, err := core.Step(bridge.VoiceEnded(press))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySourceEffects(t, runtime, ended)
+	if stopErr := waitStopDrainValue(t, source.stopReturned, "Source.Stop return"); stopErr != nil {
+		t.Fatalf("Source.Stop: %v", stopErr)
+	}
+	select {
+	case deadline := <-sink.deadline:
+		if remaining := time.Until(deadline); remaining < 2700*time.Millisecond {
+			t.Fatalf("provider drain deadline has only %s remaining; wanted about %s", remaining, providerDrainBudget)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Sink.Drain did not receive the provider budget")
+	}
+	completion := waitCompletion(t, runtime)
+	effects := applyCompletion(t, core, completion)
+	if completion.Err != nil || completion.Event != bridge.SourceDrained(token) {
+		t.Fatalf("provider-budget drain completion = %+v", completion)
+	}
+	applySourceEffects(t, runtime, effects)
+	closeCtx, cancel := context.WithTimeout(context.Background(), audioSessionTestTimeout)
+	defer cancel()
+	if err := runtime.Close(closeCtx); err != nil {
+		t.Fatalf("close runtime after extended drain: %v", err)
+	}
+}
+
 type stopDrainBudgetSource struct {
 	readStarted  chan struct{}
 	stopStarted  chan time.Time
@@ -165,6 +213,16 @@ type stopDrainBudgetSink struct {
 	drainCalls    atomic.Int32
 	closeCalls    atomic.Int32
 }
+
+type drainOverrideSink struct{ deadline chan time.Time }
+
+func (*drainOverrideSink) TryWrite([]int16) error { return nil }
+func (s *drainOverrideSink) Drain(ctx context.Context) error {
+	deadline, _ := ctx.Deadline()
+	s.deadline <- deadline
+	return nil
+}
+func (*drainOverrideSink) Close() error { return nil }
 
 func newStopDrainBudgetSink() *stopDrainBudgetSink {
 	return &stopDrainBudgetSink{

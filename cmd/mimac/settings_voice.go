@@ -127,6 +127,13 @@ func (s *shell) voiceToolDetails(c *ui.Context, a appearance, tool *voiceTool) {
 		})
 		return
 	}
+	if tool.id == hexStreamToolID {
+		ui.Column(c).FillWidth().MinWidth(0).Children(func() {
+			sectionLine(c, a)
+			settingsValueRow(c, &a.theme, a.fonts.body, "识别模型", "在 Hex 中加载听写模型")
+		})
+		return
+	}
 	if len(tool.snapshot.Actions) == 0 {
 		sectionLine(c, a)
 		ui.Text(c, "未发现可显示的快捷键").FontSize(a.fonts.caption).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)

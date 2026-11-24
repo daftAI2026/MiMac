@@ -15,7 +15,7 @@ func (s *shell) syncVoiceBinding() {
 	s.blockUnpreparedLiveAudio()
 	s.coordinator.voiceButton = s.voiceButtonID()
 	s.coordinator.resolveLocalVoice = func() (bridge.Binding, bool, error) {
-		if !s.appleVoiceSelected() {
+		if !s.directTextVoiceSelected() {
 			return bridge.Binding{}, false, nil
 		}
 		if !s.remoteHasReservation() || s.audioSession == nil || s.audioResourcesReady == nil || !s.audioResourcesReady() || s.closing {

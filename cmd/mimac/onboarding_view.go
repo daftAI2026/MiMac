@@ -332,7 +332,9 @@ func (s *shell) onboardingVoiceStep(c *ui.Context, a appearance) {
 			ui.Text(c, "无法读取工具设置，请在插件中重试").FontSize(onboardingBodySize).TextColor(a.theme.TextMuted).Role(ui.RoleStatus)
 		} else {
 			for _, tool := range s.tools {
-				if s.voicePluginVisible(tool) && tool.releaseReady {
+				// Service-only tools are enabled in Plugins. The setup scan
+				// can offer an inactive tool only when it can locate or prepare it.
+				if tool.releaseReady && (tool.kind != voiceRecognition || tool.active || tool.locateApplication != nil || tool.prepareAssets != nil) {
 					s.onboardingVoiceToolRow(c, a, tool)
 				}
 			}
