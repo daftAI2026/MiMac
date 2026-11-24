@@ -20,6 +20,8 @@ func appleSpeechAudioRouteFactory(_ context.Context, config audioRouteConfig) (l
 		config.Generation,
 		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
 		filepath.Join(config.ResourcesPath, "libMiMacSpeech.dylib"),
+		config.OnPartial,
+		config.PartialsEnabled,
 	)
 }
 

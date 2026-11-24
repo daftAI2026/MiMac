@@ -144,21 +144,22 @@
   },
   {
     "id": "apple-text-target",
-    "title": "Apple 文本目标冻结与投递",
-    "summary": "Apple Speech 按下时单次捕获并复核前台进程、可编辑 AX 焦点/选区。首次 AX 目标未就绪会拒绝本次输入，保留音频连接；没有自动等待、目标缓存或延后重试。500ms 仅检查捕获结果是否过期。匹配会话完成后只尝试一次文本插入。 识别保留快速结果选项，只请求最终结果；成功 drain 后才取回文本，不向编辑器插入中途修订。",
+    "title": "听写、字幕与最终文字投递",
+    "summary": "Apple 与 Hex 按下即开始识别，同时在后台尝试获取原应用的写入目标。临时结果只供当前会话呈现；最终文字最多向原目标提交一次。没有可用目标时，用户可从菜单复制这一句。自动使用剪贴板和持久听写历史留待后续设计。",
     "sourcePaths": [
       "cmd/mimac/apple_audio.go",
       "cmd/mimac/audio_sessions.go",
       "internal/adapters/textoutput/textoutput.go",
       "internal/adapters/textoutput/native_darwin.go",
       "internal/adapters/applespeech/applespeech.go",
-      "internal/adapters/applespeech/native/AppleSpeechBridge.swift"
+      "internal/adapters/applespeech/native/AppleSpeechBridge.swift",
+      "internal/adapters/textoutput/dictation.go"
     ]
   },
   {
     "id": "voice-tool-selection",
     "title": "语音工具启用与选择",
-    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。 选择 Hex 时，宿主使用本机 /streams 服务接收遥控器 PCM，最终结果交给按下时捕获的文本目标。",
+    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。 选择 Hex 时，宿主使用本机 /streams 服务接收遥控器 PCM，最终文字交给本轮可选的输出目标。 Hex 安装检测、服务状态和流式模型能力分别验证。",
     "sourcePaths": [
       "cmd/mimac/voice_tools.go",
       "cmd/mimac/voice_binding.go",
@@ -178,7 +179,8 @@
       "cmd/mimac/apple_voice_existing_api_test.go",
       "internal/adapters/hex/discovery.go",
       "internal/adapters/hex/streams.go",
-      "cmd/mimac/hex_audio.go"
+      "cmd/mimac/hex_audio.go",
+      "internal/adapters/hex/application.go"
     ]
   },
   {
@@ -206,7 +208,7 @@
   {
     "id": "voice-entry-boundary",
     "title": "语音入口与提交边界",
-    "summary": "每轮只控制一个选定工具。Apple Speech 冻结文本目标，外部工具冻结唯一动作计划。WeType 旧固定包同一输入框两轮真实遥控落字通过；冷态首轮/外部麦克风变化/异常恢复仍待验。已知 WeType 的 Escape 会提交文字，不能当作撤销。",
+    "summary": "每轮只控制一个选定工具。Apple 和 Hex 在收音时独立获取文本目标，外部工具冻结唯一动作计划。WeType 旧固定包同一输入框两轮真实遥控落字通过；冷态首轮/外部麦克风变化/异常恢复仍待验。已知 WeType 的 Escape 会提交文字，不能当作撤销。",
     "sourcePaths": [
       "cmd/mimac/voice_tool_preferences.go",
       "cmd/mimac/voice_tools.go",
@@ -225,7 +227,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵可选屏幕顶部（默认）或底部；底部保持点阵在 Dock 上方的安全间距。字幕随点阵位置自动放在屏幕内侧。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。 点阵可独立开启实时字幕，只显示当前会话的临时识别文字，由无键盘焦点的单行窗口呈现。",
+    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵可选屏幕顶部（默认）或底部；底部保持点阵在 Dock 上方的安全间距。字幕随点阵位置自动放在屏幕内侧。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。 Apple 和支持中间结果的 Hex 模型向点阵提供实时字幕；实验室的独占显示属于全局偏好，由各工具按能力处理。豆包使用当前会话的录音窗，微信的独立浮窗仍待联验。字幕仅使用匹配会话的临时识别文字，由无键盘焦点的单行窗口呈现。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
@@ -265,7 +267,9 @@
       "cmd/mimac/plugins.go",
       "cmd/mimac/settings_mapping.go",
       "cmd/mimac/voice_caption_view.go",
-      "cmd/mimac/voice_interim.go"
+      "cmd/mimac/voice_interim.go",
+      "cmd/mimac/voice_prompt_presentation.go",
+      "internal/adapters/doubao/presentation.go"
     ]
   },
   {

@@ -82,7 +82,7 @@ for arch in arm64 amd64; do
 		-framework Speech -framework AVFoundation \
 		"$ROOT_DIR/internal/adapters/applespeech/native/AppleSpeechBridge.swift" \
 		-o "$output_dir/libMiMacSpeech.dylib"
-	for symbol in MiMacAppleSpeechIsAvailable MiMacAppleSpeechCreate MiMacAppleSpeechWaitReady MiMacAppleSpeechTryWrite MiMacAppleSpeechBeginDrain MiMacAppleSpeechWaitDone MiMacAppleSpeechRequestCancel MiMacAppleSpeechWaitTerminated MiMacAppleSpeechCopyFinalText MiMacAppleSpeechCopyErrorMessage MiMacAppleSpeechRelease; do
+	for symbol in MiMacAppleSpeechIsAvailable MiMacAppleSpeechCreate MiMacAppleSpeechCreateWithPartials MiMacAppleSpeechWaitReady MiMacAppleSpeechTryWrite MiMacAppleSpeechBeginDrain MiMacAppleSpeechWaitDone MiMacAppleSpeechWaitPartial MiMacAppleSpeechRequestCancel MiMacAppleSpeechWaitTerminated MiMacAppleSpeechCopyFinalText MiMacAppleSpeechCopyErrorMessage MiMacAppleSpeechRelease; do
 		/usr/bin/nm -gU "$output_dir/libMiMacSpeech.dylib" | /usr/bin/grep -q " _$symbol$" || {
 			echo "missing Apple Speech export: $symbol" >&2
 			exit 1

@@ -59,8 +59,7 @@ func hexAudioRouteFactory(ctx context.Context, config audioRouteConfig) (liveAud
 		return nil, err
 	}
 	capture := func() (transcriptTarget, error) {
-		target, captureErr := textoutput.Capture()
-		return target, captureErr
+		return textoutput.BeginDictation(), nil
 	}
 	route, routeErr := newHexAudioRoute(config.Generation, func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
 		return owner.NewSource(ctx, key)

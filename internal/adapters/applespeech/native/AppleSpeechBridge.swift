@@ -1,6 +1,7 @@
 // Minimal public-Speech bridge for MiMac. Compile this dylib with a macOS 14.2
 // deployment target; SpeechAnalyzer entry points are guarded at macOS 26.0.
 import AVFoundation
+import CoreMedia
 import Darwin
 import Foundation
 import Speech
@@ -23,11 +24,114 @@ private let maximumBlockSamples = 4_096
 // AVAudioPCMBuffer and temporary Swift arrays are copies outside this frame cap.
 private let nativeQueueCapacity = 32_000 - (2 * maximumBlockSamples)
 private let maximumFinalTextBytes = 64 * 1024
+private let partialTimeoutStatus: Int32 = 0
+private let partialUpdatedStatus: Int32 = 1
+private let partialTerminalStatus: Int32 = 2
+private let partialBufferTooSmallStatus: Int32 = 3
+private let partialInvalidArgumentStatus: Int32 = 4
 
 private enum QueueItem {
     case batch([Int16])
     case finished
     case wake
+}
+
+struct TranscriptSegment {
+    let range: CMTimeRange
+    let sequence: Int
+    var text: String
+    var isStable: Bool
+}
+
+struct TranscriptSnapshot {
+    let stable: String
+    let tentative: String
+    let finalText: String
+    let overLimit: Bool
+}
+
+struct TranscriptAccumulator {
+    private var segments: [TranscriptSegment] = []
+    private var finalizedThrough: CMTime?
+    private var nextSequence = 0
+
+    mutating func consume(range: CMTimeRange, text: String, isFinal: Bool, resultsFinalizationTime: CMTime) -> TranscriptSnapshot {
+        if resultsFinalizationTime.isNumeric &&
+            (finalizedThrough == nil || CMTimeCompare(resultsFinalizationTime, finalizedThrough!) > 0) {
+            finalizedThrough = resultsFinalizationTime
+        }
+        let stableByTime = range.end.isNumeric && finalizedThrough.map {
+            CMTimeCompare(range.end, $0) <= 0
+        } == true
+        let isStable = isFinal || stableByTime
+
+        let overlapping = segments.indices.filter { transcriptRangesOverlap(segments[$0].range, range) }
+        if text.isEmpty {
+            // Empty volatile text revokes the prior tentative result for its
+            // range, including any wider same-phrase revision it overlaps.
+            segments.removeAll { !$0.isStable && transcriptRangesOverlap($0.range, range) }
+        } else if let exact = segments.firstIndex(where: { $0.range == range }) {
+            if !segments[exact].isStable || isStable {
+                segments[exact].text = text
+                segments[exact].isStable = segments[exact].isStable || isStable
+            }
+        } else if !overlapping.isEmpty {
+            // Volatile result ranges can be revised or regrouped. Replace the
+            // overlapping cluster with the newest interpretation so the same
+            // audio interval never appears twice in captions or final output.
+            // A non-final update cannot rewrite already finalized ranges.
+            let overlapsStable = overlapping.contains { segments[$0].isStable }
+            if !overlapsStable || isStable {
+                segments.removeAll { transcriptRangesOverlap($0.range, range) }
+                segments.append(TranscriptSegment(range: range, sequence: nextSequence, text: text, isStable: isStable))
+                nextSequence += 1
+            }
+        } else {
+            segments.append(TranscriptSegment(range: range, sequence: nextSequence, text: text, isStable: isStable))
+            nextSequence += 1
+        }
+
+        if let finalizedThrough {
+            for index in segments.indices where segments[index].range.end.isNumeric {
+                if CMTimeCompare(segments[index].range.end, finalizedThrough) <= 0 {
+                    segments[index].isStable = true
+                }
+            }
+        }
+        sortSegments()
+        return makeSnapshot(final: false)
+    }
+
+    mutating func finish() -> TranscriptSnapshot {
+        for index in segments.indices { segments[index].isStable = true }
+        return makeSnapshot(final: true)
+    }
+
+    private mutating func sortSegments() {
+        segments.sort { lhs, rhs in
+            if lhs.range.start.isNumeric && rhs.range.start.isNumeric {
+                let startOrder = CMTimeCompare(lhs.range.start, rhs.range.start)
+                if startOrder != 0 { return startOrder < 0 }
+                let endOrder = CMTimeCompare(lhs.range.end, rhs.range.end)
+                if endOrder != 0 { return endOrder < 0 }
+            }
+            return lhs.sequence < rhs.sequence
+        }
+    }
+
+    private func makeSnapshot(final: Bool) -> TranscriptSnapshot {
+        let stable = segments.filter(\.isStable).map(\.text).joined()
+        let tentative = final ? "" : segments.filter { !$0.isStable }.map(\.text).joined()
+        let complete = segments.map(\.text).joined()
+        let overLimit = segments.count > 8192 || stable.utf8.count + tentative.utf8.count > maximumFinalTextBytes || complete.utf8.count > maximumFinalTextBytes
+        return TranscriptSnapshot(stable: stable, tentative: tentative, finalText: complete, overLimit: overLimit)
+    }
+
+}
+
+func transcriptRangesOverlap(_ lhs: CMTimeRange, _ rhs: CMTimeRange) -> Bool {
+    guard lhs.start.isNumeric, lhs.end.isNumeric, rhs.start.isNumeric, rhs.end.isNumeric else { return lhs == rhs }
+    return CMTimeCompare(lhs.start, rhs.end) < 0 && CMTimeCompare(rhs.start, lhs.end) < 0
 }
 
 private struct BridgeFailure: Error, CustomStringConvertible {
@@ -106,6 +210,9 @@ private final class AppleSpeechSession: @unchecked Sendable {
     private var workerTerminated = false
     private var failureMessage = ""
     private var finalTextValue = ""
+    private var stablePartialTextValue = ""
+    private var tentativePartialTextValue = ""
+    private var partialVersion: UInt64 = 0
 
     // The fixed ring plus one stream slot and one producer-held block is at
     // most 32,000 logical audio samples in flight. Transient copies are separate.
@@ -121,9 +228,9 @@ private final class AppleSpeechSession: @unchecked Sendable {
     private var resultsTask: Task<Void, Error>?
     private var cancellationTask: Task<Void, Never>?
 
-    init(localeIdentifier: String, installAssets: Bool) {
+    init(localeIdentifier: String, installAssets: Bool, enablePartials: Bool) {
         let task = Task.detached(priority: .userInitiated) { [self] in
-            await run(localeIdentifier: localeIdentifier, installAssets: installAssets)
+            await run(localeIdentifier: localeIdentifier, installAssets: installAssets, enablePartials: enablePartials)
         }
         let cancelNow = withConditionLock {
             workerTask = task
@@ -156,6 +263,46 @@ private final class AppleSpeechSession: @unchecked Sendable {
             self.state == stateDrained || self.state == stateCancelled || self.state == stateFailed
         }
         return state
+    }
+
+    func waitPartial(
+        afterVersion: UInt64,
+        timeoutMilliseconds: Int32,
+        stableOutput: UnsafeMutablePointer<UInt8>?,
+        stableCapacity: Int32,
+        stableLength: UnsafeMutablePointer<Int32>?,
+        tentativeOutput: UnsafeMutablePointer<UInt8>?,
+        tentativeCapacity: Int32,
+        tentativeLength: UnsafeMutablePointer<Int32>?,
+        versionOutput: UnsafeMutablePointer<UInt64>?
+    ) -> Int32 {
+        guard let stableOutput, let stableLength, let tentativeOutput, let tentativeLength,
+              let versionOutput, stableCapacity >= 0, tentativeCapacity >= 0 else {
+            return partialInvalidArgumentStatus
+        }
+        condition.lock()
+        defer { condition.unlock() }
+        waitLocked(timeoutMilliseconds: timeoutMilliseconds) {
+            self.partialVersion != afterVersion || self.isTerminalLocked
+        }
+        versionOutput.pointee = partialVersion
+        if partialVersion != afterVersion {
+            let stableBytes = Array(stablePartialTextValue.utf8)
+            let tentativeBytes = Array(tentativePartialTextValue.utf8)
+            guard stableBytes.count <= Int(stableCapacity), tentativeBytes.count <= Int(tentativeCapacity) else {
+                return partialBufferTooSmallStatus
+            }
+            for index in stableBytes.indices { stableOutput[index] = stableBytes[index] }
+            for index in tentativeBytes.indices { tentativeOutput[index] = tentativeBytes[index] }
+            stableLength.pointee = Int32(stableBytes.count)
+            tentativeLength.pointee = Int32(tentativeBytes.count)
+            return partialUpdatedStatus
+        }
+        return isTerminalLocked ? partialTerminalStatus : partialTimeoutStatus
+    }
+
+    private var isTerminalLocked: Bool {
+        state == stateDrained || state == stateCancelled || state == stateFailed || workerTerminated
     }
 
     func waitTerminated(timeoutMilliseconds: Int32) -> Bool {
@@ -293,7 +440,7 @@ private final class AppleSpeechSession: @unchecked Sendable {
         }
     }
 
-    private func run(localeIdentifier: String, installAssets: Bool) async {
+    private func run(localeIdentifier: String, installAssets: Bool, enablePartials: Bool) async {
         var localAnalyzer: SpeechAnalyzer?
         var localAnalysisTask: Task<Void, Error>?
         var localResultsTask: Task<Void, Error>?
@@ -316,7 +463,11 @@ private final class AppleSpeechSession: @unchecked Sendable {
 
             let preset = SpeechTranscriber.Preset.progressiveTranscription
             var reportingOptions = preset.reportingOptions
-            reportingOptions.remove(.volatileResults)
+            if enablePartials {
+                reportingOptions.insert(.volatileResults)
+            } else {
+                reportingOptions.remove(.volatileResults)
+            }
             let transcriber = SpeechTranscriber(
                 locale: locale,
                 transcriptionOptions: preset.transcriptionOptions,
@@ -400,7 +551,13 @@ private final class AppleSpeechSession: @unchecked Sendable {
             try Task.checkCancellation()
 
             let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(1))
-            let resultTask = Task { try await collectFinalResults(from: transcriber) }
+            let resultTask = Task {
+                if enablePartials {
+                    try await collectStreamingResults(from: transcriber)
+                } else {
+                    try await collectFinalResults(from: transcriber)
+                }
+            }
             localResultsTask = resultTask
             let analysisTask = Task { () throws -> Void in
                 let end = try await createdAnalyzer.analyzeSequence(stream)
@@ -509,30 +666,7 @@ private final class AppleSpeechSession: @unchecked Sendable {
             guard result.isFinal else { continue }
             finalText += String(result.text.characters)
             guard finalText.utf8.count <= maximumFinalTextBytes else {
-                let pending = withConditionLock { () -> (
-                    CheckedContinuation<QueueItem, Never>?,
-                    AsyncStream<AnalyzerInput>.Continuation?,
-                    Task<Void, Never>?,
-                    Task<Void, Error>?
-                ) in
-                    failureMessage = "final text exceeds 65536 UTF-8 bytes"
-                    state = stateFailed
-                    ringCount = 0
-                    ringHead = 0
-                    let waiter = queueWaiter
-                    queueWaiter = nil
-                    let continuation = inputContinuation
-                    let worker = workerTask
-                    let analysis = analysisTask
-                    condition.broadcast()
-                    return (waiter, continuation, worker, analysis)
-                }
-                let (waiter, continuation, worker, analysis) = pending
-                waiter?.resume(returning: .wake)
-                continuation?.finish()
-                analysis?.cancel()
-                worker?.cancel()
-                throw BridgeFailure(description: "final text exceeds 65536 UTF-8 bytes")
+                throw failResultOverflow()
             }
         }
         withConditionLock {
@@ -540,6 +674,76 @@ private final class AppleSpeechSession: @unchecked Sendable {
                 finalTextValue = finalText
             }
         }
+    }
+
+    private func collectStreamingResults(from transcriber: SpeechTranscriber) async throws {
+        var accumulator = TranscriptAccumulator()
+
+        for try await result in transcriber.results {
+            try Task.checkCancellation()
+            let snapshot = accumulator.consume(
+                range: result.range,
+                text: String(result.text.characters),
+                isFinal: result.isFinal,
+                resultsFinalizationTime: result.resultsFinalizationTime
+            )
+            guard !snapshot.overLimit else {
+                throw failResultOverflow()
+            }
+            publishPartial(stable: snapshot.stable, tentative: snapshot.tentative)
+        }
+
+        let finalSnapshot = accumulator.finish()
+        guard !finalSnapshot.overLimit else {
+            throw failResultOverflow()
+        }
+        publishPartial(stable: finalSnapshot.finalText, tentative: "")
+        withConditionLock {
+            if state != stateCancelled && state != stateFailed {
+                stablePartialTextValue = finalSnapshot.finalText
+                tentativePartialTextValue = ""
+                finalTextValue = finalSnapshot.finalText
+                condition.broadcast()
+            }
+        }
+    }
+
+    private func publishPartial(stable: String, tentative: String) {
+        withConditionLock {
+            guard state != stateCancelled && state != stateFailed,
+                  stablePartialTextValue != stable || tentativePartialTextValue != tentative else { return }
+            stablePartialTextValue = stable
+            tentativePartialTextValue = tentative
+            partialVersion &+= 1
+            condition.broadcast()
+        }
+    }
+
+    private func failResultOverflow() -> BridgeFailure {
+        let pending = withConditionLock { () -> (
+            CheckedContinuation<QueueItem, Never>?,
+            AsyncStream<AnalyzerInput>.Continuation?,
+            Task<Void, Never>?,
+            Task<Void, Error>?
+        ) in
+            failureMessage = "final text exceeds 65536 UTF-8 bytes"
+            state = stateFailed
+            ringCount = 0
+            ringHead = 0
+            let waiter = queueWaiter
+            queueWaiter = nil
+            let continuation = inputContinuation
+            let worker = workerTask
+            let analysis = analysisTask
+            condition.broadcast()
+            return (waiter, continuation, worker, analysis)
+        }
+        let (waiter, continuation, worker, analysis) = pending
+        waiter?.resume(returning: .wake)
+        continuation?.finish()
+        analysis?.cancel()
+        worker?.cancel()
+        return BridgeFailure(description: "final text exceeds 65536 UTF-8 bytes")
     }
 
     private func cancelAndJoin(
@@ -606,7 +810,34 @@ public func MiMacAppleSpeechCreate(
         return nil
     }
     let identifier = String(cString: locale)
-    let session = AppleSpeechSession(localeIdentifier: identifier, installAssets: installAssets == 1)
+    let session = AppleSpeechSession(localeIdentifier: identifier, installAssets: installAssets == 1, enablePartials: false)
+    statusOut.pointee = 0
+    return Unmanaged.passRetained(session).toOpaque()
+}
+
+@_cdecl("MiMacAppleSpeechCreateWithPartials")
+public func MiMacAppleSpeechCreateWithPartials(
+    _ locale: UnsafePointer<CChar>?,
+    _ sampleRate: Int32,
+    _ installAssets: Int32,
+    _ enablePartials: Int32,
+    _ statusOut: UnsafeMutablePointer<Int32>?,
+    _ errorBuffer: UnsafeMutablePointer<CChar>?,
+    _ errorCapacity: Int32
+) -> UnsafeMutableRawPointer? {
+    guard let statusOut else { return nil }
+    guard #available(macOS 26.0, *) else {
+        statusOut.pointee = 1
+        writeCString("SpeechAnalyzer requires macOS 26 or later", buffer: errorBuffer, capacity: errorCapacity)
+        return nil
+    }
+    guard sampleRate == 16_000, let locale, enablePartials == 1 else {
+        statusOut.pointee = 2
+        writeCString("expected 16000 Hz mono Int16, locale, and enabled partial results", buffer: errorBuffer, capacity: errorCapacity)
+        return nil
+    }
+    let identifier = String(cString: locale)
+    let session = AppleSpeechSession(localeIdentifier: identifier, installAssets: installAssets == 1, enablePartials: true)
     statusOut.pointee = 0
     return Unmanaged.passRetained(session).toOpaque()
 }
@@ -633,6 +864,33 @@ public func MiMacAppleSpeechBeginDrain(_ raw: UnsafeMutableRawPointer?) -> Int32
 public func MiMacAppleSpeechWaitDone(_ raw: UnsafeMutableRawPointer?, _ timeoutMilliseconds: Int32) -> Int32 {
     guard #available(macOS 26.0, *), let session = object(for: raw) else { return stateFailed }
     return session.waitDone(timeoutMilliseconds: timeoutMilliseconds)
+}
+
+@_cdecl("MiMacAppleSpeechWaitPartial")
+public func MiMacAppleSpeechWaitPartial(
+    _ raw: UnsafeMutableRawPointer?,
+    _ afterVersion: UInt64,
+    _ timeoutMilliseconds: Int32,
+    _ stableOutput: UnsafeMutablePointer<UInt8>?,
+    _ stableCapacity: Int32,
+    _ stableLength: UnsafeMutablePointer<Int32>?,
+    _ tentativeOutput: UnsafeMutablePointer<UInt8>?,
+    _ tentativeCapacity: Int32,
+    _ tentativeLength: UnsafeMutablePointer<Int32>?,
+    _ versionOutput: UnsafeMutablePointer<UInt64>?
+) -> Int32 {
+    guard #available(macOS 26.0, *), let session = object(for: raw) else { return partialInvalidArgumentStatus }
+    return session.waitPartial(
+        afterVersion: afterVersion,
+        timeoutMilliseconds: timeoutMilliseconds,
+        stableOutput: stableOutput,
+        stableCapacity: stableCapacity,
+        stableLength: stableLength,
+        tentativeOutput: tentativeOutput,
+        tentativeCapacity: tentativeCapacity,
+        tentativeLength: tentativeLength,
+        versionOutput: versionOutput
+    )
 }
 
 @_cdecl("MiMacAppleSpeechRequestCancel")

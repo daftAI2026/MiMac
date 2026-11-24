@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"mimac.local/mimac/internal/voicetools"
 )
@@ -36,7 +37,7 @@ func (s *shell) voiceSettings(c *ui.Context, a appearance) {
 	for _, kind := range []voiceToolKind{voiceInputMethod, voiceRecognition, voiceApplication} {
 		cards := make([]func(), 0, len(enabled))
 		for _, tool := range enabled {
-			if tool.kind != kind {
+			if voiceToolSettingsKind(tool) != kind {
 				continue
 			}
 			tool := tool
@@ -61,6 +62,16 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 			ui.Row(c).FillWidth().MinWidth(0).MinHeight(controlHeight).AlignItems(ui.Center).Gap(spaceSM).Children(func() {
 				s.voiceToolArtwork(c, a, tool)
 				ui.Text(c, tool.name).FontSize(a.fonts.body).FontWeight(600).Grow(1).MinWidth(0)
+				if tool.snapshot.State == voicetools.NotFound && !tool.busy && tool.installURL != "" {
+					if appButton(c, a, "下载安装…", false).Label("下载" + tool.name).Clicked() {
+						s.toolError = ""
+						if err := mygo.Shell.OpenExternal(tool.installURL); err != nil {
+							s.toolError = "无法打开下载页面，请重试"
+						}
+						c.Invalidate()
+					}
+					return
+				}
 				label := "使用"
 				if selected {
 					label = "当前工具"

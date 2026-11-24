@@ -155,12 +155,7 @@ func (s *shell) onboardingPageHeader(c *ui.Context, a appearance, width float32,
 			})
 			ui.Box(c).Height(sectionGap).Shrink(0)
 		} else {
-			if s.appIcon != nil {
-				ui.Image(c, s.appIcon).Size(onboardingStepIconSize, onboardingStepIconSize).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
-					DrawOver(func(p *ui.Painter, r ui.Rect) {
-						p.Stroke(r, a.theme.Border, r.W/4, lineWidth)
-					})
-			}
+			s.drawAppIcon(c, a, onboardingStepIconSize)
 			ui.Box(c).Height(onboardingHeadingGap).Shrink(0)
 		}
 		onboardingTextHeader(c, a, width, titleSize, heading, description)

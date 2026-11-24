@@ -367,7 +367,7 @@ func (s *shell) pluginSettings(c *ui.Context, a appearance) {
 	for _, kind := range []voiceToolKind{voiceInputMethod, voiceRecognition, voiceApplication} {
 		cards := make([]func(), 0, len(s.tools))
 		for _, tool := range s.tools {
-			if tool.kind != kind || !s.voicePluginVisible(tool) {
+			if voiceToolSettingsKind(tool) != kind || !s.voicePluginVisible(tool) {
 				continue
 			}
 			cards = append(cards, pluginCard(tool.name, voiceToolStatus(tool), tool, func() {

@@ -21,35 +21,47 @@ import (
 )
 
 type voiceTool struct {
-	id, name             string
-	installURL           string
-	kind                 voiceToolKind
-	discover             func(context.Context, voicetools.Locator) voicetools.Snapshot
-	locateApplication    func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
-	audioRouteFactory    audioRouteFactory
-	directText           bool
-	fallbackIconPNG      []byte
-	systemArtwork        string
-	prepareAssets        func(context.Context, voicetools.Locator) voicetools.Snapshot
-	requiredInputSource  func(string) (string, bool)
-	active, busy         bool
-	releaseReady         bool
-	preparingAssets      bool
-	cancelRequested      bool
-	lastAttemptCancelled bool
-	sequence             uint64
-	cancel               context.CancelFunc
-	snapshot             voicetools.Snapshot
+	id, name              string
+	installURL            string
+	kind                  voiceToolKind
+	displayKind           voiceToolKind
+	liveText              voiceToolLiveTextCapability
+	discover              func(context.Context, voicetools.Locator) voicetools.Snapshot
+	locateApplication     func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
+	audioRouteFactory     audioRouteFactory
+	directText            bool
+	voicePromptBundleID   string
+	voicePromptSuppressor func(int32, string) voicePromptSuppressor
+	fallbackIconPNG       []byte
+	systemArtwork         string
+	prepareAssets         func(context.Context, voicetools.Locator) voicetools.Snapshot
+	requiredInputSource   func(string) (string, bool)
+	active, busy          bool
+	releaseReady          bool
+	preparingAssets       bool
+	cancelRequested       bool
+	lastAttemptCancelled  bool
+	sequence              uint64
+	cancel                context.CancelFunc
+	snapshot              voicetools.Snapshot
 }
 
-// Kind describes the user-facing capability, independent of how the adapter
-// executes. Both kinds use the same plugin lifecycle and discovery contract.
+// Kind describes the tool's actual capability class, independent of how the
+// adapter executes. displayKind is a settings-only grouping override.
 type voiceToolKind string
 
 const (
 	voiceInputMethod voiceToolKind = "语音输入法"
 	voiceApplication voiceToolKind = "应用语音"
 	voiceRecognition voiceToolKind = "语音识别"
+)
+
+type voiceToolLiveTextCapability uint8
+
+const (
+	voiceToolLiveTextUnsupported voiceToolLiveTextCapability = iota
+	voiceToolLiveTextSupported
+	voiceToolLiveTextNeedsModel
 )
 
 type voiceToolsState struct {
@@ -220,14 +232,26 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 
 func builtInVoiceTools() []*voiceTool {
 	return []*voiceTool{
-		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, directText: true, systemArtwork: "apple.logo", releaseReady: true},
-		{id: hexStreamToolID, name: "Hex 本地识别", kind: voiceRecognition, discover: hexapi.Discover, audioRouteFactory: hexAudioRouteFactory, directText: true, systemArtwork: "waveform", releaseReady: true},
-		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, fallbackIconPNG: doubao.IconPNG, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
+		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, liveText: voiceToolLiveTextSupported, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, directText: true, systemArtwork: "apple.logo", releaseReady: true},
+		{id: hexStreamToolID, name: "Hex", installURL: hexapi.InstallURL, kind: voiceRecognition, displayKind: voiceInputMethod, liveText: voiceToolLiveTextNeedsModel, discover: hexapi.Discover, locateApplication: hexapi.LocateApplication, audioRouteFactory: hexAudioRouteFactory, directText: true, fallbackIconPNG: hexapi.IconPNG, releaseReady: true},
+		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, voicePromptBundleID: compatDoubaoBundleID, voicePromptSuppressor: newDoubaoVoicePromptSuppressor, fallbackIconPNG: doubao.IconPNG, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
 		{id: "voice-wetype", name: "微信输入法", installURL: "https://z.weixin.qq.com/", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
 		{id: "voice-chatgpt", name: "ChatGPT", kind: voiceApplication, discover: chatgpt.Discover, locateApplication: chatgpt.LocateApplication},
 	}
+}
+
+// voiceToolSettingsKind controls only the visible section label. It never
+// changes selection, input-source requirements, or route construction.
+func voiceToolSettingsKind(tool *voiceTool) voiceToolKind {
+	if tool == nil {
+		return ""
+	}
+	if tool.displayKind != "" {
+		return tool.displayKind
+	}
+	return tool.kind
 }
 
 func (s *shell) selectedVoiceTool() *voiceTool {
@@ -500,6 +524,9 @@ func (s *shell) setVoiceToolEnabled(tool *voiceTool, enabled bool) error {
 		return err
 	}
 	s.toolPreferences = next
+	if !enabled && runtimeCurrent == "" && s.currentVoiceTool == tool.id {
+		s.stopVoicePromptPresentation()
+	}
 	s.currentVoiceTool = runtimeCurrent
 	var err error
 	if enabled {
@@ -559,6 +586,9 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 		return err
 	}
 	oldTool := s.currentVoiceTool
+	if oldTool != tool.id {
+		s.stopVoicePromptPresentation()
+	}
 	s.toolPreferences, s.currentVoiceTool = next, tool.id
 	if err := s.cancelToolActions(oldTool); err != nil {
 		s.toolError = "原工具按键未能释放"
@@ -631,8 +661,10 @@ func voiceToolStatus(tool *voiceTool) string {
 		switch tool.snapshot.State {
 		case voicetools.Ready:
 			return "服务已连接；模型由 Hex 管理"
+		case voicetools.NotFound:
+			return "未安装"
 		case voicetools.NotRunning:
-			return "Hex 本地服务未运行"
+			return "已安装，打开 Hex 以连接听写服务"
 		case voicetools.Unsupported:
 			return "Hex 服务版本不支持"
 		default:

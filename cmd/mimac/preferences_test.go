@@ -65,6 +65,51 @@ func TestReadVersionOnePreferencesWithoutAppearanceDefaultsToSystemAndMiMacSpher
 	}
 }
 
+func TestOnlyShowMiMacVoicePromptDefaultsOffAndReadsExistingDoubaoPreference(t *testing.T) {
+	defaults := defaultHostPreferences()
+	if defaults.OnlyShowMiMacVoicePrompt {
+		t.Fatal("MiMac-only voice prompt should be opt-in")
+	}
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["hide_doubao_bar"]; exists {
+		t.Fatalf("default opt-out changed the established settings shape: %s", data)
+	}
+
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	original := []byte(`{"version":2,"show_in_dock":false,"voice_presentation":"dot-bar","hide_doubao_bar":true}`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readHostPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.OnlyShowMiMacVoicePrompt {
+		t.Fatalf("existing HideDoubaoBar choice = %t, want preserved opt-in", got.OnlyShowMiMacVoicePrompt)
+	}
+	if err := saveHostPreferences(path, got); err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(bytes, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["hide_doubao_bar"] != true {
+		t.Fatalf("existing opt-in was not written under the compatible settings key: %s", bytes)
+	}
+}
+
 func TestMarkFirstRunSettingsShownPersistsWithoutChangingOtherPreferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	want := defaultHostPreferences()
@@ -318,6 +363,29 @@ func TestApplyVoicePresentationPreferenceWriteFailureRetainsStoredValue(t *testi
 	}
 	if s.preferencesState.errorText != "保存失败，设置未更改" {
 		t.Fatalf("user error text = %q", s.preferencesState.errorText)
+	}
+}
+
+func TestApplyOnlyShowMiMacVoicePromptPersistsAcrossToolAndStylePreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	want := defaultHostPreferences()
+	want.ShowLiveText = true
+	want.VoicePresentation = voicePresentationDotBar
+	s := shell{preferencesState: preferencesState{value: want, path: path}}
+	if err := s.applyOnlyShowMiMacVoicePrompt(true); err != nil {
+		t.Fatal(err)
+	}
+	if !s.preferencesState.value.OnlyShowMiMacVoicePrompt || !s.preferencesState.value.ShowLiveText ||
+		s.preferencesState.value.VoicePresentation != voicePresentationDotBar {
+		t.Fatalf("enabling the prompt preference changed unrelated values: %+v", s.preferencesState.value)
+	}
+	s.currentVoiceTool = "voice-wetype"
+	got, err := readHostPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.OnlyShowMiMacVoicePrompt || !got.ShowLiveText || got.VoicePresentation != voicePresentationDotBar {
+		t.Fatalf("global preference did not persist independently of tool selection: %+v", got)
 	}
 }
 

@@ -18,12 +18,14 @@ import (
 type speechAPI struct {
 	isAvailable      func() int32
 	create           func(*byte, int32, int32, *int32, *byte, int32) uintptr
+	createPartials   func(*byte, int32, int32, int32, *int32, *byte, int32) uintptr
 	waitReady        func(uintptr, int32) int32
 	tryWrite         func(uintptr, *int16, int32) int32
 	beginDrain       func(uintptr) int32
 	waitDone         func(uintptr, int32) int32
 	requestCancel    func(uintptr) int32
 	waitTerminated   func(uintptr, int32) int32
+	waitPartial      func(uintptr, uint64, int32, *byte, int32, *int32, *byte, int32, *int32, *uint64) int32
 	copyFinalText    func(uintptr, *byte, int32, *int32) int32
 	copyErrorMessage func(uintptr, *byte, int32, *int32) int32
 	release          func(uintptr) int32
@@ -87,6 +89,12 @@ func loadSpeechAPI(path string) (*speechAPI, error) {
 		}
 		purego.RegisterFunc(binding.dst, symbol)
 	}
+	if symbol, err := purego.Dlsym(library, "MiMacAppleSpeechCreateWithPartials"); err == nil {
+		purego.RegisterFunc(&api.createPartials, symbol)
+	}
+	if symbol, err := purego.Dlsym(library, "MiMacAppleSpeechWaitPartial"); err == nil {
+		purego.RegisterFunc(&api.waitPartial, symbol)
+	}
 	// Keep this library and its registered function addresses alive for the
 	// process lifetime. Native owners may outlive a failed Open cleanup attempt.
 	speechLibraries.values[path] = api
@@ -108,6 +116,17 @@ func (b darwinBridge) isAvailable() (bool, error) {
 }
 
 func (b darwinBridge) create(locale string, sampleRate int, installAssets bool) (nativeOwner, error) {
+	return b.createNative(locale, sampleRate, installAssets, false)
+}
+
+func (b darwinBridge) createWithPartials(locale string, sampleRate int, installAssets bool) (nativeOwner, error) {
+	if b.api.createPartials == nil || b.api.waitPartial == nil {
+		return nil, ErrPartialUnavailable
+	}
+	return b.createNative(locale, sampleRate, installAssets, true)
+}
+
+func (b darwinBridge) createNative(locale string, sampleRate int, installAssets, enablePartials bool) (nativeOwner, error) {
 	localeBytes := append([]byte(locale), 0)
 	var status int32
 	message := make([]byte, 8192)
@@ -115,7 +134,12 @@ func (b darwinBridge) create(locale string, sampleRate int, installAssets bool) 
 	if installAssets {
 		install = 1
 	}
-	raw := b.api.create(&localeBytes[0], int32(sampleRate), install, &status, &message[0], int32(len(message)))
+	var raw uintptr
+	if enablePartials {
+		raw = b.api.createPartials(&localeBytes[0], int32(sampleRate), install, 1, &status, &message[0], int32(len(message)))
+	} else {
+		raw = b.api.create(&localeBytes[0], int32(sampleRate), install, &status, &message[0], int32(len(message)))
+	}
 	runtime.KeepAlive(localeBytes)
 	if raw == 0 {
 		return nil, nativeCreateError(status, message)
@@ -227,6 +251,45 @@ func (o *darwinOwner) waitTerminated(timeout time.Duration) (bool, error) {
 		return true, nil
 	default:
 		return false, fmt.Errorf("applespeech: native join failed with status %d", status)
+	}
+}
+
+func (o *darwinOwner) waitPartial(afterVersion uint64, timeout time.Duration, stableBuffer, tentativeBuffer []byte) (partialSnapshot, error) {
+	if o.raw == 0 || o.api.waitPartial == nil {
+		return partialSnapshot{}, ErrClosed
+	}
+	if len(stableBuffer) == 0 || len(tentativeBuffer) == 0 {
+		return partialSnapshot{}, ErrInvalidConfig
+	}
+	var stableLength, tentativeLength int32
+	var version uint64
+	status := o.api.waitPartial(
+		o.raw, afterVersion, durationMillis(timeout),
+		&stableBuffer[0], int32(len(stableBuffer)), &stableLength,
+		&tentativeBuffer[0], int32(len(tentativeBuffer)), &tentativeLength,
+		&version,
+	)
+	runtime.KeepAlive(stableBuffer)
+	runtime.KeepAlive(tentativeBuffer)
+	if stableLength < 0 || int(stableLength) > len(stableBuffer) || tentativeLength < 0 || int(tentativeLength) > len(tentativeBuffer) {
+		return partialSnapshot{}, errors.New("applespeech: native partial snapshot length exceeds buffer")
+	}
+	stable := string(stableBuffer[:stableLength])
+	tentative := string(tentativeBuffer[:tentativeLength])
+	if !utf8.ValidString(stable) || !utf8.ValidString(tentative) {
+		return partialSnapshot{}, errors.New("applespeech: native partial snapshot is not valid UTF-8")
+	}
+	switch status {
+	case 0:
+		return partialSnapshot{version: version}, nil
+	case 1:
+		return partialSnapshot{stable: stable, tentative: tentative, version: version, updated: true}, nil
+	case 2:
+		return partialSnapshot{stable: stable, tentative: tentative, version: version, terminal: true}, nil
+	case 3:
+		return partialSnapshot{}, errors.New("applespeech: native partial snapshot exceeds buffer")
+	default:
+		return partialSnapshot{}, fmt.Errorf("applespeech: native partial wait failed with status %d", status)
 	}
 }
 

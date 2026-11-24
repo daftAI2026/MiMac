@@ -6,9 +6,10 @@ type unsupportedNative struct{}
 
 func defaultNative() native { return unsupportedNative{} }
 
-func hasAccessibilityAccess() bool     { return false }
-func requestAccessibilityAccess() bool { return false }
-func requestPostEventAccess() bool     { return false }
+func hasAccessibilityAccess() bool       { return false }
+func requestAccessibilityAccess() bool   { return false }
+func requestPostEventAccess() bool       { return false }
+func frontmostProcessID() (int32, error) { return 0, ErrUnsupported }
 
 func (unsupportedNative) capture() (snapshot, error)    { return snapshot{}, ErrUnsupported }
 func (unsupportedNative) insert(snapshot, string) error { return ErrUnsupported }

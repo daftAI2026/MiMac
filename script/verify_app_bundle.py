@@ -19,6 +19,10 @@ REQUIRED = {
     "libMiMacVoiceDots.dylib": "mi_dot_model_abi_version",
 }
 REQUIRED_EXPORTS = {
+    "libMiMacSpeech.dylib": (
+        "MiMacAppleSpeechCreateWithPartials",
+        "MiMacAppleSpeechWaitPartial",
+    ),
     "libMiMacVoiceDots.dylib": (
         "mi_dot_model_create",
         "mi_dot_model_destroy",

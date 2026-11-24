@@ -22,43 +22,61 @@ type localRecognizer interface {
 	FinalText() (string, error)
 }
 
-type appleAudioRoute struct {
-	*xiaomiAudioRoute
-	mu       sync.Mutex
-	pending  transcriptTarget
-	sessions map[bridge.SessionToken]*appleSessionSink
-	capture  func() (transcriptTarget, error)
+type localPartialRecognizer interface {
+	SetPartialHandler(func(stable, tentative string)) error
 }
 
-func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary string) (liveAudioRoute, error) {
+type appleAudioRoute struct {
+	*xiaomiAudioRoute
+	mu               sync.Mutex
+	pending          transcriptTarget
+	sessions         map[bridge.SessionToken]*appleSessionSink
+	capture          func() (transcriptTarget, error)
+	onPartial        func(bridge.SessionToken, string, string) bool
+	partialsEnabled  func() bool
+	openWithPartials func(context.Context, bool) (localRecognizer, error)
+}
+
+type appleRoutePartialConfig struct {
+	onPartial        func(bridge.SessionToken, string, string) bool
+	enabled          func() bool
+	openWithPartials func(context.Context, bool) (localRecognizer, error)
+}
+
+func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary string, onPartial func(bridge.SessionToken, string, string) bool, partialsEnabled func() bool) (liveAudioRoute, error) {
 	owner, err := atvv.OpenDeviceOwner(generation, deviceLibrary)
 	if owner == nil {
 		return nil, err
 	}
-	route, routeErr := newAppleAudioRoute(generation, func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
-		return owner.NewSource(ctx, key)
-	}, owner.Close, func(ctx context.Context) (localRecognizer, error) {
-		sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: speechLibrary, Locale: "zh-CN", SampleRate: 16000})
+	openSpeech := func(ctx context.Context, enablePartials bool) (localRecognizer, error) {
+		sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: speechLibrary, Locale: "zh-CN", SampleRate: 16000, EnablePartials: enablePartials})
 		if sink == nil {
 			return nil, err
 		}
 		return sink, err
+	}
+	route, routeErr := newAppleAudioRoute(generation, func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
+		return owner.NewSource(ctx, key)
+	}, owner.Close, func(ctx context.Context) (localRecognizer, error) {
+		return openSpeech(ctx, false)
 	}, func() (transcriptTarget, error) {
-		target, err := textoutput.Capture()
-		if target == nil {
-			return nil, err
-		}
-		return target, err
-	})
+		return textoutput.BeginDictation(), nil
+	}, appleRoutePartialConfig{onPartial: onPartial, enabled: partialsEnabled, openWithPartials: openSpeech})
 	return route, errors.Join(err, routeErr)
 }
 
 func newAppleAudioRoute(generation uint64, source xiaomiAudioSourceFactory, closeDevice func() error,
-	open func(context.Context) (localRecognizer, error), capture func() (transcriptTarget, error)) (*appleAudioRoute, error) {
+	open func(context.Context) (localRecognizer, error), capture func() (transcriptTarget, error),
+	partials ...appleRoutePartialConfig) (*appleAudioRoute, error) {
 	if open == nil || capture == nil {
 		return nil, errors.New("local speech factories missing")
 	}
 	route := &appleAudioRoute{sessions: make(map[bridge.SessionToken]*appleSessionSink), capture: capture}
+	if len(partials) > 0 {
+		route.onPartial = partials[0].onPartial
+		route.partialsEnabled = partials[0].enabled
+		route.openWithPartials = partials[0].openWithPartials
+	}
 	base, err := newXiaomiPCMRoute(generation, source, closeDevice, 16000, func(context.Context) (audiosession.Sink, error) {
 		// Only the device is prearmed. No speech task or input target exists yet.
 		return &appleSessionSink{route: route, open: open}, nil
@@ -174,12 +192,32 @@ func (s *appleSessionSink) StartSession(ctx context.Context) error {
 	if target == nil {
 		return errors.New("local speech input target missing")
 	}
-	recognizer, err := s.open(ctx)
+	partialEnabled := s.route.partialsEnabled != nil && s.route.partialsEnabled()
+	var recognizer localRecognizer
+	var err error
+	if s.route.openWithPartials != nil {
+		recognizer, err = s.route.openWithPartials(ctx, partialEnabled)
+	} else {
+		recognizer, err = s.open(ctx)
+	}
 	s.mu.Lock()
 	s.recognizer = recognizer
 	s.mu.Unlock()
 	if err == nil && recognizer == nil {
 		err = errors.New("local recognizer missing")
+	}
+	if err == nil && recognizer != nil && partialEnabled && s.route.onPartial != nil {
+		if partials, ok := recognizer.(localPartialRecognizer); ok {
+			err = partials.SetPartialHandler(func(stable, tentative string) {
+				s.mu.Lock()
+				closed := s.closed
+				activeToken := s.token
+				s.mu.Unlock()
+				if !closed && (s.route.partialsEnabled == nil || s.route.partialsEnabled()) {
+					s.route.onPartial(activeToken, stable, tentative)
+				}
+			})
+		}
 	}
 	return err
 }

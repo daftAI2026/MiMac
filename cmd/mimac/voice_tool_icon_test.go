@@ -4,7 +4,7 @@ import "testing"
 
 func TestInputMethodArtworkVisibleDuringInitialDiscovery(t *testing.T) {
 	for _, tool := range builtInVoiceTools() {
-		if tool.id != "voice-doubao" && tool.id != "voice-wetype" {
+		if tool.id != "voice-doubao" && tool.id != "voice-wetype" && tool.id != hexStreamToolID {
 			continue
 		}
 		t.Run(tool.id, func(t *testing.T) {

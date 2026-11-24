@@ -44,6 +44,7 @@ var (
 	ErrAlreadyDrained     = errors.New("applespeech: session was already drained")
 	ErrInvalidNativeState = errors.New("applespeech: invalid native session state")
 	ErrFinalTextOverflow  = errors.New("applespeech: final text exceeds 64 KiB")
+	ErrPartialUnavailable = errors.New("applespeech: native bridge does not support streaming results")
 )
 
 // Config selects the native bridge and a supported Apple Speech locale.
@@ -52,6 +53,9 @@ type Config struct {
 	LibraryPath string
 	Locale      string
 	SampleRate  int
+	// EnablePartials opts into Apple Speech volatile updates. The default keeps
+	// the final-only result path and its existing native work profile.
+	EnablePartials bool
 	// InstallAssets permits this session to ask macOS to install its model.
 	// Leave false unless the user explicitly requested a model download.
 	InstallAssets bool
@@ -72,6 +76,10 @@ type nativeBridge interface {
 	create(locale string, sampleRate int, installAssets bool) (nativeOwner, error)
 }
 
+type partialNativeBridge interface {
+	createWithPartials(locale string, sampleRate int, installAssets bool) (nativeOwner, error)
+}
+
 // nativeOwner remains allocated until Release succeeds after WaitTerminated.
 // Its methods are safe to call concurrently where cancellation is documented.
 type nativeOwner interface {
@@ -84,6 +92,18 @@ type nativeOwner interface {
 	finalText() (string, error)
 	errorMessage() string
 	release() error
+}
+
+// partialNativeOwner exposes the bridge's bounded latest-result snapshot.
+// Keeping this separate lets older/test owners retain the final-only contract.
+type partialNativeOwner interface {
+	waitPartial(afterVersion uint64, timeout time.Duration, stableBuffer, tentativeBuffer []byte) (partialSnapshot, error)
+}
+
+type partialSnapshot struct {
+	stable, tentative string
+	version           uint64
+	updated, terminal bool
 }
 
 // IsAvailable dynamically checks the loaded Apple Speech bridge and runtime
@@ -134,14 +154,23 @@ func openWith(ctx context.Context, cfg Config, load func(string) (nativeBridge, 
 	if !available {
 		return nil, ErrUnsupported
 	}
-	owner, err := bridge.create(cfg.Locale, cfg.SampleRate, cfg.InstallAssets)
+	var owner nativeOwner
+	if cfg.EnablePartials {
+		partialBridge, ok := bridge.(partialNativeBridge)
+		if !ok {
+			return nil, ErrPartialUnavailable
+		}
+		owner, err = partialBridge.createWithPartials(cfg.Locale, cfg.SampleRate, cfg.InstallAssets)
+	} else {
+		owner, err = bridge.create(cfg.Locale, cfg.SampleRate, cfg.InstallAssets)
+	}
 	if owner == nil {
 		if err == nil {
 			err = fmt.Errorf("%w: native create returned no owner", ErrNativeFailure)
 		}
 		return nil, err
 	}
-	sink := &Sink{owner: owner}
+	sink := &Sink{owner: owner, partialsEnabled: cfg.EnablePartials}
 	if err != nil {
 		return sink.abortOpen(err)
 	}
@@ -199,13 +228,125 @@ type Sink struct {
 	mu   sync.Mutex
 	opMu sync.Mutex
 
-	owner          nativeOwner
-	closeRequested bool
-	drainStarted   bool
-	drained        bool
-	cancelled      bool
-	released       bool
-	finalText      string
+	owner           nativeOwner
+	partialsEnabled bool
+	closeRequested  bool
+	drainStarted    bool
+	drained         bool
+	cancelled       bool
+	released        bool
+	finalText       string
+	partialHandler  func(stable, tentative string)
+	partialStop     chan struct{}
+	partialDone     chan struct{}
+	partialStopped  bool
+}
+
+// SetPartialHandler subscribes to bounded latest-value updates from the
+// native transcriber. The callback never commits text to an editor. It must
+// return promptly; Close joins it before releasing the native owner.
+func (s *Sink) SetPartialHandler(handler func(stable, tentative string)) error {
+	if s == nil || handler == nil {
+		return ErrClosed
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owner == nil || s.closeRequested || s.released || s.cancelled {
+		return ErrClosed
+	}
+	if !s.partialsEnabled {
+		return ErrPartialUnavailable
+	}
+	if s.drainStarted || s.drained {
+		return ErrDraining
+	}
+	if s.partialHandler != nil {
+		return errors.New("applespeech: partial handler already registered")
+	}
+	if _, ok := s.owner.(partialNativeOwner); !ok {
+		return ErrPartialUnavailable
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.partialHandler = handler
+	s.partialStop = stop
+	s.partialDone = done
+	owner := s.owner
+	go s.runPartialUpdates(owner, handler, stop, done)
+	return nil
+}
+
+func (s *Sink) runPartialUpdates(owner nativeOwner, handler func(string, string), stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	partialOwner, ok := owner.(partialNativeOwner)
+	if !ok {
+		return
+	}
+	stableBuffer := make([]byte, MaxFinalTextBytes+1)
+	tentativeBuffer := make([]byte, MaxFinalTextBytes+1)
+	var version uint64
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		snapshot, err := partialOwner.waitPartial(version, nativeWaitInterval, stableBuffer, tentativeBuffer)
+		if err != nil {
+			return
+		}
+		if snapshot.updated {
+			version = snapshot.version
+			s.mu.Lock()
+			active := s.owner != nil && !s.closeRequested && !s.cancelled && !s.released && s.partialHandler != nil
+			s.mu.Unlock()
+			if active {
+				handler(snapshot.stable, snapshot.tentative)
+			}
+		}
+		if snapshot.terminal {
+			return
+		}
+	}
+}
+
+func (s *Sink) stopPartialUpdates(timeout time.Duration) error {
+	s.mu.Lock()
+	if s.partialStop == nil || s.partialStopped {
+		done := s.partialDone
+		s.mu.Unlock()
+		if done != nil {
+			return waitForPartialWorker(done, timeout)
+		}
+		return nil
+	}
+	close(s.partialStop)
+	s.partialStopped = true
+	done := s.partialDone
+	s.mu.Unlock()
+	if done != nil {
+		return waitForPartialWorker(done, timeout)
+	}
+	return nil
+}
+
+func waitForPartialWorker(done <-chan struct{}, timeout time.Duration) error {
+	if timeout <= 0 {
+		select {
+		case <-done:
+			return nil
+		default:
+			return ErrCleanupPending
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return ErrCleanupPending
+	}
 }
 
 // TryWrite makes a non-blocking write of one PCM block. Full queues return
@@ -317,6 +458,9 @@ func (s *Sink) Drain(ctx context.Context) error {
 			if !utf8.ValidString(text) {
 				return s.failDrain(owner, errors.New("applespeech: final text is not valid UTF-8"))
 			}
+			if err := s.stopPartialUpdates(cleanupWaitLimit); err != nil {
+				return errors.Join(errors.New("applespeech: streaming result callback did not stop"), err)
+			}
 			s.mu.Lock()
 			if s.closeRequested || s.cancelled || s.released {
 				s.mu.Unlock()
@@ -343,15 +487,16 @@ func (s *Sink) cancelAndJoin(owner nativeOwner) error {
 	if owner == nil {
 		return nil
 	}
+	partialErr := s.stopPartialUpdates(cleanupWaitLimit)
 	requestErr := owner.requestCancel()
 	terminated, waitErr := owner.waitTerminated(cleanupWaitLimit)
 	if waitErr != nil {
-		return errors.Join(ErrCleanupPending, requestErr, waitErr)
+		return errors.Join(ErrCleanupPending, partialErr, requestErr, waitErr)
 	}
 	if !terminated {
-		return errors.Join(ErrCleanupPending, requestErr)
+		return errors.Join(ErrCleanupPending, partialErr, requestErr)
 	}
-	return requestErr
+	return errors.Join(partialErr, requestErr)
 }
 
 // FinalText returns the concatenated final transcription after successful
@@ -391,6 +536,9 @@ func (s *Sink) Close() error {
 	if err != nil || !terminated {
 		return errors.Join(ErrCleanupPending, err)
 	}
+	if err := s.stopPartialUpdates(cleanupWaitLimit); err != nil {
+		return errors.Join(ErrCleanupPending, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.owner != owner || s.released {
@@ -412,6 +560,10 @@ func (s *Sink) requestClose() {
 		return
 	}
 	s.cancelled = true
+	if s.partialStop != nil && !s.partialStopped {
+		close(s.partialStop)
+		s.partialStopped = true
+	}
 	_ = s.owner.requestCancel()
 }
 

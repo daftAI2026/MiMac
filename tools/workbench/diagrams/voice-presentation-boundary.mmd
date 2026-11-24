@@ -55,7 +55,12 @@ flowchart TD
     resetAnimated --> material
     target["未来：可靠目标思考反馈；当前未知保持false"] -.-> thinkEdge
 
-    dots --> captionPref{"已开启实时字幕？"}
+    dots --> captionPref{"已开启字幕，且当前工具提供中间文字？"}
     captionPref -->|是| caption["屏幕内侧的非激活字幕窗：顶部点阵下方、底部点阵上方"]
-    incoming["当前识别工具的匹配会话临时文字"] --> caption
+    incoming["Apple 或支持临时结果的 Hex 模型：当前会话的文字"] --> caption
     caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]
+    controls --> grouping["通用设置的语音提示区选择样式；点阵可选择位置"]
+    controls --> exclusive["仅显示 MiMac 语音提示，由各工具按能力处理"]
+    exclusive --> externalBar["当前豆包桌面适配器"] --> baseline["按下前记录豆包可见窗；在本次 MiMac 动画会话内匹配新出现的录音条"]
+    baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
+    baseline -->|候选窗或匹配不确定| leave["保留原窗"]

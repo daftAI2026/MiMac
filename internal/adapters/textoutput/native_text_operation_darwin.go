@@ -127,10 +127,10 @@ func insertTextOperation(api *nativeAPI, state snapshot, text string) error {
 	if replacement != 0 {
 		expected := snapshot{processID: state.processID, element: state.element, selection: replacement}
 		if err := confirmSnapshot(api, expected); err != nil {
-			return err
+			return errors.Join(errReplacementAccepted, err)
 		}
 		if code := api.setAttributeValue(state.element, selectionAttribute, caret); code != axErrorSuccess {
-			return nativeAXError("collapse replacement selection", code)
+			return errors.Join(errReplacementAccepted, nativeAXError("collapse replacement selection", code))
 		}
 	}
 	return nil

@@ -36,8 +36,11 @@ flowchart LR
     retryAsset --> assets
     preparing -->|成功| sequence
 
-    selected -->|Hex| localStream["本机服务能力检查；按下时绑定文本目标"]
+    discover --> hexInstall["核对 Hex 应用身份，首启和设置显示安装状态"]
+    hexInstall -->|已安装| service["独立检查本机服务，发起听写时确认模型可用"]
+    hexInstall -->|未安装| download["保留工具图标和官网下载入口"]
+    selected -->|Hex| localStream["本机听写服务能力检查；可选文字投递与收音独立"]
     localStream --> create["本次会话创建识别流，16 kHz 单声道 PCM"]
     create -->|临时结果| captions["当前会话的点阵字幕"]
-    create -->|成功完成| finalText["经现有文本投递入口写入一次"]
+    create -->|成功完成| finalText["走共享文字投递；有原目标时尝试写入一次"]
     create -->|取消| discard["取消识别流并作废迟到结果"]

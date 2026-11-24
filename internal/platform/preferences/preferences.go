@@ -19,6 +19,14 @@ type State struct {
 	VoicePresentation int
 	// ShowLiveText is an independent dot-bar interim caption preference.
 	ShowLiveText bool
+	// OnlyShowMiMacVoicePrompt is a global opt-in. Only the selected tool's
+	// registered native presentation adapter can act on it.
+	OnlyShowMiMacVoicePrompt bool
+	// LiveTextSupported describes the selected tool's interim-text capability.
+	// When false, the UI shows the switch off without changing ShowLiveText.
+	LiveTextSupported bool
+	// LiveTextStatus is shown only when the selected tool needs an explanation.
+	LiveTextStatus string
 	// DotAtBottom selects the screen edge for the dot-bar HUD.
 	DotAtBottom bool
 	Appearance  string
@@ -44,12 +52,13 @@ type PermissionRow struct {
 // Callbacks report user changes to the host. The host applies changes and
 // calls Update with the actual resulting state.
 type Callbacks struct {
-	Login             func(bool)
-	Dock              func(bool)
-	VoicePresentation func(int)
-	ShowLiveText      func(bool)
-	DotAtBottom       func(bool)
-	Appearance        func(string)
-	TextSize          func(int)
-	ManagePermissions func(int32)
+	Login                    func(bool)
+	Dock                     func(bool)
+	VoicePresentation        func(int)
+	ShowLiveText             func(bool)
+	OnlyShowMiMacVoicePrompt func(bool)
+	DotAtBottom              func(bool)
+	Appearance               func(string)
+	TextSize                 func(int)
+	ManagePermissions        func(int32)
 }

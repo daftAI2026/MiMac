@@ -86,6 +86,23 @@ func TestAudioHostDeliversFinalTranscriptOnceAfterTailDrain(t *testing.T) {
 	}
 }
 
+func TestDictationFinishesWithoutAnEditor(t *testing.T) {
+	host, tasks, source, sink, _ := newTranscriptAudioHost(t, nil)
+	host.audioSession.deliver = func(bridge.SessionToken, string) error { return textoutput.ErrNoInsertionTarget }
+	press, _ := beginTranscriptAudioSession(t, host)
+	runHostTask(t, tasks)
+	waitHostSignal(t, source.reading)
+	if err := host.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	waitHostSignal(t, sink.drainStarted)
+	runHostTask(t, tasks)
+	waitHostSignal(t, sink.closed)
+	if host.uninsertedDictation == "" || host.uninsertedDictation != sink.text || host.coordinator.core.Snapshot().HasSession || host.report.AudioError != "" {
+		t.Fatal("dictation without an editor must finish and keep the final sentence available")
+	}
+}
+
 func TestAudioHostDropsQueuedTranscriptAfterCoreRetiresSession(t *testing.T) {
 	host, tasks, source, sink, delivered := newTranscriptAudioHost(t, nil)
 	press, token := beginTranscriptAudioSession(t, host)
@@ -209,6 +226,169 @@ func TestAppleRoutePrearmsSourceButOpensRecognizerAtSessionStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	resources = audiosession.Resources{}
+}
+
+func TestAppleRoutePublishesStableAndTentativePartialsWithoutEditorWrites(t *testing.T) {
+	const generation = 96
+	token := xiaomiRouteSessionToken(t, generation)
+	target := &transcriptTargetTestStub{}
+	recognizer := &applePartialRecognizerTestStub{appleRecognizerTestStub: &appleRecognizerTestStub{hostPCMSink: newHostPCMSink(), text: "最终文本"}}
+	type partial struct {
+		token     bridge.SessionToken
+		stable    string
+		tentative string
+	}
+	updates := make(chan partial, 2)
+	partialEnabled := atomic.Bool{}
+	openRequestedPartials := atomic.Bool{}
+	partialEnabled.Store(true)
+	route, err := newAppleAudioRoute(generation,
+		func(context.Context, atvv.StreamKey) (audiosession.Source, error) { return newHostPCMSource(), nil },
+		func() error { return nil },
+		func(context.Context) (localRecognizer, error) { return recognizer, nil },
+		func() (transcriptTarget, error) { return target, nil },
+		appleRoutePartialConfig{
+			onPartial: func(token bridge.SessionToken, stable, tentative string) bool {
+				updates <- partial{token: token, stable: stable, tentative: tentative}
+				return true
+			},
+			enabled: partialEnabled.Load,
+			openWithPartials: func(_ context.Context, enabled bool) (localRecognizer, error) {
+				openRequestedPartials.Store(enabled)
+				return recognizer, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resources audiosession.Resources
+	t.Cleanup(func() {
+		if resources.Source != nil {
+			_ = resources.Source.Close()
+		}
+		if resources.Sink != nil {
+			_ = resources.Sink.Close()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := route.Close(ctx); err != nil {
+			t.Errorf("close Apple route: %v", err)
+		}
+	})
+	if err := route.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitXiaomiRoute(t, route.Ready)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resources, err = route.Prepare(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionSink, ok := resources.Sink.(audiosession.SessionSink)
+	if !ok {
+		t.Fatalf("Apple sink %T does not defer StartSession", resources.Sink)
+	}
+	if err := sessionSink.StartSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !openRequestedPartials.Load() {
+		t.Fatal("Apple route did not enable native volatile reporting for an active caption subscriber")
+	}
+	recognizer.emit("已确认 ", "正在说")
+	select {
+	case got := <-updates:
+		if got.token != token || got.stable != "已确认 " || got.tentative != "正在说" {
+			t.Fatalf("partial route update = %+v; want full token and distinct stable/tentative text", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Apple route did not publish the partial update")
+	}
+	if got := target.inserted(); len(got) != 0 {
+		t.Fatalf("streaming partial was committed to the target: %#v", got)
+	}
+	if err := route.DeliverTranscript(token, "最终文本"); err != nil {
+		t.Fatal(err)
+	}
+	if got := target.inserted(); !reflect.DeepEqual(got, []string{"最终文本"}) {
+		t.Fatalf("final target writes = %#v; want one final insertion", got)
+	}
+	partialEnabled.Store(false)
+	recognizer.emit("late", "partial")
+	select {
+	case got := <-updates:
+		t.Fatalf("disabled captions still published a partial: %+v", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestAppleRouteKeepsNativePartialsDisabledWithoutCaptionSubscriber(t *testing.T) {
+	const generation = 97
+	recognizer := &applePartialRecognizerTestStub{appleRecognizerTestStub: &appleRecognizerTestStub{hostPCMSink: newHostPCMSink(), text: "最终文本"}}
+	target := &transcriptTargetTestStub{}
+	var openedWithPartials atomic.Bool
+	var published atomic.Int32
+	route, err := newAppleAudioRoute(generation,
+		func(context.Context, atvv.StreamKey) (audiosession.Source, error) { return newHostPCMSource(), nil },
+		func() error { return nil },
+		func(context.Context) (localRecognizer, error) { return recognizer, nil },
+		func() (transcriptTarget, error) { return target, nil },
+		appleRoutePartialConfig{
+			onPartial: func(bridge.SessionToken, string, string) bool { published.Add(1); return true },
+			enabled:   func() bool { return false },
+			openWithPartials: func(_ context.Context, enabled bool) (localRecognizer, error) {
+				openedWithPartials.Store(enabled)
+				return recognizer, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resources audiosession.Resources
+	t.Cleanup(func() {
+		if resources.Source != nil {
+			_ = resources.Source.Close()
+		}
+		if resources.Sink != nil {
+			_ = resources.Sink.Close()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := route.Close(ctx); err != nil {
+			t.Errorf("close Apple route: %v", err)
+		}
+	})
+	if err := route.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitXiaomiRoute(t, route.Ready)
+	if err := route.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resources, err = route.Prepare(context.Background(), xiaomiRouteSessionToken(t, generation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionSink, ok := resources.Sink.(audiosession.SessionSink)
+	if !ok {
+		t.Fatalf("Apple sink %T does not defer StartSession", resources.Sink)
+	}
+	if err := sessionSink.StartSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recognizer.mu.Lock()
+	hasHandler := recognizer.handler != nil
+	recognizer.mu.Unlock()
+	if openedWithPartials.Load() || hasHandler {
+		t.Fatal("Apple route enabled native partial reporting without a caption subscriber")
+	}
+	recognizer.emit("ignored", "partial")
+	if got := published.Load(); got != 0 {
+		t.Fatalf("disabled caption route published %d partials", got)
+	}
 }
 
 func TestAppleRoutePartialRecognizerFailureReopensWithFreshTarget(t *testing.T) {
@@ -626,6 +806,28 @@ type appleRecognizerTestStub struct {
 	*hostPCMSink
 	text       string
 	closeCalls atomic.Int32
+}
+
+type applePartialRecognizerTestStub struct {
+	*appleRecognizerTestStub
+	mu      sync.Mutex
+	handler func(stable, tentative string)
+}
+
+func (s *applePartialRecognizerTestStub) SetPartialHandler(handler func(stable, tentative string)) error {
+	s.mu.Lock()
+	s.handler = handler
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *applePartialRecognizerTestStub) emit(stable, tentative string) {
+	s.mu.Lock()
+	handler := s.handler
+	s.mu.Unlock()
+	if handler != nil {
+		handler(stable, tentative)
+	}
 }
 
 func (s *appleRecognizerTestStub) FinalText() (string, error) {

@@ -18,11 +18,12 @@ const compatibilityAudioBackend = audiobackendprefs.CompatibilityBackend
 // audioRouteConfig carries host-verified identity and resources into one
 // voice tool's route adapter. It deliberately contains no device or Core state.
 type audioRouteConfig struct {
-	Generation    uint64
-	AppPath       string
-	Locator       voicetools.Locator
-	ResourcesPath string
-	OnPartial     func(bridge.SessionToken, string, string) bool
+	Generation      uint64
+	AppPath         string
+	Locator         voicetools.Locator
+	ResourcesPath   string
+	OnPartial       func(bridge.SessionToken, string, string) bool
+	PartialsEnabled func() bool
 }
 
 type audioRouteFactory func(context.Context, audioRouteConfig) (liveAudioRoute, error)
@@ -101,7 +102,7 @@ func (s *shell) refreshLiveAudio() {
 			s.liveAudio.audioFailure = err
 			return
 		}
-		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator, s.voiceOverlay.interim.Publish)
+		factory = bindAudioRouteFactory(tool.audioRouteFactory, resourcesPath, locator, s.voiceOverlay.interim.Publish, s.voiceOverlay.interim.PartialsEnabled)
 		if factory == nil {
 			err := errors.New("selected voice tool has no audio route factory")
 			s.report.AudioError = err.Error()
@@ -380,13 +381,18 @@ func (s *shell) selectedAudioRouteTool() *voiceTool {
 	return nil
 }
 
-func bindAudioRouteFactory(routeFactory audioRouteFactory, resourcesPath string, locator voicetools.Locator, onPartial func(bridge.SessionToken, string, string) bool) func(context.Context, uint64, string) (liveAudioRoute, error) {
+func bindAudioRouteFactory(routeFactory audioRouteFactory, resourcesPath string, locator voicetools.Locator,
+	onPartial func(bridge.SessionToken, string, string) bool, partialsEnabled ...func() bool) func(context.Context, uint64, string) (liveAudioRoute, error) {
 	if routeFactory == nil {
 		return nil
 	}
 	return func(ctx context.Context, generation uint64, appPath string) (liveAudioRoute, error) {
-		return routeFactory(ctx, audioRouteConfig{
+		config := audioRouteConfig{
 			Generation: generation, AppPath: appPath, Locator: locator, ResourcesPath: resourcesPath, OnPartial: onPartial,
-		})
+		}
+		if len(partialsEnabled) > 0 {
+			config.PartialsEnabled = partialsEnabled[0]
+		}
+		return routeFactory(ctx, config)
 	}
 }

@@ -1,8 +1,9 @@
 flowchart TD
     enabled["可启用多个插件"] --> current["Current 只选一个语音工具"]
     current --> route{"当前目标路径"}
-    route -->|Apple 本机识别| apple["冻结当前文本目标"]
-    apple --> text["识别文字只尝试插入该目标一次"]
+    route -->|Apple 或 Hex| apple["启动识别，同时查找可选的原输入位置"]
+    apple --> text["最终文字只向原位置尝试写入一次"]
+    apple -->|未取得可写位置| copy["菜单可复制本次听写"]
     text --> noSubmit["不发送 Enter，不广播到其他入口"]
     route -->|外部工具动作| contract{"动作合同是否可执行"}
     contract -->|已验证 global 与 Control| freeze["按下冻结唯一动作和配置版本"]

@@ -42,6 +42,7 @@ type voiceOverlayState struct {
 	mode         voicePresentationMode
 	interim      voiceInterimFeed
 	interimToken bridge.SessionToken // Main-thread owner for Begin/End; provider calls use the feed mutex.
+	voicePrompt  voicePromptPresentation
 }
 
 const voicePresentationPlugin = "voice-presentation"
@@ -90,6 +91,7 @@ func (s *shell) applyVoicePresentationSelection() {
 }
 
 func (s *shell) stopVoicePresentation() {
+	s.stopVoicePromptPresentation()
 	s.endVoiceInterim()
 	s.voiceOverlay.interim.SetEnabled(false)
 	if s.voicePresentationActive() {
@@ -174,9 +176,11 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 func (s *shell) syncVoiceOverlay() {
 	state := &s.voiceOverlay
 	if s.closing || !s.voicePresentationActive() || state.err != nil || state.open == nil {
+		s.stopVoicePromptPresentation()
 		return
 	}
 	frame := s.voiceOverlayFrameAt(time.Now())
+	s.syncVoicePromptPresentation(frame)
 	if !frame.Visible {
 		if state.view != nil {
 			if err := state.view.Hide(); err != nil {
@@ -204,6 +208,7 @@ func (s *shell) syncVoiceOverlay() {
 
 // Report an explicit outcome only to renderers that can present it.
 func (s *shell) finishVoiceOverlay(token bridge.SessionToken, failed bool) {
+	s.finishVoicePromptPresentation(token)
 	if view, ok := s.voiceOverlay.view.(interface {
 		finish(bridge.SessionToken, bool, time.Time)
 	}); ok {
@@ -231,6 +236,7 @@ func (s *shell) recordVoiceOverlayError(err error) {
 }
 
 func (s *shell) releaseVoiceOverlay() error {
+	s.stopVoicePromptPresentation()
 	s.endVoiceInterim()
 	s.voiceOverlay.interim.Clear()
 	view := s.voiceOverlay.view
@@ -245,4 +251,7 @@ func (s *shell) releaseVoiceOverlay() error {
 	return errors.Join(hideErr, closeErr)
 }
 
-func (s *shell) closeVoiceOverlay() { s.recordVoiceOverlayError(s.releaseVoiceOverlay()) }
+func (s *shell) closeVoiceOverlay() {
+	s.recordVoiceOverlayError(s.releaseVoiceOverlay())
+	s.waitVoicePromptPresentationRestore()
+}

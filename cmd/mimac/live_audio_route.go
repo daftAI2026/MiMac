@@ -458,6 +458,16 @@ type compatLiveAudioRoute struct {
 	preparedSelectionConfirmed bool
 }
 
+// voicePromptTarget exposes only the already captured route identity to a
+// per-tool presentation adapter. The adapter still validates its own bundle
+// and window semantics before changing any native UI.
+func (r *compatLiveAudioRoute) voicePromptTarget() (string, int32, string, bool) {
+	if r == nil || r.pid <= 0 || r.target.bundleID == "" || r.target.executableName == "" {
+		return "", 0, "", false
+	}
+	return r.target.bundleID, r.pid, r.target.executableName, true
+}
+
 var _ liveAudioRoute = (*compatLiveAudioRoute)(nil)
 
 func (r *compatLiveAudioRoute) Start() error {

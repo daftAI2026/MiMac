@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -93,7 +95,7 @@ func (s *shell) locateVoiceToolIcon(tool *voiceTool, icon *voiceToolIcon) {
 }
 
 func loadVoiceToolIcon(path string, fallback []byte) *ui.Bitmap {
-	if path != "" {
+	if filepath.IsAbs(path) && strings.EqualFold(filepath.Ext(path), ".app") {
 		if data, err := mygo.Shell.FileIcon(path, int(settingsIconSize*2)); err == nil {
 			if bitmap, err := ui.DecodeBitmap(data); err == nil {
 				return bitmap

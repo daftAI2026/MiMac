@@ -12,14 +12,14 @@ flowchart LR
     routeOwner["liveAudioConnection + Runtime + preparedAudioOwner\n连接、预备资源与会话 source/sink owner 分层"]
     sourceRecovery["source 故障按实际音频会话限次恢复\nCore 空闲且无按键时 retire / close / 重建音频 owner\n仅成功 SourceDrained 后重新开放一次；权限/状态拒绝不自动重试\n不重启 HID、不补发按键"]
     tools["语音工具发现与动作快照"]
-    text["辅助功能文本输出适配器"]
+    text["辅助功能文字投递：原目标可写时写入最终文字"]
     prefs["voice_presentation 持久偏好"]
     measurement["可选 PCM 观测\n通用 audiometer；不改变音频"]
     projection["Host 语音呈现投影\nCore Snapshot + 当前 token 响度 / 球体频谱"]
     panel["MyGo 非激活 Panel\n显示时请求帧；鼠标穿透"]
     glass["siriglass 可选材质 renderer\narm64 + macOS26公开API下限 / 当前原生能力检查"]
     fault["显示故障只关闭呈现\nCore 与音频会话继续"]
-    future["未来：厂商语音条接管\n完整 Siri 前景与业务语义"]
+    future["未来：完整 Siri 前景与业务语义"]
 
     mygo --> shell
     backendPrefs --> shell
@@ -30,13 +30,19 @@ flowchart LR
     shell --> keys
     shell --> routeFactory
     routeFactory --> routeOwner
-    routeFactory --> contracts["Apple / 豆包 / WeType 薄适配\n按工具处理身份、输入源与偏好协议"]
+    routeFactory --> contracts["Apple / Hex / 豆包 / WeType 适配器\n按工具处理身份、输入源与偏好协议"]
     contracts --> routeOwner
     routeOwner -. source fault .-> sourceRecovery
     sourceRecovery -->|same tool and device generation| routeFactory
     routeOwner --> audio
     shell --> tools
     shell --> text
+    routeOwner -->|识别工具的最终文字| text
+    text -->|无可写目标| recover["菜单栏可复制一条未写入的结果"]
+    contracts -->|受支持的工具提供中间文字| interim["会话绑定的点阵字幕"]
+    interim --> projection
+    prefs --> exclusive["仅显示 MiMac 提示的全局偏好"]
+    exclusive -->|当前工具已注册| adapterDisplay["该工具识别并管理自己的临时录音窗"]
     core --> projection
     audio --> measurement
     measurement --> projection

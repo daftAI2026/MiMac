@@ -15,6 +15,9 @@ private struct PreferencesState: Decodable {
     var Dock = false
     var VoicePresentation = 0
     var ShowLiveText = false
+    var LiveTextSupported: Bool? = nil
+    var LiveTextStatus: String? = nil
+    var OnlyShowMiMacVoicePrompt = false
     var DotAtBottom = false
     var Appearance = "system"
     var Dark = false
@@ -70,6 +73,20 @@ private struct SettingsForm: View {
         Binding(get: { state.VoicePresentation }, set: { emitVoicePresentationSelection($0, changed: changed) })
     }
 
+    private var liveTextToggle: Binding<Bool> {
+        Binding(
+            get: { state.LiveTextSupported == false ? false : state.ShowLiveText },
+            set: { value in
+                guard state.LiveTextSupported != false else { return }
+                changed(7, value ? 1 : 0)
+            }
+        )
+    }
+
+    private var liveTextToggleIdentity: String {
+        "\(state.LiveTextSupported ?? true)-\(state.ShowLiveText)"
+    }
+
     var body: some View {
         Form {
             Section {
@@ -78,7 +95,7 @@ private struct SettingsForm: View {
             }
 
             Section {
-                Picker("语音提示", selection: voicePresentation) {
+                Picker("样式", selection: voicePresentation) {
                     ForEach(VoicePresentationChoice.allCases, id: \.rawValue) { choice in
                         Text(choice.title).tag(choice.rawValue)
                     }
@@ -95,7 +112,11 @@ private struct SettingsForm: View {
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("voice-dot-position")
                 }
+            } header: {
+                Text("语音提示").font(.system(size: state.BodySize, weight: .semibold))
+            }
 
+            Section {
                 HStack(alignment: .center) {
                     Text("外观")
                     Spacer()
@@ -150,14 +171,30 @@ private struct SettingsForm: View {
                 }
             }
 
-            if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue {
+            if state.VoicePresentation != VoicePresentationChoice.followVoiceTool.rawValue {
                 Section {
-                    Toggle("点阵实时字幕", isOn: toggle(state.ShowLiveText, kind: 7))
-                        .accessibilityIdentifier("voice-live-text-row")
+                    if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue {
+                        Toggle("点阵实时字幕", isOn: liveTextToggle)
+                            .id(liveTextToggleIdentity)
+                            .accessibilityIdentifier("voice-live-text-row")
+                            .disabled(!(state.LiveTextSupported ?? true))
+                    }
+                    Toggle("仅显示 MiMac 语音提示", isOn: toggle(state.OnlyShowMiMacVoicePrompt, kind: 9))
+                        .accessibilityIdentifier("voice-prompt-suppression-row")
                 } header: {
                     Text("实验室").font(.system(size: state.BodySize, weight: .semibold))
                 } footer: {
-                    Text("语音工具提供实时识别时，在点阵下方显示听写文字")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("目前仅支持豆包输入法；跟随语音工具时不生效。")
+                            .font(.system(size: state.CaptionSize))
+                            .accessibilityIdentifier("voice-prompt-suppression-status")
+                        if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue,
+                           let status = state.LiveTextStatus, !status.isEmpty {
+                            Text(status)
+                                .font(.system(size: state.CaptionSize))
+                                .accessibilityIdentifier("voice-live-text-status")
+                        }
+                    }
                 }
             }
 

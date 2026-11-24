@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -42,6 +43,123 @@ func TestOpenWriteDrainAndClose(t *testing.T) {
 	}
 	if got, err := sink.FinalText(); err != nil || got != owner.text {
 		t.Fatalf("FinalText() after Close = %q, %v; want retained final text", got, err)
+	}
+}
+
+func TestPartialHandlerKeepsStableAndTentativeSeparateAndStopsBeforeDrainReturns(t *testing.T) {
+	owner := newFakeOwner(nativeReady)
+	bridge := &fakeBridge{owner: owner}
+	cfg := testConfig(false)
+	cfg.EnablePartials = true
+	sink, err := openWith(context.Background(), cfg, func(string) (nativeBridge, error) { return bridge, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bridge.partials {
+		t.Fatal("partial-enabled Open did not select the partial native constructor")
+	}
+	updates := make(chan partialSnapshot, 2)
+	if err := sink.SetPartialHandler(func(stable, tentative string) {
+		updates <- partialSnapshot{stable: stable, tentative: tentative}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.publishPartial("已经确认 ", "还在说")
+	waitPartialUpdate(t, updates, partialSnapshot{stable: "已经确认 ", tentative: "还在说"})
+	owner.publishPartial("已经确认完成", "")
+	waitPartialUpdate(t, updates, partialSnapshot{stable: "已经确认完成"})
+	if err := sink.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := sink.FinalText(); err != nil || got != owner.text {
+		t.Fatalf("final text after partial updates = %q, %v; want the single native final %q", got, err, owner.text)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseJoinsInFlightPartialCallbackAndPreventsLateUpdates(t *testing.T) {
+	owner := newFakeOwner(nativeReady)
+	cfg := testConfig(false)
+	cfg.EnablePartials = true
+	sink, err := openWith(context.Background(), cfg, func(string) (nativeBridge, error) {
+		return &fakeBridge{owner: owner}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var callbacks atomic.Int32
+	if err := sink.SetPartialHandler(func(string, string) {
+		callbacks.Add(1)
+		close(entered)
+		<-release
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.publishPartial("tentative", "")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("partial callback did not start")
+	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- sink.Close() }()
+	select {
+	case err := <-closeResult:
+		t.Fatalf("Close returned before its partial callback joined: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close after callback joined: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after the partial callback returned")
+	}
+	owner.publishPartial("late", "")
+	time.Sleep(10 * time.Millisecond)
+	if got := callbacks.Load(); got != 1 {
+		t.Fatalf("partial callbacks after Close = %d, want exactly one in-flight callback", got)
+	}
+}
+
+func TestCancelWithoutPartialResultsStopsNativeWaiter(t *testing.T) {
+	owner := newFakeOwner(nativeReady)
+	cfg := testConfig(false)
+	cfg.EnablePartials = true
+	sink, err := openWith(context.Background(), cfg, func(string) (nativeBridge, error) {
+		return &fakeBridge{owner: owner}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callbacks atomic.Int32
+	if err := sink.SetPartialHandler(func(string, string) { callbacks.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	owner.publishPartial("late after cancel", "")
+	time.Sleep(10 * time.Millisecond)
+	if got := callbacks.Load(); got != 0 {
+		t.Fatalf("cancelled session delivered %d partials, want zero", got)
+	}
+}
+
+func waitPartialUpdate(t *testing.T, updates <-chan partialSnapshot, want partialSnapshot) {
+	t.Helper()
+	select {
+	case got := <-updates:
+		if got.stable != want.stable || got.tentative != want.tentative {
+			t.Fatalf("partial update = stable %q tentative %q; want stable %q tentative %q", got.stable, got.tentative, want.stable, want.tentative)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for partial update")
 	}
 }
 
@@ -240,6 +358,7 @@ func testConfig(installAssets bool) Config {
 type fakeBridge struct {
 	owner         *fakeOwner
 	installAssets bool
+	partials      bool
 	created       chan struct{}
 }
 
@@ -247,6 +366,15 @@ func (*fakeBridge) isAvailable() (bool, error) { return true, nil }
 
 func (b *fakeBridge) create(_ string, _ int, installAssets bool) (nativeOwner, error) {
 	b.installAssets = installAssets
+	if b.created != nil {
+		close(b.created)
+	}
+	return b.owner, nil
+}
+
+func (b *fakeBridge) createWithPartials(_ string, _ int, installAssets bool) (nativeOwner, error) {
+	b.installAssets = installAssets
+	b.partials = true
 	if b.created != nil {
 		close(b.created)
 	}
@@ -268,6 +396,9 @@ type fakeOwner struct {
 	written            int
 	released           bool
 	cancelRequestCount int
+	partialStable      string
+	partialTentative   string
+	partialVersion     uint64
 }
 
 func newFakeOwner(state nativeState) *fakeOwner {
@@ -374,6 +505,41 @@ func (o *fakeOwner) waitTerminated(timeout time.Duration) (bool, error) {
 			return false, nil
 		}
 	}
+}
+
+func (o *fakeOwner) waitPartial(afterVersion uint64, timeout time.Duration, stableBuffer, tentativeBuffer []byte) (partialSnapshot, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		o.mu.Lock()
+		if o.partialVersion != afterVersion {
+			snapshot := partialSnapshot{stable: o.partialStable, tentative: o.partialTentative, version: o.partialVersion, updated: true}
+			o.mu.Unlock()
+			return snapshot, nil
+		}
+		terminal := o.state == nativeDrained || o.state == nativeCancelled || o.state == nativeFailed || o.terminated
+		changed := o.changed
+		o.mu.Unlock()
+		if terminal || timeout <= 0 {
+			return partialSnapshot{version: afterVersion, terminal: terminal}, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return partialSnapshot{version: afterVersion}, nil
+		}
+		select {
+		case <-changed:
+		case <-time.After(remaining):
+			return partialSnapshot{version: afterVersion}, nil
+		}
+	}
+}
+
+func (o *fakeOwner) publishPartial(stable, tentative string) {
+	o.mu.Lock()
+	o.partialStable, o.partialTentative = stable, tentative
+	o.partialVersion++
+	o.signalLocked()
+	o.mu.Unlock()
 }
 
 func (o *fakeOwner) finalText() (string, error) { return o.text, nil }

@@ -140,33 +140,29 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			if beforeStart == nil {
 				return nil
 			}
-			// This is a stale-admission budget, not cancellation of an in-flight
-			// CoreAudio/CF call. No polling or device preparation runs here.
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			started := time.Now()
-			err := errors.Join(beforeStart(ctx), ctx.Err())
-			log.Printf("audio route: before_start elapsed=%s error=%v", time.Since(started), err)
 			if s.directTextVoiceSelected() {
-				// A text target problem is local to this press, not a failed
-				// audio connection that requires reconnecting the remote.
-				s.report.AudioError = ""
-				s.voiceStartBlocked = directTextTargetPrompt(err)
-				s.outputNeedsPermission = errors.Is(err, textoutput.ErrPermissionDenied)
-				if s.outputNeedsPermission {
-					if errors.Is(err, textoutput.ErrPostEventPermissionDenied) {
-						textoutput.RequestPostEventAccess()
-					} else {
-						textoutput.RequestAccess()
-					}
+				// The output lookup is optional and runs off-thread. A voice
+				// press is also valid on a desktop, a button, or a slow editor.
+				s.voiceStartBlocked = ""
+				s.outputNeedsPermission = false
+				err := beforeStart(ctx)
+				if err == nil {
+					s.prepareVoicePromptPresentation()
 				}
 				return err
 			}
+			// A compatibility route checks the external tool before signalling it.
+			admission, stop := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer stop()
+			started := time.Now()
+			err := errors.Join(beforeStart(admission), admission.Err())
+			log.Printf("audio route: before_start elapsed=%s error=%v", time.Since(started), err)
 			if err != nil {
 				s.report.AudioError = err.Error()
 				s.voiceStartBlocked = "语音输入未就绪，请重试"
 			} else {
 				s.report.AudioError = ""
+				s.prepareVoicePromptPresentation()
 			}
 			return err
 		}
@@ -193,34 +189,18 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 	}}
 }
 
-func directTextTargetPrompt(err error) string {
+// A native error can occur after accepting text. An uncertain write must
+// never be retried automatically or reported as definitely absent.
+func directTextDeliveryPrompt(err error) string {
 	switch {
-	case err == nil:
-		return ""
 	case errors.Is(err, textoutput.ErrPermissionDenied):
 		return "请允许辅助功能权限"
 	case errors.Is(err, textoutput.ErrSecureInput):
 		return "请退出密码输入后重试"
 	case errors.Is(err, textoutput.ErrUnsupportedText):
 		return "此输入框不支持多行或控制字符"
-	case errors.Is(err, textoutput.ErrUnsupportedTarget):
-		return "此输入框暂不支持直接输入，请切换输入位置"
 	case errors.Is(err, textoutput.ErrTargetChanged):
 		return "输入位置已变化，请重试"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "输入框响应超时，请重试"
-	default:
-		return "请将光标放入可编辑输入框"
-	}
-}
-
-// A native error can occur after accepting text. Unknown errors must not
-// assert that nothing was inserted or invite an automatic duplicate attempt.
-func directTextDeliveryPrompt(err error) string {
-	switch {
-	case errors.Is(err, textoutput.ErrPermissionDenied), errors.Is(err, textoutput.ErrUnsupportedText),
-		errors.Is(err, textoutput.ErrSecureInput), errors.Is(err, textoutput.ErrTargetChanged):
-		return directTextTargetPrompt(err)
 	case errors.Is(err, textoutput.ErrEventPayload):
 		return "文字未写入，此输入方式暂不可用"
 	default:
@@ -254,6 +234,14 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					if before.HasSession && before.Session.Token == result.Token && before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
 						attemptedText = result.Text != ""
 						deliveryErr = host.deliver(result.Token, result.Text)
+						if errors.Is(deliveryErr, textoutput.ErrNoInsertionTarget) && attemptedText {
+							// The editor did not receive this result. Only an explicit
+							// menu click copies it; retain one sentence in memory.
+							s.uninsertedDictation = result.Text
+							deliveryErr = nil
+						} else if attemptedText && deliveryErr == nil {
+							s.uninsertedDictation = ""
+						}
 						if deliveryErr != nil {
 							s.outputNeedsPermission = errors.Is(deliveryErr, textoutput.ErrPermissionDenied)
 							s.voiceStartBlocked = directTextDeliveryPrompt(deliveryErr)

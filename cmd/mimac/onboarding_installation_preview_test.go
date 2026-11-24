@@ -19,19 +19,19 @@ func TestOnboardingMissingVoiceToolsRemainVisible(t *testing.T) {
 	mygo.App.SetName("MiMac")
 	t.Cleanup(func() { mygo.App.SetName(original) })
 	for _, sample := range []struct {
-		name           string
-		doubao, wetype voicetools.State
+		name                string
+		doubao, hex, wetype voicetools.State
 	}{
-		{"both-missing", voicetools.NotFound, voicetools.NotFound},
-		{"doubao-missing", voicetools.NotFound, voicetools.Ready},
-		{"wetype-missing", voicetools.Ready, voicetools.NotFound},
+		{"all-optional-missing", voicetools.NotFound, voicetools.NotFound, voicetools.NotFound},
+		{"hex-installed", voicetools.NotFound, voicetools.Ready, voicetools.NotFound},
+		{"hex-missing", voicetools.Ready, voicetools.NotFound, voicetools.Ready},
 	} {
 		for _, dark := range []bool{false, true} {
 			for _, size := range [][2]int{{900, 660}, {1304, 840}} {
 				t.Run(fmt.Sprintf("%s/dark%t/%d", sample.name, dark, size[0]), func(t *testing.T) {
 					s := &shell{settingsState: settingsState{navigationSymbols: make(map[symbolKey]*ui.Bitmap), voiceToolIcons: make(map[string]*voiceToolIcon)}}
 					s.onboarding.step = onboardingStepVoice
-					s.onboarding.toolLocations = map[string]voicetools.State{"voice-doubao": sample.doubao, "voice-wetype": sample.wetype}
+					s.onboarding.toolLocations = map[string]voicetools.State{"voice-doubao": sample.doubao, hexStreamToolID: sample.hex, "voice-wetype": sample.wetype}
 					s.tools = builtInVoiceTools()
 					for _, tool := range s.tools {
 						cached := &voiceToolIcon{}
@@ -89,10 +89,7 @@ func TestOnboardingMissingVoiceToolsRemainVisible(t *testing.T) {
 					if !ok {
 						t.Fatal("continue action missing")
 					}
-					if _, ok := v.Find("Hex 本地识别"); ok {
-						t.Fatal("inactive service-only tool offered before it can be selected")
-					}
-					for _, name := range []string{"Apple 语音识别", "豆包输入法", "微信输入法"} {
+					for _, name := range []string{"Apple 语音识别", "Hex", "豆包输入法", "微信输入法"} {
 						r, ok := v.Find(name)
 						if !ok || r.Y+r.H > next.Y {
 							t.Fatalf("tool missing or clipped: %s %v", name, r)

@@ -1,10 +1,14 @@
 package main
 
-import "github.com/egoist/mygo"
+import (
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
+)
 
 type trayState struct {
 	status, remoteAction string
 	remoteDisabled       bool
+	canCopyDictation     bool
 }
 
 func (s *shell) showPage(page settingsPage) {
@@ -21,14 +25,25 @@ func (s *shell) updateTrayMenu() {
 	}
 	state := trayState{
 		status: s.remoteLabel(), remoteAction: s.remoteButtonLabel(), remoteDisabled: s.remoteButtonDisabled(),
+		canCopyDictation: s.uninsertedDictation != "",
 	}
 	if state == s.trayState {
 		return
 	}
 	s.trayState = state
-	menu := mygo.NewMenu([]*mygo.MenuItem{
+	items := []*mygo.MenuItem{
 		{Label: state.status, Disabled: true},
 		{Label: state.remoteAction, Disabled: state.remoteDisabled, Click: func(*mygo.MenuItem, *mygo.Window) { s.toggleRemote() }},
+	}
+	if state.canCopyDictation {
+		items = append(items, &mygo.MenuItem{Label: "复制本次听写", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if s.uninsertedDictation != "" && mygo.Clipboard.Write(transfer.TextData(s.uninsertedDictation)) == nil {
+				s.uninsertedDictation = ""
+				s.updateTrayMenu()
+			}
+		}})
+	}
+	menu := mygo.NewMenu(append(items, []*mygo.MenuItem{
 		mygo.Separator(),
 		{Label: "按键映射…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showPage(pageMappings) }},
 		{Label: "首次设置…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showOnboarding() }},
@@ -36,6 +51,6 @@ func (s *shell) updateTrayMenu() {
 		{Label: "系统权限…", Click: func(*mygo.MenuItem, *mygo.Window) { s.showPermissionGuide() }},
 		mygo.Separator(),
 		{Label: "退出 " + mygo.App.Name(), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
-	})
+	}...))
 	s.tray.SetMenu(menu)
 }

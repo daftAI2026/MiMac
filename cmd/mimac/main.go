@@ -79,6 +79,7 @@ type shell struct {
 	generalControls                  *nativeprefs.Control
 	tray                             *mygo.Tray
 	trayState                        trayState
+	uninsertedDictation              string
 	closing                          bool // Main-thread state, independent of framework dispatcher shutdown.
 	cancel                           context.CancelFunc
 	monitor                          hidMonitor // Main-thread device adapter, survives settings closure.
@@ -434,6 +435,7 @@ func main() {
 			return
 		}
 		s.stopVoicePresentation()
+		s.waitVoicePromptPresentationRestore()
 		s.cancelPowerResume()
 		s.cancelRemoteReservationRetry()
 		if s.deferAudioQuit(event.PreventDefault, mygo.RunOnMain, func() {

@@ -36,9 +36,7 @@ func (s *shell) aboutSettings(c *ui.Context, a appearance) {
 	ui.Scroll(c).Fill().Children(func() {
 		ui.Column(c).FillWidth().Gap(sectionGap).Children(func() {
 			ui.Column(c).FillWidth().Padding(spaceSM, 0, spaceLG, 0).Gap(spaceSM).AlignItems(ui.Center).Children(func() {
-				if s.appIcon != nil {
-					ui.Image(c, s.appIcon).Width(64).Height(64).Fit(ui.Contain).Label("MiMac Logo")
-				}
+				s.drawAppIcon(c, a, 64)
 				ui.Column(c).Gap(spaceXS).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, mygo.App.Name()).FontSize(a.fonts.title).FontWeight(600)
 					ui.Text(c, "版本 "+version).FontSize(a.fonts.body).TextColor(a.theme.TextMuted)
@@ -102,4 +100,11 @@ func (s *shell) aboutSettings(c *ui.Context, a appearance) {
 			}
 		})
 	})
+}
+
+func (s *shell) drawAppIcon(c *ui.Context, a appearance, size float32) {
+	if s.appIcon != nil {
+		ui.Image(c, s.appIcon).Size(size, size).Fit(ui.Contain).Label(mygo.App.Name() + " Logo").
+			DrawOver(func(p *ui.Painter, r ui.Rect) { p.Stroke(r, a.theme.Border, r.W/4, lineWidth) })
+	}
 }

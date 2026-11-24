@@ -284,6 +284,10 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 			if callback, ok := boolCallback(c.callbacks.DotAtBottom, value); ok {
 				callback()
 			}
+		case 9:
+			if callback, ok := boolCallback(c.callbacks.OnlyShowMiMacVoicePrompt, value); ok {
+				callback()
+			}
 		}
 	})
 }

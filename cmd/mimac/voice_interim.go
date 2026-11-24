@@ -60,24 +60,44 @@ func (f *voiceInterimFeed) Begin(token bridge.SessionToken) {
 	}
 }
 
+// PartialsEnabled reports whether the user opted into this presentation mode.
+// It is safe to use before a provider session token has been bound.
+func (f *voiceInterimFeed) PartialsEnabled() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.enabled
+}
+
+// WantsPartials is a cheap provider-side subscription check. It lets an
+// adapter avoid constructing or decoding interim text when captions are off
+// or the callback belongs to a retired Core session.
+func (f *voiceInterimFeed) WantsPartials(token bridge.SessionToken) bool {
+	if token == (bridge.SessionToken{}) || token.ID() == 0 {
+		return false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.enabled && f.token == token
+}
+
 // Publish replaces the current draft only for the enabled, active session.
 // Stable and tentative words are kept separate for visual emphasis. It never
 // queues text and never touches an editor or a final transcript.
 func (f *voiceInterimFeed) Publish(token bridge.SessionToken, stable, tentative string) bool {
-	if token == (bridge.SessionToken{}) || token.ID() == 0 {
+	if !f.WantsPartials(token) {
 		return false
 	}
 	draft, valid := boundVoiceInterim(stable, tentative)
 	if !valid {
 		return false
 	}
-	if draft.Stable == "" && draft.Tentative == "" {
-		return true
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.enabled || f.token != token {
 		return false
+	}
+	if draft.Stable == "" && draft.Tentative == "" {
+		return true
 	}
 	f.draft = draft
 	return true

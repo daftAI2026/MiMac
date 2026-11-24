@@ -45,8 +45,23 @@ func TestVoiceInterimFeedBoundsLatestTextToTheActiveSession(t *testing.T) {
 	if first.ID() != second.ID() || first == second {
 		t.Fatal("test tokens did not isolate the device generation")
 	}
+	if feed.WantsPartials(first) {
+		t.Fatal("uninitialized feed requested partial text")
+	}
+	if feed.PartialsEnabled() {
+		t.Fatal("uninitialized feed enabled provider partials")
+	}
 	feed.SetEnabled(true)
+	if !feed.PartialsEnabled() {
+		t.Fatal("enabled feed did not expose its provider subscription")
+	}
+	if feed.WantsPartials(first) {
+		t.Fatal("enabled feed without an active token requested partial text")
+	}
 	feed.Begin(first)
+	if !feed.WantsPartials(first) || feed.WantsPartials(second) {
+		t.Fatal("feed subscription did not bind to the exact Core token")
+	}
 	if !feed.Publish(first, "  first\nsecond", "  tentative\tline  ") {
 		t.Fatal("active session interim was rejected")
 	}
@@ -78,6 +93,9 @@ func TestVoiceInterimFeedBoundsLatestTextToTheActiveSession(t *testing.T) {
 	}
 
 	feed.Begin(second)
+	if feed.WantsPartials(first) || !feed.WantsPartials(second) {
+		t.Fatal("new session did not replace the partial subscription")
+	}
 	if feed.Snapshot(first) != (voiceInterimDraft{}) || feed.Snapshot(second) != (voiceInterimDraft{}) {
 		t.Fatal("a new session retained prior interim text")
 	}
@@ -89,7 +107,7 @@ func TestVoiceInterimFeedBoundsLatestTextToTheActiveSession(t *testing.T) {
 		t.Fatal("late old-session end cleared the current draft")
 	}
 	feed.End(second)
-	if feed.Snapshot(second) != (voiceInterimDraft{}) || feed.Publish(second, "after end", "") {
+	if feed.Snapshot(second) != (voiceInterimDraft{}) || feed.Publish(second, "after end", "") || feed.WantsPartials(second) {
 		t.Fatal("retired session accepted or retained interim text")
 	}
 }
@@ -101,7 +119,7 @@ func TestVoiceInterimFeedDisableDropsAndRejectsDrafts(t *testing.T) {
 	feed.Begin(token)
 	feed.Publish(token, "draft", "")
 	feed.SetEnabled(false)
-	if got := feed.Snapshot(token); got != (voiceInterimDraft{}) {
+	if got := feed.Snapshot(token); got != (voiceInterimDraft{}) || feed.WantsPartials(token) || feed.PartialsEnabled() {
 		t.Fatalf("disabled feed retained %q", got)
 	}
 	feed.Begin(token)

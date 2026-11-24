@@ -23,13 +23,14 @@ const (
 )
 
 type hostPreferences struct {
-	Version           int                   `json:"version"`
-	ShowInDock        bool                  `json:"show_in_dock"`
-	VoicePresentation voicePresentationMode `json:"voice_presentation"`
-	ShowLiveText      bool                  `json:"show_live_text,omitempty"`
-	DotAtBottom       bool                  `json:"dot_at_bottom,omitempty"`
-	Appearance        mygo.ThemeSource      `json:"appearance"`
-	TextSize          int                   `json:"text_size,omitempty"`
+	Version                  int                   `json:"version"`
+	ShowInDock               bool                  `json:"show_in_dock"`
+	VoicePresentation        voicePresentationMode `json:"voice_presentation"`
+	ShowLiveText             bool                  `json:"show_live_text,omitempty"`
+	DotAtBottom              bool                  `json:"dot_at_bottom,omitempty"`
+	OnlyShowMiMacVoicePrompt bool                  `json:"hide_doubao_bar,omitempty"`
+	Appearance               mygo.ThemeSource      `json:"appearance"`
+	TextSize                 int                   `json:"text_size,omitempty"`
 }
 
 type preferencesState struct {
@@ -49,6 +50,7 @@ type preferencesDocument struct {
 	VoicePresentation *voicePresentationMode `json:"voice_presentation"`
 	ShowLiveText      *bool                  `json:"show_live_text"`
 	DotAtBottom       bool                   `json:"dot_at_bottom"`
+	HideDoubaoBar     *bool                  `json:"hide_doubao_bar"`
 	Appearance        *mygo.ThemeSource      `json:"appearance"`
 	TextSize          int                    `json:"text_size,omitempty"`
 }
@@ -111,6 +113,10 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	if doc.ShowLiveText != nil {
 		showLiveText = *doc.ShowLiveText
 	}
+	onlyShowMiMacVoicePrompt := false
+	if doc.HideDoubaoBar != nil {
+		onlyShowMiMacVoicePrompt = *doc.HideDoubaoBar
+	}
 	switch doc.Version {
 	case legacyPreferencesVersion:
 		if doc.VoicePresentation != nil {
@@ -136,8 +142,8 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	return hostPreferences{
 		Version: preferencesVersion, ShowInDock: *doc.ShowInDock,
 		VoicePresentation: voicePresentation, ShowLiveText: showLiveText,
-		DotAtBottom: doc.DotAtBottom,
-		Appearance:  appearance, TextSize: doc.TextSize,
+		DotAtBottom: doc.DotAtBottom, OnlyShowMiMacVoicePrompt: onlyShowMiMacVoicePrompt,
+		Appearance: appearance, TextSize: doc.TextSize,
 	}, nil
 }
 
@@ -328,12 +334,32 @@ func (s *shell) applyVoicePresentationPreference(mode voicePresentationMode) err
 		s.preferencesState.errorText = "语音提示选项无效"
 		return errors.New("unsupported voice presentation preference")
 	}
+	previous := s.preferencesState.value.VoicePresentation
 	next := s.preferencesState.value
 	next.VoicePresentation = mode
 	if err := s.savePreferences(next); err != nil {
 		return err
 	}
+	if previous != mode {
+		s.stopVoicePromptPresentation()
+	}
 	s.applyVoicePresentationSelection()
+	return nil
+}
+
+// applyOnlyShowMiMacVoicePrompt persists a global opt-in. Registered voice
+// tools decide whether they can suppress their own native presentation; the
+// preference remains saved while another tool is selected.
+func (s *shell) applyOnlyShowMiMacVoicePrompt(enabled bool) error {
+	next := s.preferencesState.value
+	next.OnlyShowMiMacVoicePrompt = enabled
+	if err := s.savePreferences(next); err != nil {
+		return err
+	}
+	if !enabled {
+		s.stopVoicePromptPresentation()
+	}
+	s.syncVoiceOverlay()
 	return nil
 }
 
