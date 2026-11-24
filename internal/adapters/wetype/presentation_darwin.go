@@ -31,6 +31,25 @@ func captureRecordingBarBaselineNative(pid int32, expectedExecutable string) *Re
 	return &RecordingBarBaseline{inner: baseline}
 }
 
+func captureRecordingBarVisibilityBaselineNative(pid int32, expectedExecutable string) *RecordingBarVisibilityBaseline {
+	if pid <= 0 || !isVerifiedWeTypeBundleExecutable(expectedExecutable) {
+		return nil
+	}
+	identity, err := processidentity.Capture(pid, expectedExecutable)
+	if err != nil {
+		return nil
+	}
+	probe, err := windowlease.LoadDarwinProbe()
+	if err != nil {
+		return nil
+	}
+	baseline, err := windowlease.CaptureHiddenBaseline(pid, identity.Check, probe)
+	if err != nil {
+		return nil
+	}
+	return &RecordingBarVisibilityBaseline{inner: baseline}
+}
+
 func isVerifiedWeTypeBundleExecutable(executable string) bool {
 	if !filepath.IsAbs(executable) || strings.ContainsRune(executable, 0) {
 		return false

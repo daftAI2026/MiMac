@@ -25,6 +25,30 @@ var runningApplicationNative struct {
 	err        error
 }
 
+// FrontmostPID returns the current keyboard application's PID without reading its windows.
+func FrontmostPID() (int32, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := loadRunningApplicationAPI(); err != nil {
+		return 0, err
+	}
+	pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(runningApplicationSelector("new"))
+	if pool == 0 {
+		return 0, ErrReadFailed
+	}
+	defer pool.Send(runningApplicationSelector("drain"))
+	workspace := objc.ID(objc.GetClass("NSWorkspace")).Send(runningApplicationSelector("sharedWorkspace"))
+	front := workspace.Send(runningApplicationSelector("frontmostApplication"))
+	if front == 0 {
+		return 0, ErrReadFailed
+	}
+	pid := objc.Send[int32](front, runningApplicationSelector("processIdentifier"))
+	if pid <= 0 {
+		return 0, ErrReadFailed
+	}
+	return pid, nil
+}
+
 func findNative(ctx context.Context, identity target) (int32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

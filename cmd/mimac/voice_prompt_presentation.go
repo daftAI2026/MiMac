@@ -57,12 +57,13 @@ type voicePromptPresentation struct {
 }
 
 type voicePromptPresentationJob struct {
-	token        bridge.SessionToken
-	cancel       context.CancelFunc
-	cancelSearch context.CancelFunc
-	sessionEnd   chan struct{}
-	done         chan struct{}
-	explicitStop bool
+	token                bridge.SessionToken
+	cancel               context.CancelFunc
+	cancelSearch         context.CancelFunc
+	sessionEnd           chan struct{}
+	done                 chan struct{}
+	explicitStop         bool
+	cancelDiscoveryOnEnd bool
 }
 
 func (s *shell) canSuppressVoiceToolPrompt(tool *voiceTool) bool {
@@ -138,7 +139,8 @@ func (a *voicePromptPresentation) finishCompletedWorkers() {
 func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	a := &s.voiceOverlay.voicePrompt
 	a.finishCompletedWorkers()
-	if !s.canSuppressVoiceToolPrompt(s.selectedVoiceTool()) {
+	tool := s.selectedVoiceTool()
+	if !s.canSuppressVoiceToolPrompt(tool) {
 		s.stopVoicePromptPresentation()
 		return
 	}
@@ -162,7 +164,9 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	if _, exists := a.jobs[frame.Token]; exists {
 		return
 	}
-	if frame.Phase != bridge.PhaseCapturing || a.baseline == nil {
+	// WeType can present its panel while Core is still preparing the input route.
+	preparing := tool.voicePromptOnPrepare && frame.Phase == bridge.PhasePreparing
+	if a.baseline == nil || (!preparing && frame.Phase != bridge.PhaseCapturing) {
 		return
 	}
 
@@ -173,7 +177,7 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	searchCtx, cancelSearch := context.WithTimeout(ctx, 2*time.Second)
 	job := &voicePromptPresentationJob{
 		token: frame.Token, cancel: cancel, cancelSearch: cancelSearch,
-		sessionEnd: ended, done: done,
+		sessionEnd: ended, done: done, cancelDiscoveryOnEnd: tool.voicePromptOnPrepare,
 	}
 	if a.jobs == nil {
 		a.jobs = make(map[bridge.SessionToken]*voicePromptPresentationJob)
@@ -213,6 +217,9 @@ func (s *shell) finishVoicePromptPresentation(token bridge.SessionToken) {
 	select {
 	case <-job.sessionEnd:
 	default:
+		if job.cancelDiscoveryOnEnd {
+			job.cancelSearch()
+		}
 		close(job.sessionEnd)
 	}
 }

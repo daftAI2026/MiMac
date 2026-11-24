@@ -256,7 +256,7 @@ func loadPresentationNativeAPI() (*presentationNativeAPI, error) {
 			presentationNativeRuntime.err = errors.New("recording window: null default run loop mode")
 			return
 		}
-		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription", "AXMoved", "AXResized", "AXUIElementDestroyed"} {
+		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription", "AXMoved", "AXResized", "AXUIElementDestroyed", "AXHidden", "AXWindowCreated", "AXApplicationShown"} {
 			ref, err := api.newString(name)
 			if err != nil {
 				closePresentationLibraries(libs)
@@ -785,9 +785,8 @@ func (s *darwinWindowEventSource) Close() {
 	s.closeOnce.Do(func() {
 		close(s.stop)
 		s.stateMu.Lock()
-		runLoop := s.runLoop
-		s.stateMu.Unlock()
-		if runLoop != 0 {
+		defer s.stateMu.Unlock()
+		if runLoop := s.runLoop; runLoop != 0 {
 			s.api.cfRunLoopStop(runLoop)
 			s.api.cfRunLoopWakeUp(runLoop)
 		}
@@ -795,95 +794,67 @@ func (s *darwinWindowEventSource) Close() {
 	<-s.done
 }
 
+type axSubscription struct {
+	name   string
+	refcon uintptr
+}
+
 func (s *darwinWindowEventSource) run(pid int32, ready chan<- error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	defer close(s.done)
 	defer close(s.events)
-	readySent := false
-	sendReady := func(err error) {
-		if readySent {
+	s.observe(pid, ready, windowAXCallback, []axSubscription{
+		{"AXMoved", windowAXMovedRefcon},
+		{"AXResized", windowAXResizedRefcon},
+		{"AXUIElementDestroyed", windowAXDestroyedRefcon},
+	}, func(observer uintptr) func() {
+		windowAXObservers.Store(observer, windowAXEventTarget{api: s.api, element: s.element, events: s.events})
+		return func() { windowAXObservers.Delete(observer) }
+	})
+}
+
+// Each observer registers and delivers its callbacks on its own CF run loop.
+func (s *darwinWindowEventSource) observe(pid int32, ready chan<- error, callback uintptr, subscriptions []axSubscription, install func(uintptr) func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	var observer uintptr
+	if code := s.api.axObserverCreate(pid, callback, &observer); code != 0 || observer == 0 {
+		ready <- fmt.Errorf("%w: AXObserverCreate returned %d", ErrUnavailable, code)
+		return
+	}
+	defer s.api.cfRelease(observer)
+	runLoop := s.api.cfRunLoopGetCurrent()
+	source := s.api.axObserverGetSource(observer)
+	if runLoop == 0 || source == 0 {
+		ready <- ErrUnavailable
+		return
+	}
+	removeTarget := install(observer)
+	defer removeTarget()
+	for _, item := range subscriptions {
+		name := s.api.attributes[item.name]
+		if name == 0 {
+			ready <- ErrUnavailable
 			return
 		}
-		ready <- err
-		readySent = true
-	}
-	var observer, runLoop, runLoopSource uintptr
-	movedName := s.api.attributes["AXMoved"]
-	resizedName := s.api.attributes["AXResized"]
-	destroyedName := s.api.attributes["AXUIElementDestroyed"]
-	var movedRegistered, resizedRegistered, destroyedRegistered bool
-	cleanup := func() {
-		if observer != 0 {
-			if movedRegistered {
-				_ = s.api.axObserverRemove(observer, s.element, movedName)
-			}
-			if resizedRegistered {
-				_ = s.api.axObserverRemove(observer, s.element, resizedName)
-			}
-			if destroyedRegistered {
-				_ = s.api.axObserverRemove(observer, s.element, destroyedName)
-			}
+		if code := s.api.axObserverAdd(observer, s.element, name, item.refcon); code != 0 {
+			ready <- fmt.Errorf("%w: %s subscription returned %d", ErrUnavailable, item.name, code)
+			return
 		}
-		if runLoop != 0 && runLoopSource != 0 {
-			s.api.cfRunLoopRemoveSource(runLoop, runLoopSource, s.api.defaultRunLoopMode)
-		}
-		if observer != 0 {
-			windowAXObservers.Delete(observer)
-			s.api.cfRelease(observer)
-		}
+		defer s.api.axObserverRemove(observer, s.element, name)
 	}
-	fail := func(err error) {
-		sendReady(err)
-		cleanup()
-	}
-	if code := s.api.axObserverCreate(pid, windowAXCallback, &observer); code != 0 || observer == 0 {
-		if code == 0 {
-			code = -1
-		}
-		fail(fmt.Errorf("%w: AXObserverCreate returned %d", ErrUnavailable, code))
-		return
-	}
-	runLoop = s.api.cfRunLoopGetCurrent()
-	runLoopSource = s.api.axObserverGetSource(observer)
-	if runLoop == 0 || runLoopSource == 0 {
-		fail(ErrUnavailable)
-		return
-	}
-	if movedName == 0 || resizedName == 0 || destroyedName == 0 {
-		fail(ErrUnavailable)
-		return
-	}
-	windowAXObservers.Store(observer, windowAXEventTarget{api: s.api, element: s.element, events: s.events})
-	if code := s.api.axObserverAdd(observer, s.element, movedName, windowAXMovedRefcon); code != 0 {
-		fail(fmt.Errorf("%w: AXMoved subscription returned %d", ErrUnavailable, code))
-		return
-	}
-	movedRegistered = true
-	if code := s.api.axObserverAdd(observer, s.element, resizedName, windowAXResizedRefcon); code != 0 {
-		fail(fmt.Errorf("%w: AXResized subscription returned %d", ErrUnavailable, code))
-		return
-	}
-	resizedRegistered = true
-	if code := s.api.axObserverAdd(observer, s.element, destroyedName, windowAXDestroyedRefcon); code != 0 {
-		fail(fmt.Errorf("%w: AXUIElementDestroyed subscription returned %d", ErrUnavailable, code))
-		return
-	}
-	destroyedRegistered = true
-	s.api.cfRunLoopAddSource(runLoop, runLoopSource, s.api.defaultRunLoopMode)
+	s.api.cfRunLoopAddSource(runLoop, source, s.api.defaultRunLoopMode)
+	defer s.api.cfRunLoopRemoveSource(runLoop, source, s.api.defaultRunLoopMode)
 	s.stateMu.Lock()
 	s.runLoop = runLoop
 	s.stateMu.Unlock()
-	sendReady(nil)
+	defer func() { s.stateMu.Lock(); s.runLoop = 0; s.stateMu.Unlock() }()
+	ready <- nil
 	for {
 		select {
 		case <-s.stop:
-			cleanup()
 			return
 		default:
 		}
-		// AX callbacks wake this run loop. The one-second timeout is only a
-		// shutdown bound; window movement is not polled here.
 		s.api.cfRunLoopRunInMode(s.api.defaultRunLoopMode, 1, 1)
 	}
 }

@@ -7,3 +7,5 @@ import "context"
 func findNative(context.Context, target) (int32, error) {
 	return 0, ErrUnsupported
 }
+
+func FrontmostPID() (int32, error) { return 0, ErrUnsupported }

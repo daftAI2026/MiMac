@@ -120,6 +120,31 @@ func (s *voicePromptTestSuppressor) Suppress(ctx context.Context) (voicePromptLe
 	return s.lease, "suppressed", nil
 }
 
+func TestEarlyVoicePromptDiscoveryEndsWithItsOwnSession(t *testing.T) {
+	started, stopped := make(chan struct{}), make(chan struct{})
+	s := newVoicePromptTestShell(t, func(int32, string) voicePromptSuppressor {
+		return suppressRecordingWindow(func(ctx context.Context) (voicePromptLease, string, error) {
+			close(started)
+			<-ctx.Done()
+			close(stopped)
+			return nil, "unchanged", nil
+		})
+	})
+	token := voicePromptTestToken(t, "early-prompt", 1)
+	preparing := voiceOverlayFrame{Visible: true, Token: token, Phase: bridge.PhasePreparing}
+	s.prepareVoicePromptPresentation()
+	s.syncVoicePromptPresentation(preparing)
+	if len(s.voiceOverlay.voicePrompt.jobs) != 0 {
+		t.Fatal("ordinary adapter started discovery while preparing")
+	}
+	s.selectedVoiceTool().voicePromptOnPrepare = true
+	s.syncVoicePromptPresentation(preparing)
+	waitForVoicePromptSignal(t, started)
+	s.finishVoicePromptPresentation(token)
+	waitForVoicePromptSignal(t, stopped)
+	s.waitVoicePromptPresentationRestore()
+}
+
 func TestVoicePromptPresentationKeepsNaturalRestoresSeparateAcrossQuickSessions(t *testing.T) {
 	firstLease, secondLease := newVoicePromptTestLease(), newVoicePromptTestLease()
 	first := &voicePromptTestSuppressor{called: make(chan struct{}), lease: firstLease}
@@ -271,8 +296,8 @@ func TestVoicePromptSuppressionIsRegisteredPerTool(t *testing.T) {
 	if wetypeTool == nil || wetypeTool.audioRouteFactory == nil || !wetypeTool.releaseReady {
 		t.Fatal("WeType dictation route must remain available")
 	}
-	if wetypeTool.voicePromptSuppressor != nil || wetypeTool.voicePromptBundleID != "" {
-		t.Fatal("WeType must retain its native recording window until dismissal is verified")
+	if wetypeTool.voicePromptSuppressor == nil || wetypeTool.voicePromptBundleID != compatWeTypeBundleID || !wetypeTool.voicePromptOnPrepare {
+		t.Fatal("WeType must observe its own recorder when the local indicator appears")
 	}
 }
 
