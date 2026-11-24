@@ -18,7 +18,7 @@ const (
 	voiceCaptionPillHeight  = 32
 	voiceCaptionPillPadding = 14
 	voiceCaptionPillRadius  = 16
-	voiceCaptionGap         = 4
+	voiceCaptionGap         = 6
 	voiceCaptionMargin      = 12
 	voiceCaptionFade        = 150 * time.Millisecond
 )
@@ -64,7 +64,7 @@ func voiceCaptionBoundsForHUD(dot, screen mygo.Rectangle, bottom bool) mygo.Rect
 	}
 	// The shader centers its 26 pt plate inside the frozen dot panel; the
 	// visible top is offset by voiceDotPlateTopOffset. Upstream hangs the
-	// caption on the screen-edge side of the plate with a 4 pt gap.
+	// caption on the screen-edge side of the plate with a 6 pt gap.
 	envelopeInset := (voiceCaptionHeight - voiceCaptionPillHeight) / 2
 	plateTop := dot.Y + voiceDotPlateTopOffset(bottom)
 	y := plateTop + int(dotscope.PlateHeight) + voiceCaptionGap - envelopeInset

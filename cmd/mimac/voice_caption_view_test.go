@@ -54,7 +54,7 @@ func TestVoiceCaptionTopAndBottomPlacementKeepsSafeInsetsAndGaps(t *testing.T) {
 	got := voiceCaptionBoundsForHUD(
 		topDot, screen, false,
 	)
-	want := mygo.Rectangle{X: 440, Y: 60, Width: 560, Height: 44}
+	want := mygo.Rectangle{X: 440, Y: 62, Width: 560, Height: 44}
 	if got != want {
 		t.Fatalf("caption bounds = %+v, want %+v", got, want)
 	}
