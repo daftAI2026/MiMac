@@ -107,143 +107,142 @@ func TestWeTypeIdentityChangePreventsAnyWindowWrite(t *testing.T) {
 	}
 }
 
-func TestWeTypeMovedEventReparksOnceAndDestroyedEventRetiresLease(t *testing.T) {
+func TestWeTypeReparksResizeDuringCaptureAndAfterKeyUp(t *testing.T) {
 	const pid = int32(4162)
 	probe := newRecordingProbe()
 	baseline, err := windowlease.CaptureBaseline(pid, func() error { return nil }, probe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe.windows[52574] = testWeTypeWindow(52574, pid, 200, 130, true, nil)
-	probe.writeSignal = make(chan int, 2)
-	wrapped := &RecordingBarBaseline{inner: baseline}
-	lease, outcome, err := wrapped.Suppress(context.Background())
-	if err != nil || outcome != windowlease.OutcomeSuppressed || lease == nil || probe.events == nil {
-		t.Fatalf("Suppress() = (lease=%v, outcome=%q, events=%v, err=%v), want a ready observed lease", lease != nil, outcome, probe.events != nil, err)
+	probe.setWindow(testWeTypeWindow(52574, pid, 200, 130, true, nil))
+	probe.writeSignal = make(chan int, 4)
+	probe.querySignal = make(chan struct{}, 8)
+	lease, outcome, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
+	if err != nil || outcome != windowlease.OutcomeSuppressed || lease == nil || probe.eventSource() == nil {
+		t.Fatalf("Suppress() = (lease=%v, outcome=%q, events=%v, err=%v), want a lease with observer ready before park", lease != nil, outcome, probe.eventSource() != nil, err)
+	}
+	if got := <-probe.writeSignal; got != 1 {
+		t.Fatalf("initial AX write = %d, want park", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ended := make(chan struct{})
+	maintained := make(chan error, 1)
+	go func() { maintained <- lease.Maintain(ctx, ended) }()
+
+	// The known target reflows from 200 to 254 points, preserving center, Y,
+	// and height. AX leads CG: the AX geometry is on screen while CG still has
+	// the old parked 200-point frame. A native resize event must repark now.
+	window := probe.window(52574)
+	window.Position = windowlease.Point{X: 833, Y: 980}
+	window.Size = windowlease.Size{Width: 254, Height: 130}
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventResized)
+	waitProbeQuery(t, probe.querySignal)
+	if got := waitWrite(t, probe.writeSignal); got != 2 {
+		t.Fatalf("AX-leading resize writes = %d, want one repark after initial park", got)
 	}
 
-	// AX reports the exact original point before CG updates its frame origin.
-	window := probe.windows[52574]
+	// CG catches up while AX remains parked. This second resize event must not
+	// duplicate the write.
+	window = probe.window(52574)
+	window.Frame.Origin = windowlease.Point{X: 833, Y: 980}
+	window.Frame.Size = windowlease.Size{Width: 254, Height: 130}
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventResized)
+	waitProbeQuery(t, probe.querySignal)
+
+	// End capture, then model WeType's later return to the original 200-point
+	// shape before its hide/destroy notification.
+	close(ended)
+	window = probe.window(52574)
 	window.Position = windowlease.Point{X: 860, Y: 980}
-	probe.windows[52574] = window
-	queriesBeforeEnd := probe.windowQueries
-	driverDone := make(chan struct{})
-	go func() {
-		probe.events.events <- windowlease.WindowEventMoved
-		<-probe.writeSignal // initial park
-		<-probe.writeSignal // event repark
-		probe.events.events <- windowlease.WindowEventDestroyed
-		close(driverDone)
-	}()
+	window.Size = windowlease.Size{Width: 200, Height: 130}
+	window.Frame.Origin = window.Position
+	window.Frame.Size = window.Size
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventMoved)
+	waitProbeQuery(t, probe.querySignal)
+	if got := waitWrite(t, probe.writeSignal); got != 3 {
+		t.Fatalf("return-to-original writes = %d, want one repark after key-up", got)
+	}
+	probe.sendEvent(windowlease.WindowEventDestroyed)
+	if err := waitMaintenance(t, maintained); err != nil {
+		t.Fatalf("maintained lease returned error: %v", err)
+	}
+	if got := probe.writeCount(); got != 3 {
+		t.Fatalf("AX writes = %d, want initial park plus two geometry re-parks", got)
+	}
+	if !lease.IsReleased() {
+		t.Fatal("destroyed event did not retire the window lease")
+	}
+}
+
+func TestWeTypeDoesNotReparkUserMoveAndDoesNotReenableLater(t *testing.T) {
+	const pid = int32(4162)
+	probe := newRecordingProbe()
+	baseline, err := windowlease.CaptureBaseline(pid, func() error { return nil }, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.setWindow(testWeTypeWindow(52574, pid, 200, 130, true, nil))
+	lease, _, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
+	if err != nil || lease == nil {
+		t.Fatalf("Suppress() = (%v, %v), want lease", lease != nil, err)
+	}
+	probe.querySignal = make(chan struct{}, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := lease.RestoreAfterDismissal(ctx); err != nil {
-		t.Fatalf("normal dismissal cleanup error = %v", err)
+	maintained := make(chan error, 1)
+	go func() { maintained <- lease.Maintain(ctx, nil) }()
+
+	window := probe.window(52574)
+	window.Position = windowlease.Point{X: 100, Y: 200}
+	window.Frame.Origin = window.Position
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventMoved)
+	waitProbeQuery(t, probe.querySignal)
+
+	// Even if the same element later returns to an approved center, the first
+	// unrelated geometry disabled this lease's repark policy.
+	window = probe.window(52574)
+	window.Position = windowlease.Point{X: 860, Y: 980}
+	window.Frame.Origin = window.Position
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventMoved)
+	probe.sendEvent(windowlease.WindowEventDestroyed)
+	if err := waitMaintenance(t, maintained); err != nil {
+		t.Fatalf("maintained lease returned error: %v", err)
 	}
-	<-driverDone
-	if queries := probe.windowQueries - queriesBeforeEnd; queries != 1 {
-		t.Fatalf("window queries for a move followed by destruction = %d, want 1", queries)
-	}
-	if got := probe.windows[52574].Position; got != (windowlease.Point{X: -1000000, Y: -1000000}) {
-		t.Fatalf("repark position = %+v, want parked", got)
-	}
-	if probe.writes != 2 {
-		t.Fatalf("AX writes = %d, want initial park and one repark only", probe.writes)
+	if got := probe.writeCount(); got != 1 {
+		t.Fatalf("AX writes = %d, want only the initial park after an unrecognized move", got)
 	}
 }
 
-func TestWeTypeReparksWhenAXReturnsBeforeCGGeometryUpdates(t *testing.T) {
+func TestWeTypeCancelledMaintenanceRestoresAndRetiresObserver(t *testing.T) {
 	const pid = int32(4162)
 	probe := newRecordingProbe()
 	baseline, err := windowlease.CaptureBaseline(pid, func() error { return nil }, probe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe.windows[52574] = testWeTypeWindow(52574, pid, 200, 130, true, nil)
-	lease, outcome, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
-	if err != nil || outcome != windowlease.OutcomeSuppressed || lease == nil {
-		t.Fatalf("Suppress() = (%v, %q, %v), want a suppressed lease", lease != nil, outcome, err)
+	probe.setWindow(testWeTypeWindow(52574, pid, 200, 130, true, nil))
+	lease, _, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
+	if err != nil || lease == nil {
+		t.Fatalf("Suppress() = (%v, %v), want lease", lease != nil, err)
 	}
-
-	// Model WeType moving its own AX element to the exact pre-session origin
-	// while CG still reports the one-frame-old parked position.
-	window := probe.windows[52574]
-	window.Position = windowlease.Point{X: 860, Y: 980}
-	probe.windows[52574] = window
-	observed, err := lease.ObserveWindow()
-	if err != nil || !observed.Found || !observed.AtParked || !observed.SameGeometry {
-		t.Fatalf("ObserveWindow() = (%+v, %v), want CG still parked with same geometry", observed, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	maintained := make(chan error, 1)
+	go func() { maintained <- lease.Maintain(ctx, make(chan struct{})) }()
+	cancel()
+	if err := waitMaintenance(t, maintained); err != nil {
+		t.Fatalf("cancel cleanup error = %v", err)
 	}
-	reparked, err := lease.ReparkIfReturnedToOriginal()
-	if err != nil || !reparked {
-		t.Fatalf("ReparkIfReturnedToOriginal() = (%v, %v), want a confirmed repark", reparked, err)
+	if got := probe.window(52574).Position; got != (windowlease.Point{X: 860, Y: 980}) {
+		t.Fatalf("cancel restored position = %+v, want original", got)
 	}
-	if probe.writes != 2 || probe.windows[52574].Position != (windowlease.Point{X: -1000000, Y: -1000000}) {
-		t.Fatalf("post-repark writes/position = %d/%+v, want two writes and parked position", probe.writes, probe.windows[52574].Position)
-	}
-	window = probe.windows[52574]
-	window.OnScreen = false
-	probe.windows[52574] = window
-	if err := lease.RestoreAfterDismissal(context.Background()); err != nil {
-		t.Fatalf("RestoreAfterDismissal() after orderOut error = %v", err)
-	}
-	if got := probe.windows[52574].Position; got != (windowlease.Point{X: 860, Y: 980}) {
-		t.Fatalf("post-dismissal position = %+v, want original point", got)
-	}
-}
-
-func TestWeTypeReparkLeavesUserMoveAndChangedGeometryAlone(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*windowlease.Window)
-	}{
-		{name: "user moved elsewhere", mutate: func(w *windowlease.Window) {
-			w.Position = windowlease.Point{X: 100, Y: 200}
-			w.Frame.Origin = w.Position
-		}},
-		{name: "geometry changed after return", mutate: func(w *windowlease.Window) {
-			w.Position = windowlease.Point{X: 860, Y: 980}
-			w.Frame.Origin = w.Position
-			w.Frame.Size.Width++
-			w.Size.Width++
-		}},
-		{name: "owner changed", mutate: func(w *windowlease.Window) {
-			w.Position = windowlease.Point{X: 860, Y: 980}
-			w.Frame.Origin = w.Position
-			w.OwnerPID++
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			const pid = int32(4162)
-			probe := newRecordingProbe()
-			baseline, err := windowlease.CaptureBaseline(pid, func() error { return nil }, probe)
-			if err != nil {
-				t.Fatal(err)
-			}
-			probe.windows[52574] = testWeTypeWindow(52574, pid, 200, 130, true, nil)
-			lease, _, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
-			if err != nil || lease == nil {
-				t.Fatalf("Suppress() = (%v, %v), want a lease", lease != nil, err)
-			}
-			window := probe.windows[52574]
-			test.mutate(&window)
-			probe.windows[52574] = window
-			observed, err := lease.ObserveWindow()
-			if err != nil {
-				t.Fatalf("ObserveWindow() error = %v", err)
-			}
-			reparked := false
-			if observed.Found {
-				reparked, err = lease.ReparkIfReturnedToOriginal()
-			}
-			if reparked || (test.name != "owner changed" && err != nil) {
-				t.Fatalf("ReparkIfReturnedToOriginal() = (%v, %v), want no write", reparked, err)
-			}
-			if probe.writes != 1 {
-				t.Fatalf("AX writes = %d, want only initial park", probe.writes)
-			}
-			_ = lease.ReleaseWithoutRestore()
-		})
+	if !lease.IsReleased() {
+		t.Fatal("cancel did not retire the event source")
 	}
 }
 
@@ -299,11 +298,12 @@ func testWeTypeWindow(id uint32, pid int32, width, height float64, childrenKnown
 }
 
 type recordingProbe struct {
-	windowQueries int
-	windows       map[uint32]windowlease.Window
-	writes        int
-	events        *recordingEventSource
-	writeSignal   chan int
+	mu          sync.Mutex
+	windows     map[uint32]windowlease.Window
+	writes      int
+	events      *recordingEventSource
+	writeSignal chan int
+	querySignal chan struct{}
 }
 
 func newRecordingProbe() *recordingProbe {
@@ -311,6 +311,8 @@ func newRecordingProbe() *recordingProbe {
 }
 
 func (p *recordingProbe) WindowNumbers(pid int32) (map[uint32]struct{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	ids := make(map[uint32]struct{})
 	for id, window := range p.windows {
 		if window.OwnerPID == pid && window.OnScreen {
@@ -321,6 +323,8 @@ func (p *recordingProbe) WindowNumbers(pid int32) (map[uint32]struct{}, error) {
 }
 
 func (p *recordingProbe) Windows(pid int32, newerThan map[uint32]struct{}) ([]windowlease.Window, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var result []windowlease.Window
 	for id, window := range p.windows {
 		if window.OwnerPID != pid || !window.OnScreen {
@@ -334,28 +338,47 @@ func (p *recordingProbe) Windows(pid int32, newerThan map[uint32]struct{}) ([]wi
 }
 
 func (p *recordingProbe) WindowByID(pid int32, id uint32) (windowlease.Window, bool, error) {
-	p.windowQueries++
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	window, ok := p.windows[id]
 	return window, ok && window.OwnerPID == pid, nil
 }
 
+func (p *recordingProbe) WindowByIDWithAX(pid int32, id uint32, element uintptr) (windowlease.Window, bool, error) {
+	p.mu.Lock()
+	window, ok := p.windows[id]
+	querySignal := p.querySignal
+	p.mu.Unlock()
+	if querySignal != nil {
+		querySignal <- struct{}{}
+	}
+	return window, ok && window.OwnerPID == pid && window.Element == element, nil
+}
+
 func (p *recordingProbe) SetPosition(element uintptr, point windowlease.Point) error {
+	p.mu.Lock()
 	p.writes++
+	writes := p.writes
+	writeSignal := p.writeSignal
 	for id, window := range p.windows {
 		if window.Element == element {
 			window.Position = point
 			window.Frame.Origin = point
 			p.windows[id] = window
-			if p.writeSignal != nil {
-				p.writeSignal <- p.writes
+			p.mu.Unlock()
+			if writeSignal != nil {
+				writeSignal <- writes
 			}
 			return nil
 		}
 	}
+	p.mu.Unlock()
 	return windowlease.ErrWindowChanged
 }
 
 func (p *recordingProbe) Position(element uintptr) (windowlease.Point, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.Position, nil
@@ -365,6 +388,8 @@ func (p *recordingProbe) Position(element uintptr) (windowlease.Point, error) {
 }
 
 func (p *recordingProbe) Size(element uintptr) (windowlease.Size, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.Size, nil
@@ -374,6 +399,8 @@ func (p *recordingProbe) Size(element uintptr) (windowlease.Size, error) {
 }
 
 func (p *recordingProbe) ElementPID(element uintptr) (int32, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.OwnerPID, nil
@@ -386,12 +413,48 @@ func (p *recordingProbe) Retain(element uintptr) uintptr { return element }
 func (p *recordingProbe) Release(uintptr)                {}
 
 func (p *recordingProbe) WatchWindow(pid int32, element uintptr) (windowlease.WindowEventSource, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	window, ok := p.windows[52574]
 	if !ok || window.OwnerPID != pid || window.Element != element {
 		return nil, windowlease.ErrWindowChanged
 	}
 	p.events = &recordingEventSource{events: make(chan windowlease.WindowEvent, 8)}
 	return p.events, nil
+}
+
+func (p *recordingProbe) setWindow(window windowlease.Window) {
+	p.mu.Lock()
+	p.windows[window.ID] = window
+	p.mu.Unlock()
+}
+
+func (p *recordingProbe) window(id uint32) windowlease.Window {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.windows[id]
+}
+
+func (p *recordingProbe) writeCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.writes
+}
+
+func (p *recordingProbe) eventSource() *recordingEventSource {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.events
+}
+
+func (p *recordingProbe) sendEvent(event windowlease.WindowEvent) {
+	p.mu.Lock()
+	source := p.events
+	p.mu.Unlock()
+	if source == nil {
+		panic("test event source is not ready")
+	}
+	source.events <- event
 }
 
 type recordingEventSource struct {
@@ -405,3 +468,37 @@ func (s *recordingEventSource) Close() {
 }
 
 var _ windowlease.Probe = (*recordingProbe)(nil)
+var _ interface {
+	WindowByIDWithAX(int32, uint32, uintptr) (windowlease.Window, bool, error)
+} = (*recordingProbe)(nil)
+
+func waitWrite(t *testing.T, writes <-chan int) int {
+	t.Helper()
+	select {
+	case write := <-writes:
+		return write
+	case <-time.After(time.Second):
+		t.Fatal("window lease did not complete expected AX write")
+		return 0
+	}
+}
+
+func waitMaintenance(t *testing.T, maintained <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-maintained:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("WeType lease maintenance did not finish")
+		return context.DeadlineExceeded
+	}
+}
+
+func waitProbeQuery(t *testing.T, queries <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-queries:
+	case <-time.After(time.Second):
+		t.Fatal("WeType lease did not inspect the bound window after AX event")
+	}
+}

@@ -271,7 +271,8 @@
       "cmd/mimac/voice_prompt_presentation.go",
       "internal/adapters/doubao/presentation.go",
       "internal/adapters/wetype/presentation.go",
-      "internal/adapters/windowlease/windowlease.go"
+      "internal/adapters/windowlease/windowlease.go",
+      "internal/adapters/windowlease/native_darwin.go"
     ]
   },
   {

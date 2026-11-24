@@ -33,6 +33,7 @@ type presentationNativeAPI struct {
 	cfNumberGet     func(uintptr, int64, unsafe.Pointer) uint8
 	cfBooleanValue  func(uintptr) uint8
 	cfGetTypeID     func(uintptr) uintptr
+	cfEqual         func(uintptr, uintptr) uint8
 	cfStringTypeID  func() uintptr
 	cfNumberTypeID  func() uintptr
 	cfBooleanTypeID func() uintptr
@@ -85,7 +86,8 @@ type darwinPresentationProbe struct{ api *presentationNativeAPI }
 
 const (
 	windowAXMovedRefcon     = uintptr(1)
-	windowAXDestroyedRefcon = uintptr(2)
+	windowAXResizedRefcon   = uintptr(2)
+	windowAXDestroyedRefcon = uintptr(3)
 )
 
 var (
@@ -102,6 +104,8 @@ func dispatchWindowAXNotification(observer, _element, _notification, refcon uint
 	switch refcon {
 	case windowAXMovedRefcon:
 		event = WindowEventMoved
+	case windowAXResizedRefcon:
+		event = WindowEventResized
 	case windowAXDestroyedRefcon:
 		event = WindowEventDestroyed
 	default:
@@ -114,6 +118,16 @@ func dispatchWindowAXNotification(observer, _element, _notification, refcon uint
 	select {
 	case channel <- event:
 	default:
+		// Coalesce stale geometry notifications to the newest event. In
+		// particular, never leave a full queue that would drop destruction.
+		select {
+		case <-channel:
+		default:
+		}
+		select {
+		case channel <- event:
+		default:
+		}
 	}
 }
 
@@ -156,6 +170,7 @@ func loadPresentationNativeAPI() (*presentationNativeAPI, error) {
 			{0, "CFNumberGetValue", &api.cfNumberGet},
 			{0, "CFBooleanGetValue", &api.cfBooleanValue},
 			{0, "CFGetTypeID", &api.cfGetTypeID},
+			{0, "CFEqual", &api.cfEqual},
 			{0, "CFStringGetTypeID", &api.cfStringTypeID},
 			{0, "CFNumberGetTypeID", &api.cfNumberTypeID},
 			{0, "CFBooleanGetTypeID", &api.cfBooleanTypeID},
@@ -228,7 +243,7 @@ func loadPresentationNativeAPI() (*presentationNativeAPI, error) {
 			presentationNativeRuntime.err = errors.New("recording window: null default run loop mode")
 			return
 		}
-		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription", "AXMoved", "AXUIElementDestroyed"} {
+		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription", "AXMoved", "AXResized", "AXUIElementDestroyed"} {
 			ref, err := api.newString(name)
 			if err != nil {
 				closePresentationLibraries(libs)
@@ -446,6 +461,71 @@ func (api *presentationNativeAPI) matchAXWindow(pid int32, frame Rect) (axWindow
 	return result, nil
 }
 
+// matchAXElement confirms that the exact retained accessibility element is
+// still the sole matching entry in the target process's AXWindows list. It
+// reads identity/geometry metadata only and never asks for window text.
+func (api *presentationNativeAPI) matchAXElement(pid int32, expected uintptr) (axWindowMatch, error) {
+	var result axWindowMatch
+	if expected == 0 {
+		return result, ErrUnavailable
+	}
+	app := api.axCreateApplication(pid)
+	if app == 0 {
+		return result, ErrUnavailable
+	}
+	defer api.cfRelease(app)
+	api.axSetTimeout(app, 0.15)
+	windows, code := api.copyAttribute(app, "AXWindows")
+	if code != 0 || windows == 0 || api.cfGetTypeID(windows) != api.cfArrayTypeID() {
+		if windows != 0 {
+			api.cfRelease(windows)
+		}
+		return result, fmt.Errorf("%w: AXWindows query failed (%d)", ErrUnavailable, code)
+	}
+	defer api.cfRelease(windows)
+	count := api.cfArrayCount(windows)
+	if count < 0 || count > presentationMaxAXWindows {
+		return result, ErrUnavailable
+	}
+	for index := int64(0); index < count; index++ {
+		element := api.cfArrayValue(windows, index)
+		if element == 0 {
+			continue
+		}
+		var elementPID int32
+		if api.axGetPID(element, &elementPID) != 0 || elementPID != pid || api.cfEqual(element, expected) == 0 {
+			continue
+		}
+		result.Count++
+		if result.Count != 1 {
+			result = axWindowMatch{Count: result.Count}
+			continue
+		}
+		position, positionOK := api.pointAttribute(element, "AXPosition")
+		size, sizeOK := api.sizeAttribute(element, "AXSize")
+		if !positionOK || !sizeOK {
+			result = axWindowMatch{Count: 1, Element: expected}
+			continue
+		}
+		result.Role = api.stringAttribute(element, "AXRole")
+		result.Subrole = api.stringAttribute(element, "AXSubrole")
+		result.Position = position
+		result.Size = size
+		result.IdentifierEmpty, result.IdentifierKnown = api.stringAttributeEmpty(element, "AXIdentifier")
+		result.DescriptionEmpty, result.DescriptionKnown = api.stringAttributeEmpty(element, "AXDescription")
+		result.ChildRoles, result.ChildrenKnown = api.childRoles(element)
+		var settable uint8
+		if api.axIsSettable(element, api.attributes["AXPosition"], &settable) == 0 {
+			result.PositionSettable = settable != 0
+		}
+		result.Element = expected
+	}
+	if result.Count != 1 {
+		return axWindowMatch{Count: result.Count}, nil
+	}
+	return result, nil
+}
+
 func (api *presentationNativeAPI) copyAttribute(element uintptr, name string) (uintptr, int32) {
 	attr := api.attributes[name]
 	if element == 0 || attr == 0 {
@@ -598,6 +678,34 @@ func (probe darwinPresentationProbe) WindowByID(pid int32, id uint32) (Window, b
 	return found, true, nil
 }
 
+func (probe darwinPresentationProbe) WindowByIDWithAX(pid int32, id uint32, element uintptr) (Window, bool, error) {
+	window, found, err := probe.WindowByID(pid, id)
+	if err != nil || !found {
+		return window, found, err
+	}
+	matched, err := probe.api.matchAXElement(pid, element)
+	if err != nil {
+		return Window{}, false, err
+	}
+	window.AXMatchCount = matched.Count
+	if matched.Count != 1 {
+		return window, false, nil
+	}
+	window.Role = matched.Role
+	window.Subrole = matched.Subrole
+	window.Element = element
+	window.Position = matched.Position
+	window.Size = matched.Size
+	window.PositionSettable = matched.PositionSettable
+	window.IdentifierEmpty = matched.IdentifierEmpty
+	window.IdentifierKnown = matched.IdentifierKnown
+	window.DescriptionEmpty = matched.DescriptionEmpty
+	window.DescriptionKnown = matched.DescriptionKnown
+	window.ChildrenKnown = matched.ChildrenKnown
+	window.ChildRoles = matched.ChildRoles
+	return window, true, nil
+}
+
 func (probe darwinPresentationProbe) SetPosition(element uintptr, point Point) error {
 	if element == 0 || !finitePoint(point) {
 		return ErrUnavailable
@@ -716,12 +824,16 @@ func (s *darwinWindowEventSource) run(pid int32, ready chan<- error) {
 	}
 	var observer, runLoop, runLoopSource uintptr
 	movedName := s.api.attributes["AXMoved"]
+	resizedName := s.api.attributes["AXResized"]
 	destroyedName := s.api.attributes["AXUIElementDestroyed"]
-	var movedRegistered, destroyedRegistered bool
+	var movedRegistered, resizedRegistered, destroyedRegistered bool
 	cleanup := func() {
 		if observer != 0 {
 			if movedRegistered {
 				_ = s.api.axObserverRemove(observer, s.element, movedName)
+			}
+			if resizedRegistered {
+				_ = s.api.axObserverRemove(observer, s.element, resizedName)
 			}
 			if destroyedRegistered {
 				_ = s.api.axObserverRemove(observer, s.element, destroyedName)
@@ -752,7 +864,7 @@ func (s *darwinWindowEventSource) run(pid int32, ready chan<- error) {
 		fail(ErrUnavailable)
 		return
 	}
-	if movedName == 0 || destroyedName == 0 {
+	if movedName == 0 || resizedName == 0 || destroyedName == 0 {
 		fail(ErrUnavailable)
 		return
 	}
@@ -762,6 +874,11 @@ func (s *darwinWindowEventSource) run(pid int32, ready chan<- error) {
 		return
 	}
 	movedRegistered = true
+	if code := s.api.axObserverAdd(observer, s.element, resizedName, windowAXResizedRefcon); code != 0 {
+		fail(fmt.Errorf("%w: AXResized subscription returned %d", ErrUnavailable, code))
+		return
+	}
+	resizedRegistered = true
 	if code := s.api.axObserverAdd(observer, s.element, destroyedName, windowAXDestroyedRefcon); code != 0 {
 		fail(fmt.Errorf("%w: AXUIElementDestroyed subscription returned %d", ErrUnavailable, code))
 		return

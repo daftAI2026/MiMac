@@ -74,6 +74,7 @@ type WindowEvent uint8
 
 const (
 	WindowEventMoved WindowEvent = iota + 1
+	WindowEventResized
 	WindowEventDestroyed
 )
 
@@ -86,7 +87,19 @@ type windowEventProbe interface {
 	WatchWindow(pid int32, element uintptr) (WindowEventSource, error)
 }
 
-type DismissalHandler func(context.Context, *Lease) error
+type boundWindowProbe interface {
+	WindowByIDWithAX(pid int32, id uint32, element uintptr) (Window, bool, error)
+}
+
+type ReparkDecision uint8
+
+const (
+	ReparkWait ReparkDecision = iota
+	ReparkNow
+	ReparkDisable
+)
+
+type ReparkPolicy func(window Window, original, parked Point, originalSize Size) ReparkDecision
 
 type Baseline struct {
 	mu            sync.Mutex
@@ -123,16 +136,16 @@ func CaptureBaseline(pid int32, checkIdentity func() error, probe Probe) (*Basel
 }
 
 func (b *Baseline) Suppress(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval, stableInterval time.Duration) (*Lease, Outcome, error) {
-	return b.suppress(ctx, eligible, observeLimit, pollInterval, stableInterval, nil)
+	return b.suppress(ctx, eligible, observeLimit, pollInterval, stableInterval, false)
 }
 
-// SuppressWithDismissal lets one adapter provide a tool-specific normal-end
-// policy while sharing the same identity-fenced lease and immediate Restore.
-func (b *Baseline) SuppressWithDismissal(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval, stableInterval time.Duration, dismissal DismissalHandler) (*Lease, Outcome, error) {
-	return b.suppress(ctx, eligible, observeLimit, pollInterval, stableInterval, dismissal)
+// SuppressWithWindowEvents registers an exact-element observer before
+// parking. The lease owner consumes its event stream for the session.
+func (b *Baseline) SuppressWithWindowEvents(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval, stableInterval time.Duration) (*Lease, Outcome, error) {
+	return b.suppress(ctx, eligible, observeLimit, pollInterval, stableInterval, true)
 }
 
-func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval, stableInterval time.Duration, dismissal DismissalHandler) (*Lease, Outcome, error) {
+func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval, stableInterval time.Duration, watchWindowEvents bool) (*Lease, Outcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -192,7 +205,7 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 				releaseWindows(b.probe, newWindows)
 				candidateID, stableSince = window.ID, time.Now()
 			} else if time.Since(stableSince) >= stableInterval {
-				lease, outcome, err := b.moveWindow(ctx, window, dismissal)
+				lease, outcome, err := b.moveWindow(ctx, window, watchWindowEvents)
 				releaseWindows(b.probe, newWindows)
 				return lease, outcome, err
 			} else {
@@ -211,7 +224,7 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 	}
 }
 
-func (b *Baseline) moveWindow(ctx context.Context, window Window, dismissal DismissalHandler) (*Lease, Outcome, error) {
+func (b *Baseline) moveWindow(ctx context.Context, window Window, watchWindowEvents bool) (*Lease, Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, OutcomeCancelled, err
 	}
@@ -260,20 +273,102 @@ func (b *Baseline) moveWindow(ctx context.Context, window Window, dismissal Dism
 	lease := &Lease{
 		pid: b.pid, windowID: window.ID, checkIdentity: b.checkIdentity,
 		probe: b.probe, element: retained, original: position, parked: parked,
-		layer: window.Layer, frameSize: window.Frame.Size, dismissal: dismissal,
+		layer: window.Layer, frameSize: window.Frame.Size,
+	}
+	if watchWindowEvents {
+		if err := lease.startWindowEvents(); err != nil {
+			_ = lease.release()
+			return nil, OutcomeUnavailable, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		_ = lease.release()
 		return nil, OutcomeCancelled, err
 	}
 	if err := b.probe.SetPosition(window.Element, parked); err != nil {
-		return lease, OutcomeUnchanged, fmt.Errorf("recording window: AXPosition set failed: %w", err)
+		rollbackErr := lease.rollbackUnconfirmedInitialPark()
+		return nil, OutcomeUnchanged, errors.Join(fmt.Errorf("recording window: AXPosition set failed: %w", err), rollbackErr)
 	}
 	confirmed, err := b.probe.Position(window.Element)
 	if err != nil || !samePoint(confirmed, parked) {
-		return lease, OutcomeUnchanged, errors.New("recording window: AXPosition write was not confirmed")
+		rollbackErr := lease.rollbackUnconfirmedInitialPark()
+		return nil, OutcomeUnchanged, errors.Join(errors.New("recording window: AXPosition write was not confirmed"), err, rollbackErr)
 	}
 	return lease, OutcomeSuppressed, nil
+}
+
+// rollbackUnconfirmedInitialPark closes a prepared event source without
+// enabling its handler. It restores only a partial initial move of the same
+// element while the captured geometry is still intact.
+func (s *Lease) rollbackUnconfirmedInitialPark() (result error) {
+	if s == nil {
+		return ErrUnavailable
+	}
+	s.mu.Lock()
+	defer func() {
+		probe, element, source := s.detachLocked()
+		s.mu.Unlock()
+		if source != nil {
+			source.Close()
+		}
+		if probe != nil && element != 0 {
+			probe.Release(element)
+		}
+	}()
+	if s.element == 0 || s.probe == nil || s.checkIdentity == nil {
+		return ErrUnavailable
+	}
+	if err := s.checkIdentity(); err != nil {
+		return fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
+	window, found, err := s.probe.WindowByID(s.pid, s.windowID)
+	if err != nil || !found || window.OwnerPID != s.pid || window.ID != s.windowID ||
+		!window.OnScreen || window.Layer != s.layer || !sameSize(window.Frame.Size, s.frameSize) ||
+		(!samePoint(window.Frame.Origin, s.original) && !samePoint(window.Frame.Origin, s.parked)) {
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrWindowChanged, err)
+		}
+		return ErrWindowChanged
+	}
+	pid, err := s.probe.ElementPID(s.element)
+	if err != nil || pid != s.pid {
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrWindowChanged, err)
+		}
+		return ErrWindowChanged
+	}
+	position, err := s.probe.Position(s.element)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrWindowChanged, err)
+	}
+	size, err := s.probe.Size(s.element)
+	if err != nil || !sameSize(size, s.frameSize) {
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrWindowChanged, err)
+		}
+		return ErrWindowChanged
+	}
+	if samePoint(position, s.original) {
+		return nil
+	}
+	if !samePoint(position, s.parked) {
+		return ErrMovedByUser
+	}
+	if err := s.checkIdentity(); err != nil {
+		return fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
+	if err := s.probe.SetPosition(s.element, s.original); err != nil {
+		return fmt.Errorf("recording window: initial move rollback failed: %w", err)
+	}
+	confirmed, err := s.probe.Position(s.element)
+	if err != nil || !samePoint(confirmed, s.original) {
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrWindowChanged, err)
+		}
+		return errors.New("recording window: initial move rollback was not confirmed")
+	}
+	s.restored = true
+	return nil
 }
 
 func releaseWindows(probe Probe, windows []Window) {
@@ -285,35 +380,32 @@ func releaseWindows(probe Probe, windows []Window) {
 }
 
 type Lease struct {
-	mu              sync.Mutex
-	pid             int32
-	windowID        uint32
-	checkIdentity   func() error
-	probe           Probe
-	element         uintptr
-	original        Point
-	parked          Point
-	layer           int32
-	frameSize       Size
-	reparkAttempted bool
-	dismissal       DismissalHandler
-	eventSource     WindowEventSource
-	released        bool
-	restored        bool
+	mu             sync.Mutex
+	pid            int32
+	windowID       uint32
+	checkIdentity  func() error
+	probe          Probe
+	element        uintptr
+	original       Point
+	parked         Point
+	layer          int32
+	frameSize      Size
+	reparkDisabled bool
+	eventSource    WindowEventSource
+	released       bool
+	restored       bool
 }
 
-// LeaseWindowObservation contains CG identity and geometry only. Callers use it
-// to decide whether an expensive AX recheck is needed.
+// LeaseWindowObservation contains only the exact CG window's identity and
+// geometry for the low-frequency orderOut fallback.
 type LeaseWindowObservation struct {
-	Window       Window
-	Found        bool
-	AtOriginal   bool
-	AtParked     bool
-	SameGeometry bool
+	Window     Window
+	Found      bool
+	AtOriginal bool
+	AtParked   bool
 }
 
-// ObserveWindow performs only the exact CG window lookup. AX is read later only
-// when the window has visibly returned to its original position.
+// ObserveWindow performs only the exact CG window lookup; it never queries AX.
 func (s *Lease) ObserveWindow() (LeaseWindowObservation, error) {
 	if s == nil {
 		return LeaseWindowObservation{}, ErrUnavailable
@@ -334,41 +426,52 @@ func (s *Lease) ObserveWindow() (LeaseWindowObservation, error) {
 		return LeaseWindowObservation{}, ErrWindowChanged
 	}
 	return LeaseWindowObservation{
-		Window: window, Found: true,
-		AtOriginal:   samePoint(window.Frame.Origin, s.original),
-		AtParked:     samePoint(window.Frame.Origin, s.parked),
-		SameGeometry: window.Layer == s.layer && sameSize(window.Frame.Size, s.frameSize),
+		Window:     window,
+		Found:      true,
+		AtOriginal: samePoint(window.Frame.Origin, s.original),
+		AtParked:   samePoint(window.Frame.Origin, s.parked),
 	}, nil
 }
 
-// ReparkIfReturnedToOriginal performs at most one WeType-compatible repair:
-// it writes the parked point only after the same window and process have
-// explicitly returned to the captured original point with unchanged geometry.
-func (s *Lease) ReparkIfReturnedToOriginal() (bool, error) {
+// ReparkIfLayout applies one adapter-approved move/resize transition to the
+// exact retained AX element. The caller decides which layouts are automatic;
+// this lease supplies the PID/window fence and the captured original point.
+func (s *Lease) ReparkIfLayout(policy ReparkPolicy) (bool, error) {
 	if s == nil {
 		return false, ErrUnavailable
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.released || s.restored || s.element == 0 || s.probe == nil || s.checkIdentity == nil {
+	if s.released || s.restored || s.element == 0 || s.probe == nil || s.checkIdentity == nil || policy == nil {
 		return false, ErrUnavailable
 	}
-	if s.reparkAttempted {
+	if s.reparkDisabled {
 		return false, nil
 	}
-	window, found, err := s.probe.WindowByID(s.pid, s.windowID)
+	validator, ok := s.probe.(boundWindowProbe)
+	if !ok {
+		s.reparkDisabled = true
+		return false, ErrUnavailable
+	}
+	window, found, err := validator.WindowByIDWithAX(s.pid, s.windowID, s.element)
 	if err != nil {
+		s.reparkDisabled = true
 		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 	}
 	if !found || window.OwnerPID != s.pid || window.ID != s.windowID {
+		s.reparkDisabled = true
 		return false, ErrWindowChanged
 	}
-	currentCGOriginIsKnown := samePoint(window.Frame.Origin, s.original) || samePoint(window.Frame.Origin, s.parked)
-	if !window.OnScreen || window.Layer != s.layer || !sameSize(window.Frame.Size, s.frameSize) || !currentCGOriginIsKnown {
+	if !window.OnScreen {
 		return false, nil
+	}
+	if window.Layer != s.layer {
+		s.reparkDisabled = true
+		return false, ErrWindowChanged
 	}
 	pid, err := s.probe.ElementPID(s.element)
 	if err != nil || pid != s.pid {
+		s.reparkDisabled = true
 		if err != nil {
 			return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 		}
@@ -376,24 +479,53 @@ func (s *Lease) ReparkIfReturnedToOriginal() (bool, error) {
 	}
 	position, err := s.probe.Position(s.element)
 	if err != nil {
+		s.reparkDisabled = true
 		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 	}
 	size, err := s.probe.Size(s.element)
 	if err != nil {
+		s.reparkDisabled = true
 		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 	}
-	if !samePoint(position, s.original) || !sameSize(size, s.frameSize) {
+	if !samePoint(position, window.Position) || !sameSize(size, window.Size) {
+		// AX and CG can publish a geometry change on adjacent run-loop turns.
+		// Wait for the next native notification rather than classifying this
+		// one-frame mismatch as a user move.
 		return false, nil
 	}
 	if err := s.checkIdentity(); err != nil {
+		s.reparkDisabled = true
 		return false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 	}
-	s.reparkAttempted = true
+	switch policy(window, s.original, s.parked, s.frameSize) {
+	case ReparkWait:
+		return false, nil
+	case ReparkDisable:
+		s.reparkDisabled = true
+		return false, nil
+	case ReparkNow:
+		if samePoint(position, s.parked) {
+			return false, nil
+		}
+	default:
+		s.reparkDisabled = true
+		return false, ErrUnavailable
+	}
+	if !window.PositionSettable {
+		s.reparkDisabled = true
+		return false, ErrUnavailable
+	}
+	if err := s.checkIdentity(); err != nil {
+		s.reparkDisabled = true
+		return false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
 	if err := s.probe.SetPosition(s.element, s.parked); err != nil {
+		s.reparkDisabled = true
 		return false, fmt.Errorf("recording window: AXPosition repark failed: %w", err)
 	}
 	confirmed, err := s.probe.Position(s.element)
 	if err != nil || !samePoint(confirmed, s.parked) {
+		s.reparkDisabled = true
 		if err != nil {
 			return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 		}
@@ -406,19 +538,12 @@ func (s *Lease) RestoreAfterDismissal(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	dismissal := s.dismissal
-	s.mu.Unlock()
-	if dismissal != nil {
-		return dismissal(ctx, s)
-	}
 	return s.WaitForOrderOut(ctx)
 }
 
-// StartWindowEvents subscribes to notifications on the exact retained AX
-// element. Adapters call this before returning the lease to the host so the
-// subscription is ready before key-up.
-func (s *Lease) StartWindowEvents() error {
+// startWindowEvents subscribes before the first AX write. The session owner
+// consumes this exact retained element's events in its existing worker.
+func (s *Lease) startWindowEvents() error {
 	if s == nil {
 		return ErrUnavailable
 	}
@@ -471,6 +596,15 @@ func (s *Lease) WindowEvents() <-chan WindowEvent {
 	return s.eventSource.Events()
 }
 
+func (s *Lease) IsReleased() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.released
+}
+
 // ReleaseWithoutRestore retires a lease after its observed AX element is
 // destroyed. It does not touch a later window that may reuse the CG number.
 func (s *Lease) ReleaseWithoutRestore() error { return s.release() }
@@ -517,14 +651,23 @@ func (s *Lease) Restore(ctx context.Context) error {
 	}
 	_ = ctx
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.restored {
+		s.mu.Unlock()
 		return nil
 	}
+	defer func() {
+		probe, element, source := s.detachLocked()
+		s.mu.Unlock()
+		if source != nil {
+			source.Close()
+		}
+		if probe != nil && element != 0 {
+			probe.Release(element)
+		}
+	}()
 	if s.probe == nil || s.checkIdentity == nil || s.element == 0 {
 		return ErrUnavailable
 	}
-	defer s.releaseLocked()
 	if err := s.checkIdentity(); err != nil {
 		return fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 	}
@@ -571,22 +714,29 @@ func (s *Lease) release() error {
 		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.releaseLocked()
+	probe, element, source := s.detachLocked()
+	s.mu.Unlock()
+	if source != nil {
+		source.Close()
+	}
+	if probe != nil && element != 0 {
+		probe.Release(element)
+	}
+	return nil
 }
 
-func (s *Lease) releaseLocked() error {
+// detachLocked drops all lease ownership before native Close joins its runloop
+// source. Event handlers may re-enter the lease and must never wait behind a
+// mutex held by that join.
+func (s *Lease) detachLocked() (Probe, uintptr, WindowEventSource) {
 	if s.released {
-		return nil
+		return nil, 0, nil
 	}
-	if s.eventSource != nil {
-		s.eventSource.Close()
-		s.eventSource = nil
-	}
-	s.probe.Release(s.element)
+	probe, element, source := s.probe, s.element, s.eventSource
+	s.eventSource = nil
 	s.element = 0
 	s.released = true
-	return nil
+	return probe, element, source
 }
 
 func samePoint(a, b Point) bool { return a.X == b.X && a.Y == b.Y }

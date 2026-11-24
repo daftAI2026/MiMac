@@ -75,6 +75,23 @@ func (l *voicePromptTestLease) Restore(context.Context) error {
 	return nil
 }
 
+type voicePromptMaintainingTestLease struct {
+	*voicePromptTestLease
+	maintainStarted chan struct{}
+	maintainCalls   atomic.Int32
+}
+
+func (l *voicePromptMaintainingTestLease) Maintain(ctx context.Context, sessionEnd <-chan struct{}) error {
+	l.maintainCalls.Add(1)
+	close(l.maintainStarted)
+	select {
+	case <-ctx.Done():
+		return l.Restore(context.Background())
+	case <-sessionEnd:
+		return l.RestoreAfterDismissal(ctx)
+	}
+}
+
 type voicePromptTestSuppressor struct {
 	called   chan struct{}
 	lease    voicePromptLease
@@ -165,6 +182,32 @@ func TestVoicePromptPresentationExplicitCloseWaitsForImmediateRestore(t *testing
 	waitForVoicePromptSignal(t, lease.restored)
 	if lease.restoreCalls.Load() != 1 || lease.dismissCalls.Load() != 0 {
 		t.Fatalf("explicit close did not perform one immediate restore: immediate=%d dismissal=%d", lease.restoreCalls.Load(), lease.dismissCalls.Load())
+	}
+}
+
+func TestVoicePromptSessionWorkerMaintainsAdapterLeaseUntilSessionEnd(t *testing.T) {
+	base := newVoicePromptTestLease()
+	lease := &voicePromptMaintainingTestLease{
+		voicePromptTestLease: base,
+		maintainStarted:      make(chan struct{}),
+	}
+	suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), lease: lease}
+	s := newVoicePromptTestShell(t, func(int32, string) voicePromptSuppressor { return suppressor })
+	token := voicePromptTestToken(t, "test-source-maintained", 1)
+	s.prepareVoicePromptPresentation()
+	s.syncVoicePromptPresentation(voiceOverlayFrame{Visible: true, Token: token, Phase: bridge.PhaseCapturing})
+	waitForVoicePromptSignal(t, suppressor.called)
+	waitForVoicePromptSignal(t, lease.maintainStarted)
+	if lease.dismissCalls.Load() != 0 || lease.restoreCalls.Load() != 0 {
+		t.Fatal("maintainer lease was cleaned before the session ended")
+	}
+	s.finishVoicePromptPresentation(token)
+	waitForVoicePromptSignal(t, lease.dismissStarted)
+	close(lease.allowDismiss)
+	s.waitVoicePromptPresentationRestore()
+	if lease.maintainCalls.Load() != 1 || lease.dismissCalls.Load() != 1 || lease.restoreCalls.Load() != 0 {
+		t.Fatalf("maintained cleanup = maintain %d, normal end %d, immediate restore %d; want 1/1/0",
+			lease.maintainCalls.Load(), lease.dismissCalls.Load(), lease.restoreCalls.Load())
 	}
 }
 

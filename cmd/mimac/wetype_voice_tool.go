@@ -35,5 +35,11 @@ func newWeTypeVoicePromptSuppressor(pid int32, executable string) voicePromptSup
 	if baseline == nil {
 		return nil
 	}
-	return suppressRecordingWindow(baseline.Suppress)
+	return suppressRecordingWindow(func(ctx context.Context) (voicePromptLease, string, error) {
+		lease, outcome, err := baseline.Suppress(ctx)
+		if lease == nil {
+			return nil, string(outcome), err
+		}
+		return lease, string(outcome), err
+	})
 }

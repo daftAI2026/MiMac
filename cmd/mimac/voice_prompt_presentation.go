@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/doubao"
-	"mimac.local/mimac/internal/adapters/windowlease"
 	"mimac.local/mimac/internal/bridge"
 )
 
@@ -22,18 +21,18 @@ type voicePromptSuppressor interface {
 	Suppress(context.Context) (voicePromptLease, string, error)
 }
 
+type voicePromptLeaseMaintainer interface {
+	Maintain(context.Context, <-chan struct{}) error
+}
+
 type voicePromptTarget interface {
 	voicePromptTarget() (bundleID string, pid int32, executableName string, ok bool)
 }
 
-type suppressRecordingWindow func(context.Context) (*windowlease.Lease, windowlease.Outcome, error)
+type suppressRecordingWindow func(context.Context) (voicePromptLease, string, error)
 
 func (suppress suppressRecordingWindow) Suppress(ctx context.Context) (voicePromptLease, string, error) {
-	lease, outcome, err := suppress(ctx)
-	if lease == nil {
-		return nil, string(outcome), err
-	}
-	return lease, string(outcome), err
+	return suppress(ctx)
 }
 
 func newDoubaoVoicePromptSuppressor(pid int32, executable string) voicePromptSuppressor {
@@ -41,7 +40,13 @@ func newDoubaoVoicePromptSuppressor(pid int32, executable string) voicePromptSup
 	if baseline == nil {
 		return nil
 	}
-	return suppressRecordingWindow(baseline.Suppress)
+	return suppressRecordingWindow(func(ctx context.Context) (voicePromptLease, string, error) {
+		lease, outcome, err := baseline.Suppress(ctx)
+		if lease == nil {
+			return nil, string(outcome), err
+		}
+		return lease, string(outcome), err
+	})
 }
 
 // voicePromptPresentation owns one pending baseline and any still-restoring
@@ -179,6 +184,10 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 		lease, _, _ := baseline.Suppress(searchCtx)
 		job.cancelSearch()
 		if lease == nil {
+			return
+		}
+		if maintainer, ok := lease.(voicePromptLeaseMaintainer); ok {
+			_ = maintainer.Maintain(ctx, job.sessionEnd)
 			return
 		}
 		select {

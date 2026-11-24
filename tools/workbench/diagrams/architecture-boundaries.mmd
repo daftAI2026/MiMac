@@ -42,7 +42,7 @@ flowchart LR
     contracts -->|受支持的工具提供中间文字| interim["会话绑定的点阵字幕"]
     interim --> projection
     prefs --> exclusive["仅显示 MiMac 提示的全局偏好"]
-    exclusive -->|当前工具已注册| adapterDisplay["该工具识别并管理自己的临时录音窗"]
+    exclusive -->|当前工具已注册| adapterDisplay["适配器管理临时录音窗；WeType 在会话 worker 内监听已绑定窗口的 AX 移动与尺寸事件"]
     core --> projection
     audio --> measurement
     measurement --> projection
