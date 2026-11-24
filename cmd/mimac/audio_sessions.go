@@ -229,17 +229,18 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					before.Session.Phase == bridge.PhaseDraining &&
 					completion.Event == bridge.SourceDrained(before.Session.Token)
 				var deliveryErr error
-				var attemptedText bool
+				var reportTextDelivery bool
 				if result := completion.Transcript; result != nil {
 					if before.HasSession && before.Session.Token == result.Token && before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio && host.deliver != nil {
-						attemptedText = result.Text != ""
 						deliveryErr = host.deliver(result.Token, result.Text)
-						if errors.Is(deliveryErr, textoutput.ErrNoInsertionTarget) && attemptedText {
+						reportTextDelivery = result.Text != ""
+						if reportTextDelivery && errors.Is(deliveryErr, textoutput.ErrNoInsertionTarget) {
 							// The editor did not receive this result. Only an explicit
 							// menu click copies it; retain one sentence in memory.
 							s.uninsertedDictation = result.Text
+							reportTextDelivery = false
 							deliveryErr = nil
-						} else if attemptedText && deliveryErr == nil {
+						} else if reportTextDelivery && deliveryErr == nil {
 							s.uninsertedDictation = ""
 						}
 						if deliveryErr != nil {
@@ -266,7 +267,7 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					switch {
 					case completion.Event == bridge.SourceFailed(token):
 						s.finishVoiceOverlay(token, true)
-					case successfulAudioDrain && attemptedText:
+					case successfulAudioDrain && reportTextDelivery:
 						s.finishVoiceOverlay(token, err != nil)
 					}
 				}

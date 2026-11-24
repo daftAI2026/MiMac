@@ -86,20 +86,53 @@ func TestAudioHostDeliversFinalTranscriptOnceAfterTailDrain(t *testing.T) {
 	}
 }
 
-func TestDictationFinishesWithoutAnEditor(t *testing.T) {
-	host, tasks, source, sink, _ := newTranscriptAudioHost(t, nil)
-	host.audioSession.deliver = func(bridge.SessionToken, string) error { return textoutput.ErrNoInsertionTarget }
-	press, _ := beginTranscriptAudioSession(t, host)
-	runHostTask(t, tasks)
-	waitHostSignal(t, source.reading)
-	if err := host.coordinator.step(bridge.VoiceEnded(press)); err != nil {
-		t.Fatal(err)
-	}
-	waitHostSignal(t, sink.drainStarted)
-	runHostTask(t, tasks)
-	waitHostSignal(t, sink.closed)
-	if host.uninsertedDictation == "" || host.uninsertedDictation != sink.text || host.coordinator.core.Snapshot().HasSession || host.report.AudioError != "" {
-		t.Fatal("dictation without an editor must finish and keep the final sentence available")
+type transcriptIndicatorProbe struct {
+	fakeVoiceOverlay
+	outcomes []bool // true for a failed delivery
+}
+
+func (v *transcriptIndicatorProbe) finish(_ bridge.SessionToken, failed bool, _ time.Time) {
+	v.outcomes = append(v.outcomes, failed)
+}
+
+func TestDictationIndicatorReflectsFinalDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		text         string
+		deliveryErr  error
+		wantOutcomes []bool
+		wantSaved    string
+	}{
+		{"inserted", "测试", nil, []bool{false}, ""},
+		{"no_editor", "测试", textoutput.ErrNoInsertionTarget, nil, "测试"},
+		{"no_speech", "", nil, nil, ""},
+		{"insertion_failed", "测试", textoutput.ErrPermissionDenied, []bool{true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, tasks, source, sink, _ := newTranscriptAudioHost(t, nil)
+			indicator := &transcriptIndicatorProbe{}
+			host.voiceOverlay.view = indicator
+			sink.text = tc.text
+			host.audioSession.deliver = func(bridge.SessionToken, string) error { return tc.deliveryErr }
+			press, _ := beginTranscriptAudioSession(t, host)
+			runHostTask(t, tasks)
+			waitHostSignal(t, source.reading)
+			if err := host.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			waitHostSignal(t, sink.drainStarted)
+			runHostTask(t, tasks)
+			waitHostSignal(t, sink.closed)
+			if !reflect.DeepEqual(indicator.outcomes, tc.wantOutcomes) {
+				t.Errorf("indicator outcomes = %v, want %v", indicator.outcomes, tc.wantOutcomes)
+			}
+			if host.uninsertedDictation != tc.wantSaved || host.coordinator.core.Snapshot().HasSession {
+				t.Error("dictation failed to retire with the expected recoverable text")
+			}
+			if tc.wantSaved != "" && host.report.AudioError != "" {
+				t.Error("dictation without an editor reported an audio error")
+			}
+		})
 	}
 }
 
