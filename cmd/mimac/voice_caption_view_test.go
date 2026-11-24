@@ -30,24 +30,70 @@ func (v *fakeVoiceCaption) Update(stable, tentative string, bounds mygo.Rectangl
 func (v *fakeVoiceCaption) Hide() error  { v.hides++; return nil }
 func (v *fakeVoiceCaption) Close() error { v.closes++; return v.closeErr }
 
-func TestVoiceCaptionPlacementKeepsTheFrozenHUDAndUsesSmallEnvelope(t *testing.T) {
+func TestVoiceCaptionTopAndBottomPlacementKeepsSafeInsetsAndGaps(t *testing.T) {
+	screen := mygo.Rectangle{X: 0, Y: 0, Width: 1440, Height: 900}
+	workArea := mygo.Rectangle{X: 0, Y: 30, Width: 1440, Height: 840}
+	topDot, _ := voiceDotHUDBounds(screen, workArea, false)
+	bottomDot, _ := voiceDotHUDBounds(screen, workArea, true)
+	if topDot.Y != workArea.Y || bottomDot.Y != workArea.Y+workArea.Height-voiceDotHeight {
+		t.Fatalf("top/bottom HUD bounds = %+v / %+v", topDot, bottomDot)
+	}
+	plateBounds := func(dot mygo.Rectangle, bottom bool) mygo.Rectangle {
+		return mygo.Rectangle{
+			X: dot.X + (dot.Width-112)/2, Y: dot.Y + voiceDotPlateTopOffset(bottom),
+			Width: 112, Height: int(dotscope.PlateHeight),
+		}
+	}
+	topPlate, bottomPlate := plateBounds(topDot, false), plateBounds(bottomDot, true)
+	if topPlate.Y != workArea.Y+voiceDotGap || topPlate.Y+topPlate.Height != workArea.Y+voiceDotGap+int(dotscope.PlateHeight) ||
+		bottomPlate.Y+bottomPlate.Height != workArea.Y+workArea.Height-voiceDotBottomGap ||
+		bottomDot.Y < workArea.Y || bottomDot.Y+bottomDot.Height > workArea.Y+workArea.Height {
+		t.Fatalf("visible plates = %+v / %+v", topPlate, bottomPlate)
+	}
+
 	got := voiceCaptionBoundsForHUD(
-		mygo.Rectangle{X: 872, Y: 30, Width: voiceDotWidth, Height: voiceDotHeight},
-		mygo.Rectangle{X: 0, Y: 0, Width: 1440, Height: 900},
+		topDot, screen, false,
 	)
-	want := mygo.Rectangle{X: 680, Y: 60, Width: 560, Height: 44}
+	want := mygo.Rectangle{X: 440, Y: 60, Width: 560, Height: 44}
 	if got != want {
 		t.Fatalf("caption bounds = %+v, want %+v", got, want)
 	}
-	plate := mygo.Rectangle{X: 904, Y: 36, Width: 112, Height: int(dotscope.PlateHeight)}
 	pill := mygo.Rectangle{X: got.X + 4, Y: got.Y + (voiceCaptionHeight-voiceCaptionPillHeight)/2,
 		Width: got.Width - 8, Height: voiceCaptionPillHeight}
-	if pill.Y < plate.Y+plate.Height || pill.Y-(plate.Y+plate.Height) != voiceCaptionGap {
-		t.Fatalf("visible caption pill overlaps or misses the upstream gap: plate=%+v pill=%+v", plate, pill)
+	if pill.Y < topPlate.Y+topPlate.Height || pill.Y-(topPlate.Y+topPlate.Height) != voiceCaptionGap {
+		t.Fatalf("top caption overlaps or misses the upstream gap: plate=%+v pill=%+v", topPlate, pill)
 	}
-	if got := voiceCaptionBoundsForHUD(mygo.Rectangle{X: 0, Y: 30, Width: 176, Height: 64},
-		mygo.Rectangle{X: 0, Y: 0, Width: 500, Height: 800}); got.Width != 476 || got.X != 12 {
+
+	bottomCaption := voiceCaptionBoundsForHUD(bottomDot, screen, true)
+	bottomPill := mygo.Rectangle{X: bottomCaption.X + 4,
+		Y:     bottomCaption.Y + (voiceCaptionHeight-voiceCaptionPillHeight)/2,
+		Width: bottomCaption.Width - 8, Height: voiceCaptionPillHeight}
+	if bottomPill.Y+bottomPill.Height > bottomPlate.Y || bottomPlate.Y-(bottomPill.Y+bottomPill.Height) != voiceCaptionGap {
+		t.Fatalf("bottom caption overlaps or misses the upstream gap: plate=%+v pill=%+v", bottomPlate, bottomPill)
+	}
+	if got := voiceCaptionBoundsForHUD(topDot, mygo.Rectangle{X: 0, Y: 0, Width: 500, Height: 800}, false); got.Width != 476 || got.X != 12 {
 		t.Fatalf("narrow-display caption bounds = %+v", got)
+	}
+}
+
+func TestVoiceCaptionRepositionsRetainedPreviewWhenDotMovesToBottom(t *testing.T) {
+	caption := &fakeVoiceCaption{}
+	token := voiceInterimTestToken(t, 1)
+	workArea := mygo.Rectangle{X: 0, Y: 30, Width: 1440, Height: 840}
+	dot, screen := voiceDotHUDBounds(
+		mygo.Rectangle{X: 0, Y: 0, Width: 1440, Height: 900}, workArea, true,
+	)
+	v := &voiceDotView{
+		caption: caption, captionDraft: voiceInterimDraft{Stable: "kept words"},
+		captionToken: token, hudBounds: dot, screenBounds: screen,
+	}
+	frame := voiceOverlayFrame{Visible: true, ShowLiveText: true, Token: token, DotAtBottom: true}
+	if v.syncCaption(frame, time.Now()) || len(caption.updates) != 1 {
+		t.Fatal("blank interim did not reposition the retained preview")
+	}
+	want := voiceCaptionBoundsForHUD(dot, screen, true)
+	if caption.updates[0].stable != "kept words" || caption.updates[0].bounds != want {
+		t.Fatalf("retained caption update = %+v, want bounds %+v", caption.updates[0], want)
 	}
 }
 

@@ -23,7 +23,7 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 	if s.guideWindow == nil || !s.guideWindow.IsVisible() {
 		permissions = s.readPermissionGuideSnapshot()
 	}
-	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoicePresentation: presentationIndex, ShowLiveText: p.value.ShowLiveText, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions)}
+	return nativeprefs.State{Login: p.loginEnabled, Dock: p.value.ShowInDock, VoicePresentation: presentationIndex, ShowLiveText: p.value.ShowLiveText, DotAtBottom: p.value.DotAtBottom, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(), Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize, BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions)}
 }
 
 func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.PermissionRow {
@@ -67,6 +67,10 @@ func (s *shell) syncGeneralControls() {
 		},
 		ShowLiveText: func(enabled bool) {
 			_ = s.applyLiveTextPreference(enabled)
+			s.syncGeneralControls()
+		},
+		DotAtBottom: func(bottom bool) {
+			_ = s.applyDotPlacement(bottom)
 			s.syncGeneralControls()
 		},
 		Appearance: func(source string) {

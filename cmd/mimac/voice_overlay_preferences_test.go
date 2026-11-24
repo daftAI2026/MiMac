@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 )
@@ -118,6 +119,62 @@ func TestLiveTextPreferenceDefaultsOffAndRemainsIndependent(t *testing.T) {
 				t.Fatalf("live text preference was coupled to presentation mode: got %+v, want %+v", got, value)
 			}
 		})
+	}
+}
+
+func TestDotAtBottomPreferenceDefaultsToTopAndPersistsIndependently(t *testing.T) {
+	defaults := defaultHostPreferences()
+	if defaults.DotAtBottom {
+		t.Fatal("dot position should default to the screen top")
+	}
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := saved["dot_at_bottom"]; exists {
+		t.Fatalf("default top position changed the established settings shape: %s", data)
+	}
+
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	want := defaults
+	want.VoicePresentation = voicePresentationDotBar
+	want.ShowLiveText = true
+	want.DotAtBottom = true
+	if err := saveHostPreferences(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readHostPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("top/bottom preference round-trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestApplyDotPlacementPersistsAndProjectsSelectedEdge(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	s := shell{preferencesState: preferencesState{value: defaultHostPreferences(), path: path}}
+	if err := s.applyDotPlacement(true); err != nil {
+		t.Fatal(err)
+	}
+	if frame := s.voiceOverlayFrameAt(time.Now()); !frame.DotAtBottom {
+		t.Fatalf("overlay frame lost the saved bottom position: %+v", frame)
+	}
+	got, err := readHostPreferences(path)
+	if err != nil || !got.DotAtBottom {
+		t.Fatalf("saved bottom position = %+v, %v", got, err)
+	}
+	if err := s.applyDotPlacement(false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = readHostPreferences(path)
+	if err != nil || got.DotAtBottom {
+		t.Fatalf("saved top position = %+v, %v", got, err)
 	}
 }
 

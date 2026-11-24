@@ -53,7 +53,7 @@ func newVoiceCaptionView() (voiceCaptionView, error) {
 	return v, nil
 }
 
-func voiceCaptionBoundsForHUD(dot, screen mygo.Rectangle) mygo.Rectangle {
+func voiceCaptionBoundsForHUD(dot, screen mygo.Rectangle, bottom bool) mygo.Rectangle {
 	width := voiceCaptionWidth
 	if screen.Width > 0 {
 		width = min(width, max(0, screen.Width-2*voiceCaptionMargin))
@@ -62,11 +62,15 @@ func voiceCaptionBoundsForHUD(dot, screen mygo.Rectangle) mygo.Rectangle {
 	if screen.Width > 0 {
 		x = max(screen.X+voiceCaptionMargin, min(x, screen.X+screen.Width-width-voiceCaptionMargin))
 	}
-	// The shader centers its 26 pt plate inside the frozen dot panel, whose
-	// draw origin is shifted so the visible top is dot.Y+voiceDotGap. The
-	// centered 32 pt pill sits 4 pt below it, matching upstream beside_plate.
+	// The shader centers its 26 pt plate inside the frozen dot panel; the
+	// visible top is offset by voiceDotPlateTopOffset. Upstream hangs the
+	// caption on the screen-edge side of the plate with a 4 pt gap.
 	envelopeInset := (voiceCaptionHeight - voiceCaptionPillHeight) / 2
-	y := dot.Y + voiceDotGap + int(dotscope.PlateHeight) + voiceCaptionGap - envelopeInset
+	plateTop := dot.Y + voiceDotPlateTopOffset(bottom)
+	y := plateTop + int(dotscope.PlateHeight) + voiceCaptionGap - envelopeInset
+	if bottom {
+		y = plateTop - voiceCaptionGap - voiceCaptionPillHeight - envelopeInset
+	}
 	return mygo.Rectangle{X: x, Y: y, Width: width, Height: voiceCaptionHeight}
 }
 

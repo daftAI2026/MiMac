@@ -22,6 +22,7 @@ type voiceOverlayFrame struct {
 	CenteredRMS      float32
 	Spectrum         siriglass.Spectrum
 	Input            siriglass.InputState
+	DotAtBottom      bool
 	ShowLiveText     bool
 	InterimStable    string
 	InterimTentative string
@@ -122,7 +123,7 @@ func (s *shell) endVoiceInterim() {
 }
 
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
-	frame := voiceOverlayFrame{DB: -60}
+	frame := voiceOverlayFrame{DB: -60, DotAtBottom: s.preferencesState.value.DotAtBottom}
 	frame.ShowLiveText = !s.closing && !s.preferencesState.loadFailed &&
 		s.preferencesState.value.ShowLiveText && s.preferencesState.value.VoicePresentation == voicePresentationDotBar
 	if !s.voicePresentationActive() || s.voiceOverlay.err != nil || s.closing ||

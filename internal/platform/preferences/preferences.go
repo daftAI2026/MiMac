@@ -19,7 +19,9 @@ type State struct {
 	VoicePresentation int
 	// ShowLiveText is an independent dot-bar interim caption preference.
 	ShowLiveText bool
-	Appearance        string
+	// DotAtBottom selects the screen edge for the dot-bar HUD.
+	DotAtBottom bool
+	Appearance  string
 	// Dark is the effective theme state and does not select the Appearance segment.
 	Dark bool
 	// TextSize is -1 for small, 0 for standard, and 1 for large.
@@ -46,6 +48,7 @@ type Callbacks struct {
 	Dock              func(bool)
 	VoicePresentation func(int)
 	ShowLiveText      func(bool)
+	DotAtBottom       func(bool)
 	Appearance        func(string)
 	TextSize          func(int)
 	ManagePermissions func(int32)

@@ -15,6 +15,7 @@ private struct PreferencesState: Decodable {
     var Dock = false
     var VoicePresentation = 0
     var ShowLiveText = false
+    var DotAtBottom = false
     var Appearance = "system"
     var Dark = false
     var TextSize = 0
@@ -85,6 +86,15 @@ private struct SettingsForm: View {
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("voice-overlay-row")
                 .accessibilityHint("跟随语音工具时，由工具决定是否显示提示")
+
+                if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue {
+                    Picker("点阵位置", selection: toggle(state.DotAtBottom, kind: 8)) {
+                        Text("屏幕顶部").tag(false)
+                        Text("屏幕底部").tag(true)
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("voice-dot-position")
+                }
 
                 HStack(alignment: .center) {
                     Text("外观")

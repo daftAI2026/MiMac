@@ -27,6 +27,7 @@ type hostPreferences struct {
 	ShowInDock        bool                  `json:"show_in_dock"`
 	VoicePresentation voicePresentationMode `json:"voice_presentation"`
 	ShowLiveText      bool                  `json:"show_live_text,omitempty"`
+	DotAtBottom       bool                  `json:"dot_at_bottom,omitempty"`
 	Appearance        mygo.ThemeSource      `json:"appearance"`
 	TextSize          int                   `json:"text_size,omitempty"`
 }
@@ -47,6 +48,7 @@ type preferencesDocument struct {
 	ShowVoiceOverlay  *bool                  `json:"show_voice_overlay"`
 	VoicePresentation *voicePresentationMode `json:"voice_presentation"`
 	ShowLiveText      *bool                  `json:"show_live_text"`
+	DotAtBottom       bool                   `json:"dot_at_bottom"`
 	Appearance        *mygo.ThemeSource      `json:"appearance"`
 	TextSize          int                    `json:"text_size,omitempty"`
 }
@@ -134,7 +136,8 @@ func readHostPreferences(path string) (hostPreferences, error) {
 	return hostPreferences{
 		Version: preferencesVersion, ShowInDock: *doc.ShowInDock,
 		VoicePresentation: voicePresentation, ShowLiveText: showLiveText,
-		Appearance: appearance, TextSize: doc.TextSize,
+		DotAtBottom: doc.DotAtBottom,
+		Appearance:  appearance, TextSize: doc.TextSize,
 	}, nil
 }
 
@@ -343,6 +346,17 @@ func (s *shell) applyLiveTextPreference(enabled bool) error {
 		return err
 	}
 	s.configureVoiceInterim()
+	s.syncVoiceOverlay()
+	return nil
+}
+
+// applyDotPlacement persists the selected side before repositioning the HUD.
+func (s *shell) applyDotPlacement(bottom bool) error {
+	next := s.preferencesState.value
+	next.DotAtBottom = bottom
+	if err := s.savePreferences(next); err != nil {
+		return err
+	}
 	s.syncVoiceOverlay()
 	return nil
 }

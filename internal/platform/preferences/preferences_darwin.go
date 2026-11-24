@@ -280,6 +280,10 @@ func nativePreferenceChanged(token uint64, kind int32, value int32) {
 			if callback, ok := boolCallback(c.callbacks.ShowLiveText, value); ok {
 				callback()
 			}
+		case 8:
+			if callback, ok := boolCallback(c.callbacks.DotAtBottom, value); ok {
+				callback()
+			}
 		}
 	})
 }

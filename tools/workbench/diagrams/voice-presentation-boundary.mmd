@@ -24,7 +24,8 @@ flowchart TD
     hidden --> toolDisplay["语音工具自行决定是否显示原生提示"]
     enabled -->|语音球| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
     enabled -->|点阵语音条| dots["鼠标穿透、不抢键盘；读取当前会话去除直流偏置的 RMS"]
-    dots --> motion["收音随音量；收尾变窄；确认交付或错误才显示终态"]
+    dots --> placement["持久位置：顶部（默认）或底部；底部点阵在 Dock 上方保留 24 pt 间距"]
+    placement --> motion["收音随音量；收尾变窄；确认交付或错误才显示终态"]
     motion --> rest["退场后隐藏并停止请求帧；新会话重置点阵"]
     panel --> gate{"arm64 + macOS26公开API下限？"}
     gate -->|是| capability{"原生符号、布局与witness兼容？"}
@@ -55,6 +56,6 @@ flowchart TD
     target["未来：可靠目标思考反馈；当前未知保持false"] -.-> thinkEdge
 
     dots --> captionPref{"已开启实时字幕？"}
-    captionPref -->|是| caption["点阵下方的非激活字幕窗"]
+    captionPref -->|是| caption["屏幕内侧的非激活字幕窗：顶部点阵下方、底部点阵上方"]
     incoming["当前识别工具的匹配会话临时文字"] --> caption
     caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]

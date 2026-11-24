@@ -19,7 +19,10 @@ const (
 	voiceDotWidth  = 176
 	voiceDotHeight = 64
 	voiceDotGap    = 6
-	voiceDotPeriod = time.Second / 60
+	// Keep the visible plate this far above the work area's lower edge, as
+	// upstream does above the Dock.
+	voiceDotBottomGap = 24
+	voiceDotPeriod    = time.Second / 60
 )
 
 type voiceDotView struct {
@@ -38,6 +41,7 @@ type voiceDotView struct {
 	epoch, previousPaint      time.Time
 	started, submitted, ended bool
 	visible, closed, reduce   bool
+	bottom                    bool
 }
 
 func newVoiceDotView(read func() voiceOverlayFrame) (voiceOverlayView, error) {
@@ -75,13 +79,14 @@ func (v *voiceDotView) Update(frame voiceOverlayFrame) error {
 		return v.Hide()
 	}
 	now := time.Now()
-	if !v.visible || v.token != frame.Token {
+	if !v.visible || v.token != frame.Token || v.bottom != frame.DotAtBottom {
 		v.selectToken(frame.Token, now)
 		display := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
 		if display.WorkArea.Width > 0 {
-			v.hudBounds, v.screenBounds = voiceDotHUDBounds(display.Bounds, display.WorkArea)
+			v.hudBounds, v.screenBounds = voiceDotHUDBounds(display.Bounds, display.WorkArea, frame.DotAtBottom)
 			v.window.SetBounds(v.hudBounds)
 		}
+		v.bottom = frame.DotAtBottom
 	}
 	if frame.Phase == bridge.PhaseDraining {
 		v.submit(now)
@@ -214,7 +219,7 @@ func (v *voiceDotView) draw(c *ui.Context) {
 			v.window.Hide()
 			return
 		}
-		bounds.Y += voiceDotGap + dotscope.PlateHeight/2 - bounds.H/2
+		bounds.Y += float32(voiceDotPlateTopOffset(v.bottom)) + dotscope.PlateHeight/2 - bounds.H/2
 		v.renderer.Draw(p, bounds, v.model.Snapshot(), dark)
 		// Ask the display clock only while the plate is moving or listening.
 		// The software fallback and reduced motion use fewer redraws.
@@ -255,9 +260,22 @@ func (v *voiceDotView) Close() error {
 	return err
 }
 
-func voiceDotHUDBounds(screen, workArea mygo.Rectangle) (mygo.Rectangle, mygo.Rectangle) {
+func voiceDotPlateTopOffset(bottom bool) int {
+	if bottom {
+		return voiceDotHeight - voiceDotBottomGap - int(dotscope.PlateHeight)
+	}
+	return voiceDotGap
+}
+
+func voiceDotHUDBounds(screen, workArea mygo.Rectangle, bottom bool) (mygo.Rectangle, mygo.Rectangle) {
+	y := workArea.Y
+	if bottom {
+		// Keep the transparent panel on the work area. draw() moves the plate
+		// inside it so its lower edge keeps the upstream Dock clearance.
+		y += max(0, workArea.Height-voiceDotHeight)
+	}
 	hud := mygo.Rectangle{
-		X: screen.X + (screen.Width-voiceDotWidth)/2, Y: workArea.Y,
+		X: screen.X + (screen.Width-voiceDotWidth)/2, Y: y,
 		Width: voiceDotWidth, Height: voiceDotHeight,
 	}
 	return hud, screen
@@ -276,6 +294,17 @@ func (v *voiceDotView) syncCaption(frame voiceOverlayFrame, now time.Time) bool 
 			v.clearCaption()
 		}
 		if strings.TrimSpace(frame.InterimStable) == "" && strings.TrimSpace(frame.InterimTentative) == "" {
+			// A preference change can move the HUD between partial updates.
+			// Keep the last nonblank preview anchored to its new side.
+			if v.captionDraft.Stable != "" || v.captionDraft.Tentative != "" {
+				v.ensureCaption()
+				if v.caption != nil {
+					if err := v.caption.Update(v.captionDraft.Stable, v.captionDraft.Tentative,
+						voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds, frame.DotAtBottom), 1); err != nil {
+						v.disableCaption(err)
+					}
+				}
+			}
 			return false // Blank first updates do not erase words already shown.
 		}
 		v.captionDraft = voiceInterimDraft{Stable: frame.InterimStable, Tentative: frame.InterimTentative}
@@ -286,7 +315,7 @@ func (v *voiceDotView) syncCaption(frame voiceOverlayFrame, now time.Time) bool 
 			return false
 		}
 		if err := v.caption.Update(v.captionDraft.Stable, v.captionDraft.Tentative,
-			voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds), 1); err != nil {
+			voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds, frame.DotAtBottom), 1); err != nil {
 			v.disableCaption(err)
 		}
 		return false
@@ -308,7 +337,7 @@ func (v *voiceDotView) syncCaption(frame voiceOverlayFrame, now time.Time) bool 
 		return false
 	}
 	if err := v.caption.Update(v.captionDraft.Stable, v.captionDraft.Tentative,
-		voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds), opacity); err != nil {
+		voiceCaptionBoundsForHUD(v.hudBounds, v.screenBounds, frame.DotAtBottom), opacity); err != nil {
 		v.disableCaption(err)
 		return false
 	}
