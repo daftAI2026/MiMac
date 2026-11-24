@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"math"
@@ -262,9 +263,10 @@ func TestPermissionFilePublicationPrecedesMacOSPrefetchOncePerGesture(t *testing
 			calls := 0
 			mouseDown := true
 			preparedWhileDragging := false
-			offer := permissionGuideFileOffer(id, file.Snapshot(), func() {
+			offer := permissionGuideFileOffer(id, file.Snapshot(), func() error {
 				calls++
 				preparedWhileDragging = mouseDown
+				return nil
 			}).Snapshot()
 			if calls != 1 || !preparedWhileDragging {
 				t.Fatalf("native drag threshold did not prepare once before publication: calls=%d while-down=%t", calls, preparedWhileDragging)
@@ -284,5 +286,22 @@ func TestPermissionFilePublicationPrecedesMacOSPrefetchOncePerGesture(t *testing
 				t.Fatalf("mouse-up repeated preparation (calls=%d)", calls)
 			}
 		})
+	}
+}
+
+func TestFailedRegistrationDoesNotPublishFileToSettings(t *testing.T) {
+	file, err := transfer.FileData("/Applications/Test App.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []permissionGuideID{permissionGuideInput, permissionGuidePostEvent} {
+		calls := 0
+		offer := permissionGuideFileOffer(id, file, func() error {
+			calls++
+			return context.DeadlineExceeded
+		})
+		if calls != 1 || len(offer.Formats()) != 0 {
+			t.Fatalf("id %v: calls %d, published formats %v", id, calls, offer.Formats())
+		}
 	}
 }

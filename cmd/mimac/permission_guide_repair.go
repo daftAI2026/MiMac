@@ -189,7 +189,7 @@ func (p *permissionGuideDragRegistrationPreparation) receive() {
 
 // Both list permissions check the matching Settings page at the confirmed
 // native drag threshold, before AppKit can prefetch the file URL.
-func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool {
+func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) error {
 	service, supported := permissionGuideRegistrationService(id)
 	preparation := s.dragRegistrationPreparation
 	if !supported || s.closing || preparation == nil || preparation.id != id ||
@@ -197,14 +197,14 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 		preparation.consumed || !permissionGuideMayRepair(s.snapshot, id) {
 		status, _ := permissionGuideAccessForID(s.snapshot, id)
 		permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceSkipped, status, permissionGuideUnknown)
-		return false
+		return nil
 	}
 	preparation.receive()
 	proof, taken := preparation.take(time.Now(), id, s.generation, s.snapshot.appBundlePath)
 	if !taken {
 		status, _ := permissionGuideAccessForID(s.snapshot, id)
 		permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceUnavailable, status, permissionGuideUnknown)
-		return false
+		return nil
 	}
 	defer permissionguide.DiscardDragRegistrationProof(proof)
 
@@ -228,9 +228,7 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 	}
 	permissionGuideTrace(permissionGuideTracePermissionCheck, id, permissionGuideTraceObserved, permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancel()
-	reset, err := permissionguide.RepairDragRegistrationBeforeDelivery(ctx, proof, access)
+	reset, err := permissionguide.RepairDragRegistrationBeforeDelivery(context.Background(), proof, access)
 	if err != nil {
 		log.Printf("permission registration pre-delivery repair %s: %v", service, err)
 		permissionGuideTrace(permissionGuideTraceRegistrationReset, id, permissionGuideTraceErrorResult(err), permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
@@ -240,7 +238,7 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 				s.guideWindow.Invalidate()
 			}
 		}
-		return false
+		return err
 	}
 	resetResult := permissionGuideTraceNoReset
 	if reset {
@@ -248,7 +246,7 @@ func (s *shell) repairDragRegistrationBeforeDelivery(id permissionGuideID) bool 
 		resetResult = permissionGuideTraceReset
 	}
 	permissionGuideTrace(permissionGuideTraceRegistrationReset, id, resetResult, permissionGuideTraceRegistrationAccess(access), permissionGuideUnknown)
-	return reset
+	return nil
 }
 
 // runPermissionRegistrationProbe is a separate, fresh-process readback only.

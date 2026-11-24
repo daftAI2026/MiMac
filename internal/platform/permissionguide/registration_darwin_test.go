@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,5 +168,23 @@ func TestListenRegistrationWatcherStillInvalidatesAmbiguousOrChangedEvidence(t *
 				t.Fatalf("ambiguous or changed evidence left proof valid: %+v", event)
 			}
 		})
+	}
+}
+
+// Exercise process startup and command completion without changing a TCC record.
+func TestRegistrationResetWaitsForCommandReceipt(t *testing.T) {
+	err := runRegistrationReset(context.Background(), func(ctx context.Context) error {
+		return exec.CommandContext(ctx, "/bin/sleep", "0.35").Run()
+	})
+	if err != nil {
+		t.Fatalf("a slow successful command lost its receipt: %v", err)
+	}
+	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = runRegistrationReset(short, func(ctx context.Context) error {
+		return exec.CommandContext(ctx, "/bin/sleep", "1").Run()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled system command was not identified as a deadline: %v", err)
 	}
 }

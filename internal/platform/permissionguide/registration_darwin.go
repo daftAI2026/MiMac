@@ -135,7 +135,22 @@ func resetOwnRegistration(ctx context.Context, service RegistrationService) erro
 	if !ok {
 		return errors.New("unsupported permission registration identity")
 	}
-	return exec.CommandContext(ctx, "/usr/bin/tccutil", "reset", string(service), bundleID).Run()
+	return runRegistrationReset(ctx, func(ctx context.Context) error {
+		return exec.CommandContext(ctx, "/usr/bin/tccutil", "reset", string(service), bundleID).Run()
+	})
+}
+
+// Wait for the scoped system command's receipt before publishing the file URL.
+// A cold process can take longer than one drag frame budget. The upper bound
+// protects the drag callback if macOS stops responding; normal exit returns immediately.
+func runRegistrationReset(parent context.Context, run func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	defer cancel()
+	err := run(ctx)
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 type registrationProbe struct {

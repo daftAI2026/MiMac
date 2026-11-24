@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/png"
 	"math"
@@ -54,10 +55,10 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 				status, _ := permissionGuideAccessForID(s.snapshot, draggedPermission)
 				permissionGuideTrace(permissionGuideTraceDragThreshold, draggedPermission, permissionGuideTraceStarted, status, permissionGuideUnknown)
 				s.prepareDragRegistration(draggedPermission)
-				return permissionGuideFileOffer(draggedPermission, data, func() {
+				return permissionGuideFileOffer(draggedPermission, data, func() error {
 					if s.guideWindow != window || s.generation != generation || s.currentID != draggedPermission ||
 						!permissionGuideAllowsAppDrag(draggedPermission) {
-						return
+						return context.Canceled
 					}
 					input := draggedPermission == permissionGuideInput
 					settingsReady := permissionguide.SettingsReadyForPermissionDrag(input, s.settingsOpenedFor == draggedPermission)
@@ -68,8 +69,9 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 					}
 					permissionGuideTrace(permissionGuideTraceSettingsCheck, draggedPermission, settingsResult, status, permissionGuideUnknown)
 					if settingsReady {
-						s.repairDragRegistrationBeforeDelivery(draggedPermission)
+						return s.repairDragRegistrationBeforeDelivery(draggedPermission)
 					}
+					return nil
 				})
 			}, transfer.DragOptions{Started: func(image.Point) {
 				if s.guideWindow == window && s.generation == generation {
@@ -154,9 +156,11 @@ func (s *shell) permissionGuideAppIcon(c *ui.Context) {
 // MyGo requests drag data after the native drag threshold. macOS may prefetch
 // the file URL before mouse-up, so prepare both list permissions before the
 // ordinary file offer is returned to the native drag session.
-func permissionGuideFileOffer(id permissionGuideID, file transfer.Data, beforePublication func()) transfer.Data {
+func permissionGuideFileOffer(id permissionGuideID, file transfer.Data, beforePublication func() error) transfer.Data {
 	if permissionGuideAllowsAppDrag(id) && beforePublication != nil {
-		beforePublication()
+		if err := beforePublication(); err != nil {
+			return transfer.Data{}
+		}
 	}
 	return file
 }

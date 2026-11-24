@@ -160,7 +160,7 @@ Freeze one Shanghai-local minute for the batch. The package identity is `v0.YYYY
 
 ### Preview
 
-1. Run permission acceptance on the fixed Dev identity, including one native drop, actual capability readback and any system-requested reopen. Freeze that verified source and dependency selection.
+1. Run permission acceptance on the fixed Dev identity, including one native drop, actual capability readback and any system-requested reopen. Freeze that verified source and dependency selection. For an ad-hoc Preview upgrade, include a stale Dev signature in this check. Correlate the same gesture’s reset receipt, file submission and post-relaunch capability. A clean grant alone does not cover an upgrade.
 2. Run `script/package_preview.sh` to use the Shanghai minute and next local candidate. Use `script/package_preview.sh --output DIRECTORY` to choose the output root. Set `MIMAC_RELEASE_TRAIN` to reproduce a batch and optionally set `MIMAC_PREVIEW_REVISION=NN` to reserve a particular candidate. New candidates begin at `00`, increment from the largest existing candidate without filling gaps, and stop at `99`. Candidate directories are reserved atomically; existing candidates and package files are never replaced. The script does not accept a positional build number.
 3. Verify both matching version fields, the full commit, architecture, bundle contents and image. Keep the JSON receipt and SHA-256 alongside the image. Deliver the local Preview DMG to the user for installation. A packaging request leaves the installed daily app, configuration and macOS permission grants in place. Automated permission E2E uses Dev. Record any open acceptance gates in the handoff.
 
