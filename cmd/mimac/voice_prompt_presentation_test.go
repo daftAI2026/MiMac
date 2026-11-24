@@ -138,6 +138,16 @@ func TestEarlyVoicePromptDiscoveryEndsWithItsOwnSession(t *testing.T) {
 		t.Fatal("ordinary adapter started discovery while preparing")
 	}
 	s.selectedVoiceTool().voicePromptOnPrepare = true
+	opens := 0
+	view := &fakeVoiceOverlay{}
+	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+		opens++
+		return view, nil
+	}
+	s.prepareVoicePromptPresentation()
+	if opens != 1 || len(view.frames) != 0 || len(s.voiceOverlay.voicePrompt.jobs) != 0 {
+		t.Fatal("pre-key handoff must prepare one hidden view without suppressing or showing anything")
+	}
 	s.syncVoicePromptPresentation(preparing)
 	waitForVoicePromptSignal(t, started)
 	s.finishVoicePromptPresentation(token)

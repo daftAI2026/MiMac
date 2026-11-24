@@ -189,6 +189,26 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 	return frame
 }
 
+// The native constructor creates a hidden panel. Only Update may present it.
+func (s *shell) ensureVoiceOverlayView() bool {
+	state := &s.voiceOverlay
+	if state.view == nil {
+		if state.open == nil {
+			return false
+		}
+		view, err := state.open(func() voiceOverlayFrame { return s.voiceOverlayFrameAt(time.Now()) }, s.failVoiceOverlay)
+		state.view = view // A failing constructor can still own a native handle.
+		if err == nil && view == nil {
+			err = errors.New("voice overlay: no renderer returned")
+		}
+		if err != nil {
+			s.failVoiceOverlay(err)
+			return false
+		}
+	}
+	return true
+}
+
 func (s *shell) syncVoiceOverlay() {
 	state := &s.voiceOverlay
 	if s.closing || !s.voicePresentationActive() || state.err != nil || state.open == nil {
@@ -206,17 +226,8 @@ func (s *shell) syncVoiceOverlay() {
 		}
 		return
 	}
-	if state.view == nil {
-		view, err := state.open(func() voiceOverlayFrame { return s.voiceOverlayFrameAt(time.Now()) }, s.failVoiceOverlay)
-		// Even a failed constructor may own a native handle needing cleanup.
-		state.view = view
-		if err == nil && view == nil {
-			err = errors.New("voice overlay: no renderer returned")
-		}
-		if err != nil {
-			s.failVoiceOverlay(err)
-			return
-		}
+	if !s.ensureVoiceOverlayView() {
+		return
 	}
 	if err := state.view.Update(frame); err != nil {
 		s.failVoiceOverlay(err)

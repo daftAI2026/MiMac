@@ -120,7 +120,11 @@ func (s *shell) prepareVoicePromptPresentation() {
 	if filepath.Base(executable) != executableName || !filepath.IsAbs(executable) {
 		return
 	}
-	a.baseline = tool.voicePromptSuppressor(pid, executable)
+	baseline := tool.voicePromptSuppressor(pid, executable)
+	if baseline != nil && tool.voicePromptOnPrepare && !s.ensureVoiceOverlayView() {
+		return
+	}
+	a.baseline = baseline
 }
 
 func (a *voicePromptPresentation) finishCompletedWorkers() {
