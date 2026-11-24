@@ -134,46 +134,30 @@ func (b *HiddenBaseline) Suppress(ctx context.Context, eligible func(Window) boo
 		if err := b.checkIdentity(); err != nil {
 			return nil, OutcomeUnavailable, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 		}
-		ids, err := b.probe.WindowNumbers(b.pid)
+		windows, err := b.probe.Windows(b.pid, nil)
 		if err != nil {
 			return nil, OutcomeUnavailable, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
 		}
-		if len(ids) > 1 {
+		if len(windows) > 1 {
+			releaseWindows(b.probe, windows)
 			return nil, OutcomeAmbiguous, ErrAmbiguous
 		}
-		if len(ids) == 1 {
-			windows, err := b.probe.Windows(b.pid, nil)
-			if err != nil {
-				return nil, OutcomeUnavailable, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
-			}
-			if len(windows) > 1 {
+		if len(windows) == 1 {
+			window := windows[0]
+			if window.OwnerPID != b.pid || !window.OnScreen || window.ID == 0 || window.AXMatchCount > 1 {
 				releaseWindows(b.probe, windows)
 				return nil, OutcomeAmbiguous, ErrAmbiguous
 			}
-			if len(windows) == 1 {
-				window := windows[0]
-				_, isOnScreen := ids[window.ID]
-				if window.OwnerPID != b.pid || !isOnScreen || window.ID == 0 {
+			if window.AXMatchCount == 1 && window.Element != 0 {
+				if !eligible(window) {
 					releaseWindows(b.probe, windows)
-					return nil, OutcomeAmbiguous, ErrAmbiguous
+					return nil, OutcomeUnchanged, nil
 				}
-				if window.AXMatchCount > 1 {
-					releaseWindows(b.probe, windows)
-					return nil, OutcomeAmbiguous, ErrAmbiguous
-				}
-				if window.AXMatchCount == 1 && window.Element != 0 {
-					if !eligible(window) {
-						releaseWindows(b.probe, windows)
-						return nil, OutcomeUnchanged, nil
-					}
-					windows[0].Element = 0 // the lease takes the retained AX reference
-					releaseWindows(b.probe, windows)
-					transferEvents = true
-					return b.hideCandidate(ctx, window, events)
-				}
-				// A fresh CG row with no settled AX match is not enough to hide.
-				releaseWindows(b.probe, windows)
+				// Pass the sole retained element and observer to the lease.
+				transferEvents = true
+				return b.hideCandidate(ctx, window, events)
 			}
+			releaseWindows(b.probe, windows)
 		}
 		select {
 		case <-ctx.Done():

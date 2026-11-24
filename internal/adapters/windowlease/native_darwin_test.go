@@ -51,3 +51,32 @@ func TestAXGeometryRejectsNonAXValuesBeforeReadingThem(t *testing.T) {
 		t.Fatal("non-AXValue size was accepted")
 	}
 }
+
+func TestBatchOptionalStringsDistinguishAbsentFromUnreadable(t *testing.T) {
+	var code int32
+	api := &presentationNativeAPI{
+		cfGetTypeID:      func(v uintptr) uintptr { return v },
+		cfStringTypeID:   func() uintptr { return 1 },
+		cfStringLength:   func(uintptr) int64 { return 0 },
+		axValueGetTypeID: func() uintptr { return 2 },
+		axValueGetType:   func(uintptr) uint32 { return 5 },
+		axValueGetValue: func(_ uintptr, _ uint32, out unsafe.Pointer) uint8 {
+			*(*int32)(out) = code
+			return 1
+		},
+	}
+	for _, sample := range []struct {
+		value      uintptr
+		errorCode  int32
+		knownEmpty bool
+	}{
+		{1, 0, true}, {2, -25205, true}, {2, -25212, true},
+		{2, -25204, false}, {3, 0, false}, {0, 0, false},
+	} {
+		code = sample.errorCode
+		empty, known := api.optionalStringEmpty(sample.value)
+		if empty != sample.knownEmpty || known != sample.knownEmpty {
+			t.Fatalf("value %d, AX error %d: empty=%t known=%t", sample.value, code, empty, known)
+		}
+	}
+}

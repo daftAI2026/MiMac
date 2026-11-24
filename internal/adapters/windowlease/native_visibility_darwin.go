@@ -51,24 +51,16 @@ func (p darwinPresentationProbe) ApplicationVisibility(pid int32, element uintpt
 	api.axSetTimeout(app, 0.15)
 	// Hidden and the member list come from the input method. The focused app
 	// comes from the system and needs no access to the editor's text or views.
-	hidden, code := api.copyAttribute(app, "AXHidden")
-	if hidden != 0 {
-		defer api.cfRelease(hidden)
+	values, err := api.copyAttributes(app, "AXHidden", "AXWindows")
+	if err != nil {
+		return state, err
 	}
-	if code != 0 || hidden == 0 {
-		return state, fmt.Errorf("AXHidden query returned %d", code)
-	}
-	if api.cfGetTypeID(hidden) != api.cfBooleanTypeID() {
+	defer api.cfRelease(values)
+	hidden, windows := api.cfArrayValue(values, 0), api.cfArrayValue(values, 1)
+	if hidden == 0 || windows == 0 || api.cfGetTypeID(hidden) != api.cfBooleanTypeID() {
 		return state, ErrUnavailable
 	}
 	state.Hidden = api.cfBooleanValue(hidden) != 0
-	windows, code := api.copyAttribute(app, "AXWindows")
-	if windows != 0 {
-		defer api.cfRelease(windows)
-	}
-	if code != 0 || windows == 0 {
-		return state, fmt.Errorf("AXWindows query returned %d", code)
-	}
 	if api.cfGetTypeID(windows) != api.cfArrayTypeID() {
 		return state, ErrUnavailable
 	}

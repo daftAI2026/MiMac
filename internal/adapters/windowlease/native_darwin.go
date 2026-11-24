@@ -289,7 +289,7 @@ func (api *presentationNativeAPI) newString(value string) (uintptr, error) {
 	return ref, nil
 }
 
-func (api *presentationNativeAPI) windowRecords(options, relative uint32) ([]Window, error) {
+func (api *presentationNativeAPI) windowRecords(pid int32, options, relative uint32) ([]Window, error) {
 	list := api.windowList(options, relative)
 	if list == 0 {
 		return nil, ErrUnavailable
@@ -299,17 +299,20 @@ func (api *presentationNativeAPI) windowRecords(options, relative uint32) ([]Win
 	if count < 0 || count > presentationMaxWindowCount {
 		return nil, ErrUnavailable
 	}
-	records := make([]Window, 0, int(count))
+	records := make([]Window, 0, 2)
 	for index := int64(0); index < count; index++ {
 		entry := api.cfArrayValue(list, index)
 		if entry == 0 {
 			continue
 		}
-		number := api.numberValue(api.cfDictionaryGet(entry, api.keyWindowNumber))
 		owner := api.numberValue(api.cfDictionaryGet(entry, api.keyWindowOwnerPID))
+		if owner != int64(pid) {
+			continue
+		}
+		number := api.numberValue(api.cfDictionaryGet(entry, api.keyWindowNumber))
 		layer := api.numberValue(api.cfDictionaryGet(entry, api.keyWindowLayer))
 		bounds := api.cfDictionaryGet(entry, api.keyWindowBounds)
-		if number <= 0 || number > int64(^uint32(0)) || owner <= 0 || owner > int64(^uint32(0)) || bounds == 0 {
+		if number <= 0 || number > int64(^uint32(0)) || bounds == 0 {
 			continue
 		}
 		var frame Rect
@@ -342,7 +345,7 @@ func (api *presentationNativeAPI) numberValue(value uintptr) int64 {
 }
 
 func (probe darwinPresentationProbe) WindowNumbers(pid int32) (map[uint32]struct{}, error) {
-	records, err := probe.api.windowRecords(presentationOnScreenWindows, 0)
+	records, err := probe.api.windowRecords(pid, presentationOnScreenWindows, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +359,7 @@ func (probe darwinPresentationProbe) WindowNumbers(pid int32) (map[uint32]struct
 }
 
 func (probe darwinPresentationProbe) Windows(pid int32, newerThan map[uint32]struct{}) ([]Window, error) {
-	records, err := probe.api.windowRecords(presentationOnScreenWindows, 0)
+	records, err := probe.api.windowRecords(pid, presentationOnScreenWindows, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -440,27 +443,35 @@ func (api *presentationNativeAPI) matchAXWindow(pid int32, frame Rect) (axWindow
 		if api.axGetPID(element, &elementPID) != 0 || elementPID != pid {
 			continue
 		}
-		role := api.stringAttribute(element, "AXRole")
-		position, positionOK := api.pointAttribute(element, "AXPosition")
-		size, sizeOK := api.sizeAttribute(element, "AXSize")
+		values, err := api.copyAttributes(element, "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXIdentifier", "AXDescription", "AXChildren")
+		if err != nil {
+			if result.Element != 0 {
+				api.cfRelease(result.Element)
+			}
+			return axWindowMatch{}, err
+		}
+		position, positionOK := api.pointValue(api.cfArrayValue(values, 2))
+		size, sizeOK := api.sizeValue(api.cfArrayValue(values, 3))
 		if !positionOK || !sizeOK || !sameRect(Rect{Origin: position, Size: size}, frame) {
+			api.cfRelease(values)
 			continue
 		}
 		result.Count++
 		if result.Count != 1 {
+			api.cfRelease(values)
 			if result.Element != 0 {
 				api.cfRelease(result.Element)
 				result.Element = 0
 			}
 			continue
 		}
-		result.Role = role
-		result.Subrole = api.stringAttribute(element, "AXSubrole")
-		result.Position = position
-		result.Size = size
-		result.IdentifierEmpty, result.IdentifierKnown = api.stringAttributeEmpty(element, "AXIdentifier")
-		result.DescriptionEmpty, result.DescriptionKnown = api.stringAttributeEmpty(element, "AXDescription")
-		result.ChildRoles, result.ChildrenKnown = api.childRoles(element)
+		result.Role = api.stringValue(api.cfArrayValue(values, 0))
+		result.Subrole = api.stringValue(api.cfArrayValue(values, 1))
+		result.Position, result.Size = position, size
+		result.IdentifierEmpty, result.IdentifierKnown = api.optionalStringEmpty(api.cfArrayValue(values, 4))
+		result.DescriptionEmpty, result.DescriptionKnown = api.optionalStringEmpty(api.cfArrayValue(values, 5))
+		result.ChildRoles, result.ChildrenKnown = api.childRolesInArray(api.cfArrayValue(values, 6))
+		api.cfRelease(values)
 		var settable uint8
 		if api.axIsSettable(element, api.attributes["AXPosition"], &settable) == 0 {
 			result.PositionSettable = settable != 0
@@ -516,31 +527,23 @@ func (api *presentationNativeAPI) stringValue(value uintptr) string {
 	return ""
 }
 
-// stringAttributeEmpty checks only whether an AX string attribute is absent or
-// has length zero. It never copies AXDescription content into Go memory.
-func (api *presentationNativeAPI) stringAttributeEmpty(element uintptr, name string) (bool, bool) {
-	value, code := api.copyAttribute(element, name)
-	if code == -25205 || code == -25212 { // attribute unsupported or no value
-		if value != 0 {
-			api.cfRelease(value)
+// Unsupported or absent attributes are known empty; other AX errors are unknown.
+func (api *presentationNativeAPI) optionalStringEmpty(value uintptr) (bool, bool) {
+	if value == 0 {
+		return false, false
+	}
+	kind := api.cfGetTypeID(value)
+	if kind == api.cfStringTypeID() {
+		return api.cfStringLength(value) == 0, true
+	}
+	const axErrorType = 5 // kAXValueAXErrorType
+	if kind == api.axValueGetTypeID() && api.axValueGetType(value) == axErrorType {
+		var code int32
+		if api.axValueGetValue(value, axErrorType, unsafe.Pointer(&code)) != 0 && (code == -25205 || code == -25212) {
+			return true, true
 		}
-		return true, true
 	}
-	if code != 0 || value == 0 {
-		if value != 0 {
-			api.cfRelease(value)
-		}
-		return false, false
-	}
-	defer api.cfRelease(value)
-	if api.cfGetTypeID(value) != api.cfStringTypeID() {
-		return false, false
-	}
-	length := api.cfStringLength(value)
-	if length < 0 || length > 4096 {
-		return false, false
-	}
-	return length == 0, true
+	return false, false
 }
 
 func (api *presentationNativeAPI) pointAttribute(element uintptr, name string) (Point, bool) {
@@ -593,30 +596,11 @@ func (api *presentationNativeAPI) sizeValue(value uintptr) (Size, bool) {
 // already-retained element. Full AX structure classification happens only
 // during initial candidate recognition.
 func (api *presentationNativeAPI) geometryAttributes(element uintptr) (Point, Size, bool) {
-	positionAttribute := api.attributes["AXPosition"]
-	sizeAttribute := api.attributes["AXSize"]
-	if element == 0 || positionAttribute == 0 || sizeAttribute == 0 || api.cfArrayCreate == nil || api.axCopyMultiple == nil {
-		return Point{}, Size{}, false
-	}
-	attributes := []uintptr{positionAttribute, sizeAttribute}
-	attributeArray := api.cfArrayCreate(0, &attributes[0], int64(len(attributes)), 0)
-	runtime.KeepAlive(attributes)
-	if attributeArray == 0 {
-		return Point{}, Size{}, false
-	}
-	defer api.cfRelease(attributeArray)
-	var values uintptr
-	code := api.axCopyMultiple(element, attributeArray, 0, &values)
-	if code != 0 || values == 0 || api.cfGetTypeID(values) != api.cfArrayTypeID() {
-		if values != 0 {
-			api.cfRelease(values)
-		}
+	values, err := api.copyAttributes(element, "AXPosition", "AXSize")
+	if err != nil {
 		return Point{}, Size{}, false
 	}
 	defer api.cfRelease(values)
-	if api.cfArrayCount(values) != int64(len(attributes)) {
-		return Point{}, Size{}, false
-	}
 	positionValue := api.cfArrayValue(values, 0)
 	sizeValue := api.cfArrayValue(values, 1)
 	position, positionOK := api.pointValue(positionValue)
@@ -624,15 +608,31 @@ func (api *presentationNativeAPI) geometryAttributes(element uintptr) (Point, Si
 	return position, size, positionOK && sizeOK
 }
 
-// childRoles distinguishes an accessible empty child list from an unavailable
-// AXChildren query without reading child text values.
-func (api *presentationNativeAPI) childRoles(window uintptr) ([]string, bool) {
-	children, code := api.copyAttribute(window, "AXChildren")
-	if children == 0 {
-		return nil, false
+// copyAttributes returns a retained array with one value or AX error per key.
+func (api *presentationNativeAPI) copyAttributes(element uintptr, names ...string) (uintptr, error) {
+	attributes := make([]uintptr, len(names))
+	for i, name := range names {
+		attributes[i] = api.attributes[name]
 	}
-	defer api.cfRelease(children)
-	if code != 0 || api.cfGetTypeID(children) != api.cfArrayTypeID() {
+	keys := api.cfArrayCreate(0, &attributes[0], int64(len(attributes)), 0)
+	runtime.KeepAlive(attributes)
+	if keys == 0 {
+		return 0, ErrUnavailable
+	}
+	defer api.cfRelease(keys)
+	var values uintptr
+	code := api.axCopyMultiple(element, keys, 0, &values)
+	if code != 0 || values == 0 || api.cfGetTypeID(values) != api.cfArrayTypeID() || api.cfArrayCount(values) != int64(len(attributes)) {
+		if values != 0 {
+			api.cfRelease(values)
+		}
+		return 0, fmt.Errorf("%w: AX attribute batch returned %d", ErrUnavailable, code)
+	}
+	return values, nil
+}
+
+func (api *presentationNativeAPI) childRolesInArray(children uintptr) ([]string, bool) {
+	if children == 0 || api.cfGetTypeID(children) != api.cfArrayTypeID() {
 		return nil, false
 	}
 	count := api.cfArrayCount(children)
@@ -651,7 +651,7 @@ func (api *presentationNativeAPI) childRoles(window uintptr) ([]string, bool) {
 }
 
 func (probe darwinPresentationProbe) WindowByID(pid int32, id uint32) (Window, bool, error) {
-	records, err := probe.api.windowRecords(presentationIncludeWindow, id)
+	records, err := probe.api.windowRecords(pid, presentationIncludeWindow, id)
 	if err != nil {
 		return Window{}, false, err
 	}
