@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/doubao"
+	"mimac.local/mimac/internal/adapters/windowlease"
 	"mimac.local/mimac/internal/bridge"
 )
 
@@ -25,24 +26,22 @@ type voicePromptTarget interface {
 	voicePromptTarget() (bundleID string, pid int32, executableName string, ok bool)
 }
 
-type doubaoVoicePromptSuppressor struct {
-	baseline *doubao.RecordingBarBaseline
+type suppressRecordingWindow func(context.Context) (*windowlease.Lease, windowlease.Outcome, error)
+
+func (suppress suppressRecordingWindow) Suppress(ctx context.Context) (voicePromptLease, string, error) {
+	lease, outcome, err := suppress(ctx)
+	if lease == nil {
+		return nil, string(outcome), err
+	}
+	return lease, string(outcome), err
 }
 
-func newDoubaoVoicePromptSuppressor(pid int32, expectedExecutable string) voicePromptSuppressor {
-	baseline := doubao.CaptureRecordingBarBaseline(pid, expectedExecutable)
+func newDoubaoVoicePromptSuppressor(pid int32, executable string) voicePromptSuppressor {
+	baseline := doubao.CaptureRecordingBarBaseline(pid, executable)
 	if baseline == nil {
 		return nil
 	}
-	return doubaoVoicePromptSuppressor{baseline: baseline}
-}
-
-func (s doubaoVoicePromptSuppressor) Suppress(ctx context.Context) (voicePromptLease, string, error) {
-	if s.baseline == nil {
-		return nil, string(doubao.OutcomeUnavailable), doubao.ErrPresentationUnavailable
-	}
-	lease, outcome, err := s.baseline.Suppress(ctx)
-	return lease, string(outcome), err
+	return suppressRecordingWindow(baseline.Suppress)
 }
 
 // voicePromptPresentation owns one pending baseline and any still-restoring
@@ -55,6 +54,7 @@ type voicePromptPresentation struct {
 type voicePromptPresentationJob struct {
 	token        bridge.SessionToken
 	cancel       context.CancelFunc
+	cancelSearch context.CancelFunc
 	sessionEnd   chan struct{}
 	done         chan struct{}
 	explicitStop bool
@@ -84,6 +84,12 @@ func (s *shell) prepareVoicePromptPresentation() {
 	for _, job := range a.jobs {
 		if job.explicitStop {
 			return // Wait for an explicitly requested immediate restore.
+		}
+		// Core has admitted a new press only after the previous session ended.
+		// Stop its remaining discovery window before this press posts its key.
+		s.finishVoicePromptPresentation(job.token)
+		if job.cancelSearch != nil {
+			job.cancelSearch()
 		}
 	}
 	a.baseline = nil
@@ -143,6 +149,9 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 			// A stale lease can outlive a session ending. Let its owner wait for
 			// orderOut; never restore it merely because a new session appeared.
 			s.finishVoicePromptPresentation(token)
+			if job := a.jobs[token]; job != nil && job.cancelSearch != nil {
+				job.cancelSearch()
+			}
 		}
 	}
 	if _, exists := a.jobs[frame.Token]; exists {
@@ -156,29 +165,19 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	a.baseline = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	ended, done := make(chan struct{}), make(chan struct{})
-	job := &voicePromptPresentationJob{token: frame.Token, cancel: cancel, sessionEnd: ended, done: done}
+	searchCtx, cancelSearch := context.WithTimeout(ctx, 2*time.Second)
+	job := &voicePromptPresentationJob{
+		token: frame.Token, cancel: cancel, cancelSearch: cancelSearch,
+		sessionEnd: ended, done: done,
+	}
 	if a.jobs == nil {
 		a.jobs = make(map[bridge.SessionToken]*voicePromptPresentationJob)
 	}
 	a.jobs[frame.Token] = job
 	go func(job *voicePromptPresentationJob) {
 		defer close(done)
-		searchCtx, cancelSearch := context.WithTimeout(ctx, 2*time.Second)
-		searchStopped := make(chan struct{})
-		go func() {
-			defer close(searchStopped)
-			select {
-			case <-job.sessionEnd:
-				cancelSearch()
-			case <-ctx.Done():
-				cancelSearch()
-			case <-searchCtx.Done():
-				return
-			}
-		}()
 		lease, _, _ := baseline.Suppress(searchCtx)
-		cancelSearch()
-		<-searchStopped
+		job.cancelSearch()
 		if lease == nil {
 			return
 		}
@@ -226,9 +225,9 @@ func (s *shell) stopVoicePromptPresentation() {
 	}
 }
 
-// waitVoicePromptPresentationRestore is only used before the host exits or a
-// user explicitly disables suppression. It waits until no worker owns a native
-// window lease, instead of exiting while a conditional restore is pending.
+// waitVoicePromptPresentationRestore is reserved for app shutdown. Preference
+// changes cancel workers and let their immediate restores finish off-thread.
+// Shutdown joins so the host does not exit while a native window lease remains.
 func (s *shell) waitVoicePromptPresentationRestore() {
 	if s == nil {
 		return

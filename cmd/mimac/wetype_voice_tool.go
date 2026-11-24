@@ -8,13 +8,15 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
+const compatWeTypeBundleID = "com.tencent.inputmethod.wetype"
+
 // WeType prepares its input preference before device startup: changing it at
 // Fn-down can race its warm/recording graph handoff. Presses only verify the
 // preference. Device ownership, PCM delivery and retirement stay shared.
 func wetypeAudioRouteFactory(ctx context.Context, config audioRouteConfig) (liveAudioRoute, error) {
 	deps := defaultCompatAudioRouteDependencies()
 	executablePath := filepath.Join(config.AppPath, "Contents", "MacOS", "WeType")
-	deps = withCompatApplicationInspector(deps, "com.tencent.inputmethod.wetype", config.AppPath, executablePath)
+	deps = withCompatApplicationInspector(deps, compatWeTypeBundleID, config.AppPath, executablePath)
 	deps.readSelection = func(ctx context.Context, locator voicetools.Locator) (compatAudioSelection, error) {
 		uid, err := wetype.ReadPreferredMicrophoneUID(ctx, locator)
 		return compatAudioSelection{preferredUID: uid}, err
@@ -24,6 +26,14 @@ func wetypeAudioRouteFactory(ctx context.Context, config audioRouteConfig) (live
 	deps.verifySelection = wetype.VerifyMicrophoneSelection
 	return openLiveXiaomiRouteForTargetWithDependencies(ctx, config.Generation,
 		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
-		compatAudioRouteTarget{bundleID: "com.tencent.inputmethod.wetype", bundleName: "WeType.app", executableName: "WeType", name: "WeType"},
+		compatAudioRouteTarget{bundleID: compatWeTypeBundleID, bundleName: "WeType.app", executableName: "WeType", name: "WeType"},
 		executablePath, config.Locator, deps)
+}
+
+func newWeTypeVoicePromptSuppressor(pid int32, executable string) voicePromptSuppressor {
+	baseline := wetype.CaptureRecordingBarBaseline(pid, executable)
+	if baseline == nil {
+		return nil
+	}
+	return suppressRecordingWindow(baseline.Suppress)
 }

@@ -39,7 +39,7 @@ flowchart TD
     unsupported --> audio
     failure --> audio
 
-    vendor["厂商语音条接管"] -.-> future["未来：逐工具接入业务语义与前景状态"]
+    vendor["更多输入法的独占提示"] -.-> future["后续按各工具的实窗行为接入"]
     siri["完整 Siri 前景、personality / thinking 与频带语义"] -.-> future
 
     explicit["Core纯投影的录音与所有权；浮动适配器指定island"] --> nativeEdges["思考边与录音/控制权合取门分别观察；初始值不重放"]
@@ -61,6 +61,6 @@ flowchart TD
     caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]
     controls --> grouping["通用设置的语音提示区选择样式；点阵可选择位置"]
     controls --> exclusive["仅显示 MiMac 语音提示，由各工具按能力处理"]
-    exclusive --> externalBar["当前豆包桌面适配器"] --> baseline["按下前记录豆包可见窗；在本次 MiMac 动画会话内匹配新出现的录音条"]
+    exclusive --> externalBar["已选工具：豆包或微信输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
     baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
     baseline -->|候选窗或匹配不确定| leave["保留原窗"]

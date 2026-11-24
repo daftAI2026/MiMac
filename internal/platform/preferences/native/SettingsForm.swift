@@ -180,12 +180,13 @@ private struct SettingsForm: View {
                             .disabled(!(state.LiveTextSupported ?? true))
                     }
                     Toggle("仅显示 MiMac 语音提示", isOn: toggle(state.OnlyShowMiMacVoicePrompt, kind: 9))
+                        .id(state.OnlyShowMiMacVoicePrompt)
                         .accessibilityIdentifier("voice-prompt-suppression-row")
                 } header: {
                     Text("实验室").font(.system(size: state.BodySize, weight: .semibold))
                 } footer: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("目前仅支持豆包输入法；跟随语音工具时不生效。")
+                        Text("支持豆包输入法和微信输入法")
                             .font(.system(size: state.CaptionSize))
                             .accessibilityIdentifier("voice-prompt-suppression-status")
                         if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue,

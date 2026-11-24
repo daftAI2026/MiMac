@@ -159,6 +159,13 @@ func TestVoicePromptSettingOffCancelsWithoutBlockingAndQuitJoinsRestore(t *testi
 	lease := newVoicePromptTestLease()
 	gate := make(chan struct{})
 	lease.restoreGate = gate
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
 	suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), lease: lease}
 	s := newVoicePromptTestShell(t, func(int32, string) voicePromptSuppressor { return suppressor })
 	token := voicePromptTestToken(t, "test-source", 1)
@@ -205,8 +212,8 @@ func TestVoicePromptSuppressionIsRegisteredPerTool(t *testing.T) {
 	if doubaoTool == nil || doubaoTool.voicePromptSuppressor == nil || doubaoTool.voicePromptBundleID != compatDoubaoBundleID {
 		t.Fatal("verified Doubao adapter has no registered prompt suppressor")
 	}
-	if wetypeTool == nil || wetypeTool.voicePromptSuppressor != nil {
-		t.Fatal("unverified WeType adapter inherited the Doubao window suppressor")
+	if wetypeTool == nil || wetypeTool.voicePromptSuppressor == nil || wetypeTool.voicePromptBundleID != compatWeTypeBundleID || wetypeTool.voicePromptBundleID == doubaoTool.voicePromptBundleID {
+		t.Fatal("WeType needs its own registered recording-window identity")
 	}
 }
 
@@ -219,7 +226,7 @@ func newVoicePromptTestShell(t *testing.T, factory func(int32, string) voiceProm
 	s := &shell{
 		preferencesState: preferencesState{value: hostPreferences{
 			Version: preferencesVersion, VoicePresentation: voicePresentationDotBar,
-			OnlyShowMiMacVoicePrompt: true,
+			OnlyShowMiMacVoicePrompt: true, Appearance: "system",
 		}, path: filepath.Join(t.TempDir(), "preferences.json")},
 		voiceToolsState: voiceToolsState{tools: []*voiceTool{tool}, currentVoiceTool: tool.id},
 		voiceOverlay:    voiceOverlayState{mode: voicePresentationDotBar},

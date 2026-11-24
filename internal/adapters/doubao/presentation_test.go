@@ -5,7 +5,54 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"mimac.local/mimac/internal/adapters/windowlease"
 )
+
+// The fake probe and its legacy-shaped records stay in this test file. Product
+// code now operates directly on the shared windowlease contract.
+type presentationPoint struct{ x, y float64 }
+type presentationSize struct{ width, height float64 }
+type presentationRect struct {
+	origin presentationPoint
+	size   presentationSize
+}
+type presentationWindow struct {
+	id                   uint32
+	ownerPID             int32
+	layer                int32
+	frame                presentationRect
+	onScreen             bool
+	role                 string
+	subrole              string
+	element              uintptr
+	position             presentationPoint
+	size                 presentationSize
+	axMatchCount         int
+	positionSettable     bool
+	recordingBarChildren bool
+}
+type presentationProbe interface {
+	windowNumbers(pid int32) (map[uint32]struct{}, error)
+	windows(pid int32, newerThan map[uint32]struct{}) ([]presentationWindow, error)
+	windowByID(pid int32, id uint32) (presentationWindow, bool, error)
+	setPosition(element uintptr, point presentationPoint) error
+	position(element uintptr) (presentationPoint, error)
+	elementPID(element uintptr) (int32, error)
+	retain(element uintptr) uintptr
+	release(element uintptr)
+}
+
+func captureRecordingBarBaseline(pid int32, checkIdentity func() error, probe presentationProbe) (*RecordingBarBaseline, error) {
+	return captureRecordingBarBaselineWithProbe(pid, checkIdentity, testPresentationProbeAdapter{probe})
+}
+
+func suppressDoubaoForTest(baseline *RecordingBarBaseline, ctx context.Context, observeLimit, pollInterval, stableInterval time.Duration) (*Suppression, Outcome, error) {
+	if baseline == nil || baseline.inner == nil {
+		return nil, OutcomeUnavailable, ErrPresentationUnavailable
+	}
+	return baseline.inner.Suppress(ctx, doubaoRecordingWindow, observeLimit, pollInterval, stableInterval)
+}
 
 func TestRecordingBarPresentationSuppressesOnlyOneNewSemanticWindow(t *testing.T) {
 	const pid = int32(42)
@@ -35,7 +82,7 @@ func TestRecordingBarPresentationSuppressesOnlyOneNewSemanticWindow(t *testing.T
 		positionSettable: true, recordingBarChildren: true,
 	})
 
-	suppression, outcome, err := baseline.suppress(context.Background(), time.Second, time.Millisecond, 0)
+	suppression, outcome, err := suppressDoubaoForTest(baseline, context.Background(), time.Second, time.Millisecond, 0)
 	if err != nil || outcome != OutcomeSuppressed || suppression == nil {
 		t.Fatalf("Suppress() = (%v, %q, %v), want a lease and suppression", suppression != nil, outcome, err)
 	}
@@ -87,7 +134,7 @@ func TestRecordingBarPresentationExcludesExistingAndAmbiguousWindows(t *testing.
 			for _, window := range test.after {
 				probe.add(window)
 			}
-			_, outcome, err := baseline.suppress(context.Background(), time.Millisecond, time.Millisecond, 0)
+			_, outcome, err := suppressDoubaoForTest(baseline, context.Background(), time.Millisecond, time.Millisecond, 0)
 			if !errors.Is(err, ErrPresentationAmbiguous) && test.want == OutcomeAmbiguous {
 				t.Fatalf("Suppress() error = %v, want ambiguity", err)
 			}
@@ -133,7 +180,7 @@ func TestRecordingBarPresentationRequiresVerifiedSemanticMarkerAndStructure(t *t
 				t.Fatal(err)
 			}
 			probe.add(window)
-			lease, outcome, err := baseline.suppress(context.Background(), time.Millisecond, time.Millisecond, 0)
+			lease, outcome, err := suppressDoubaoForTest(baseline, context.Background(), time.Millisecond, time.Millisecond, 0)
 			if err != nil || outcome != OutcomeUnchanged || lease != nil {
 				t.Fatalf("Suppress() = (lease:%v, outcome:%q, err:%v), want unchanged", lease != nil, outcome, err)
 			}
@@ -198,7 +245,7 @@ func TestRecordingBarPresentationRestoreHonorsMoveIdentityAndCancellation(t *tes
 			}
 			window := testRecordingWindow(11, pid, presentationPoint{x: 110, y: 120}, true)
 			probe.add(window)
-			lease, outcome, err := baseline.suppress(context.Background(), time.Second, time.Millisecond, 0)
+			lease, outcome, err := suppressDoubaoForTest(baseline, context.Background(), time.Second, time.Millisecond, 0)
 			if err != nil || outcome != OutcomeSuppressed || lease == nil {
 				t.Fatalf("Suppress() = (%v, %q, %v), want suppressed lease", lease != nil, outcome, err)
 			}
@@ -234,7 +281,7 @@ func TestRecordingBarPresentationCancellationDoesNotMutateLateWindow(t *testing.
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	lease, outcome, err := baseline.suppress(ctx, time.Second, time.Millisecond, 0)
+	lease, outcome, err := suppressDoubaoForTest(baseline, ctx, time.Second, time.Millisecond, 0)
 	if !errors.Is(err, context.Canceled) || outcome != OutcomeCancelled || lease != nil {
 		t.Fatalf("Suppress(cancelled ctx) = (%v, %q, %v), want cancelled and no lease", lease != nil, outcome, err)
 	}
@@ -252,7 +299,7 @@ func TestEndedSessionRestoresOnlyAfterWindowOrdersOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe.add(window)
-	lease, _, err := baseline.suppress(context.Background(), time.Second, time.Millisecond, 0)
+	lease, _, err := suppressDoubaoForTest(baseline, context.Background(), time.Second, time.Millisecond, 0)
 	if err != nil || lease == nil {
 		t.Fatal(err)
 	}
@@ -261,7 +308,7 @@ func TestEndedSessionRestoresOnlyAfterWindowOrdersOut(t *testing.T) {
 	probe.lookupHook = func() {
 		count++
 		if count == 1 {
-			checkedWhileVisible = probe.positionOf(window.element) == lease.parked
+			checkedWhileVisible = probe.positionOf(window.element) == presentationPoint{x: -1000000, y: -1000000}
 			return
 		}
 		current := probe.records[window.id]
@@ -416,3 +463,57 @@ func (p *fakePresentationProbe) release(element uintptr) {
 func (p *fakePresentationProbe) counts() fakePresentationCounts { return p.countsValue }
 
 var _ presentationProbe = (*fakePresentationProbe)(nil)
+
+type testPresentationProbeAdapter struct{ probe presentationProbe }
+
+func (p testPresentationProbeAdapter) WindowNumbers(pid int32) (map[uint32]struct{}, error) {
+	return p.probe.windowNumbers(pid)
+}
+func (p testPresentationProbeAdapter) Windows(pid int32, newerThan map[uint32]struct{}) ([]windowlease.Window, error) {
+	windows, err := p.probe.windows(pid, newerThan)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]windowlease.Window, 0, len(windows))
+	for _, window := range windows {
+		result = append(result, toSharedPresentationWindow(window))
+	}
+	return result, nil
+}
+func (p testPresentationProbeAdapter) WindowByID(pid int32, id uint32) (windowlease.Window, bool, error) {
+	window, found, err := p.probe.windowByID(pid, id)
+	return toSharedPresentationWindow(window), found, err
+}
+func (p testPresentationProbeAdapter) SetPosition(element uintptr, point windowlease.Point) error {
+	return p.probe.setPosition(element, presentationPoint{x: point.X, y: point.Y})
+}
+func (p testPresentationProbeAdapter) Position(element uintptr) (windowlease.Point, error) {
+	point, err := p.probe.position(element)
+	return windowlease.Point{X: point.x, Y: point.y}, err
+}
+func (p testPresentationProbeAdapter) ElementPID(element uintptr) (int32, error) {
+	return p.probe.elementPID(element)
+}
+func (p testPresentationProbeAdapter) Retain(element uintptr) uintptr { return p.probe.retain(element) }
+func (p testPresentationProbeAdapter) Release(element uintptr)        { p.probe.release(element) }
+
+func toSharedPresentationWindow(window presentationWindow) windowlease.Window {
+	var children []string
+	if window.recordingBarChildren {
+		children = []string{"AXStaticText", "AXStaticText"}
+	}
+	return windowlease.Window{
+		ID: window.id, OwnerPID: window.ownerPID, Layer: window.layer,
+		Frame: windowlease.Rect{
+			Origin: windowlease.Point{X: window.frame.origin.x, Y: window.frame.origin.y},
+			Size:   windowlease.Size{Width: window.frame.size.width, Height: window.frame.size.height},
+		},
+		OnScreen: window.onScreen, Role: window.role, Subrole: window.subrole, Element: window.element,
+		Position:     windowlease.Point{X: window.position.x, Y: window.position.y},
+		Size:         windowlease.Size{Width: window.size.width, Height: window.size.height},
+		AXMatchCount: window.axMatchCount, PositionSettable: window.positionSettable,
+		ChildrenKnown: window.recordingBarChildren, ChildRoles: children,
+	}
+}
+
+var _ windowlease.Probe = testPresentationProbeAdapter{}
