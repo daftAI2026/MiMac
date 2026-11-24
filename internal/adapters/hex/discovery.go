@@ -58,22 +58,38 @@ type Discovery struct {
 
 // DiscoveryPath returns the documented macOS Hex local API discovery path.
 func DiscoveryPath(home string) string {
-	return filepath.Join(home, filepath.FromSlash(localAPIDataFolder), localAPIFile)
+	return DiscoveryPathForBundleIdentifier(home, bundleIdentifier)
+}
+
+// DiscoveryPathForBundleIdentifier returns the documented application-support
+// path for an official stable or test build. Unknown identities have no path.
+func DiscoveryPathForBundleIdentifier(home, identifier string) string {
+	folder, ok := discoveryDataBundle(identifier)
+	if !ok || home == "" {
+		return ""
+	}
+	return filepath.Join(home, filepath.FromSlash(folder), localAPIFile)
 }
 
 // LoadDiscovery reads and validates the exact user-local discovery document.
 // It never searches, starts, or opens the Hex app.
 func LoadDiscovery(ctx context.Context, home string) (Discovery, string, error) {
+	return LoadDiscoveryForBundleIdentifier(ctx, home, bundleIdentifier)
+}
+
+// LoadDiscoveryForBundleIdentifier reads the exact local API document owned by
+// an official Hex app identity. Stable and test builds use separate data roots.
+func LoadDiscoveryForBundleIdentifier(ctx context.Context, home, identifier string) (Discovery, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return Discovery{}, "", err
 	}
-	if home == "" {
+	if home == "" || !isSupportedBundleIdentifier(identifier) {
 		return Discovery{}, "", ErrInvalidDiscovery
 	}
-	path := DiscoveryPath(home)
+	path := DiscoveryPathForBundleIdentifier(home, identifier)
 	data, err := readOwnerDiscovery(ctx, path, maxDiscoveryBytes)
 	if err != nil {
 		return Discovery{}, path, err
@@ -103,8 +119,12 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		ctx = context.Background()
 	}
 	result := voicetools.Snapshot{State: voicetools.ReadError, Source: "hex-local-api"}
-	document, path, err := LoadDiscovery(ctx, locator.Home)
-	result.AppPath = path
+	bundle, bundleState, bundleErr := LocateApplication(ctx, locator)
+	if bundleErr != nil || bundleState != voicetools.Ready {
+		result.State = bundleState
+		return result
+	}
+	document, _, err := LoadDiscoveryForBundleIdentifier(ctx, locator.Home, bundle.Identifier)
 	if err != nil {
 		switch {
 		case errors.Is(err, voicetools.ErrFileMissing):
@@ -118,7 +138,7 @@ func Discover(ctx context.Context, locator voicetools.Locator) voicetools.Snapsh
 		}
 		return result
 	}
-	result.AppPath = discoveryAppPath(document)
+	result.AppPath = discoveryAppPathForBundle(document, bundle.Identifier)
 	result.Version = document.APIVersion
 	client := newClient(document, nil)
 	probeCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
@@ -171,11 +191,19 @@ func NewClient(ctx context.Context, home string) (*Client, error) {
 // NewClientForAppPath additionally fences session setup to the exact Hex
 // process identity that the plugin last discovered.
 func NewClientForAppPath(ctx context.Context, home, expectedAppPath string) (*Client, error) {
-	document, _, err := LoadDiscovery(ctx, home)
+	identifier := bundleIdentifier
+	if expectedAppPath != "" {
+		var ok bool
+		identifier, ok = identifierForDiscoveryAppPath(expectedAppPath)
+		if !ok {
+			return nil, ErrInvalidDiscovery
+		}
+	}
+	document, _, err := LoadDiscoveryForBundleIdentifier(ctx, home, identifier)
 	if err != nil {
 		return nil, err
 	}
-	if expectedAppPath != "" && expectedAppPath != discoveryAppPath(document) {
+	if expectedAppPath != "" && expectedAppPath != discoveryAppPathForBundle(document, identifier) {
 		return nil, ErrInvalidDiscovery
 	}
 	return newClient(document, nil), nil

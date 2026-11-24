@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 const testToken = "hex_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestDiscoverReadsAuthenticatedCapabilitiesWithoutCreatingStream(t *testing.T) {
+	requireDarwinBundleTests(t)
 	var creates atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+testToken {
@@ -39,10 +41,15 @@ func TestDiscoverReadsAuthenticatedCapabilitiesWithoutCreatingStream(t *testing.
 	t.Cleanup(server.Close)
 
 	home := t.TempDir()
+	appRoot := t.TempDir()
+	writeHexTestBundle(t, filepath.Join(appRoot, bundleName), bundleIdentifier, "0.0.0-dev-742")
 	writeDiscovery(t, home, server)
-	snapshot := Discover(context.Background(), voicetools.Locator{Home: home})
+	snapshot := Discover(context.Background(), voicetools.Locator{Home: home, ApplicationDirs: []string{appRoot}})
 	if snapshot.State != voicetools.Ready || snapshot.Source != "hex-local-api" || snapshot.Version != apiVersion {
 		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	if snapshot.AppPath != discoveryAppPath(Discovery{Port: uint16(server.Listener.Addr().(*net.TCPAddr).Port), PID: 123}) {
+		t.Fatalf("snapshot service identity = %q", snapshot.AppPath)
 	}
 	if creates.Load() != 0 {
 		t.Fatal("read-only discovery reserved the external stream slot")
@@ -50,18 +57,66 @@ func TestDiscoverReadsAuthenticatedCapabilitiesWithoutCreatingStream(t *testing.
 }
 
 func TestDiscoverReportsUnsupportedAndNotRunningStates(t *testing.T) {
+	requireDarwinBundleTests(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"streams":false}`))
 	}))
 	t.Cleanup(server.Close)
 	home := t.TempDir()
+	appRoot := t.TempDir()
+	writeHexTestBundle(t, filepath.Join(appRoot, bundleName), bundleIdentifier, "2.4.0")
 	writeDiscovery(t, home, server)
-	if got := Discover(context.Background(), voicetools.Locator{Home: home}).State; got != voicetools.Unsupported {
+	locator := voicetools.Locator{Home: home, ApplicationDirs: []string{appRoot}}
+	if got := Discover(context.Background(), locator).State; got != voicetools.Unsupported {
 		t.Fatalf("streams-disabled state = %q", got)
 	}
-	if got := Discover(context.Background(), voicetools.Locator{Home: t.TempDir()}).State; got != voicetools.NotRunning {
+	offlineHome := t.TempDir()
+	if got := Discover(context.Background(), voicetools.Locator{Home: offlineHome, ApplicationDirs: []string{appRoot}}).State; got != voicetools.NotRunning {
 		t.Fatalf("missing discovery state = %q", got)
+	}
+	if got := Discover(context.Background(), voicetools.Locator{Home: t.TempDir(), ApplicationDirs: []string{t.TempDir()}}).State; got != voicetools.NotFound {
+		t.Fatalf("missing app state = %q, want not_found", got)
+	}
+}
+
+func TestTestBuildUsesSeparateDiscoveryPathAndServiceFingerprint(t *testing.T) {
+	requireDarwinBundleTests(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+testToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/capabilities" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"streams":true}`))
+	}))
+	t.Cleanup(server.Close)
+	home, appRoot := t.TempDir(), t.TempDir()
+	writeHexTestBundle(t, filepath.Join(appRoot, testBundleName), testBundleIdentifier, "0.0.0-dev-742")
+	writeDiscoveryForBundle(t, home, testBundleIdentifier, server)
+	if _, err := os.Stat(DiscoveryPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("test build unexpectedly used stable discovery path: %v", err)
+	}
+
+	snapshot := Discover(context.Background(), voicetools.Locator{Home: home, ApplicationDirs: []string{appRoot}})
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	wantIdentity := "hex-local-api:test:" + strconv.Itoa(port) + ":123"
+	if snapshot.State != voicetools.Ready || snapshot.AppPath != wantIdentity {
+		t.Fatalf("test build snapshot = %+v, want service identity %q", snapshot, wantIdentity)
+	}
+	client, err := NewClientForAppPath(context.Background(), home, snapshot.AppPath)
+	if err != nil {
+		t.Fatalf("client for test build service: %v", err)
+	}
+	if _, err := client.Capabilities(context.Background()); err != nil {
+		t.Fatalf("test build client did not use the test discovery file: %v", err)
+	}
+	if _, err := NewClientForAppPath(context.Background(), home, snapshot.AppPath+"-replaced"); err == nil {
+		t.Fatal("test build client accepted a replaced service identity")
 	}
 }
 
@@ -133,9 +188,13 @@ func TestClientSetupFencesDiscoveredHexProcess(t *testing.T) {
 }
 
 func writeDiscovery(t *testing.T, home string, server *httptest.Server) {
+	writeDiscoveryForBundle(t, home, bundleIdentifier, server)
+}
+
+func writeDiscoveryForBundle(t *testing.T, home, identifier string, server *httptest.Server) {
 	t.Helper()
 	port := server.Listener.Addr().(*net.TCPAddr).Port
-	path := DiscoveryPath(home)
+	path := DiscoveryPathForBundleIdentifier(home, identifier)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -156,5 +215,12 @@ func TestDiscoveryPathUsesHexApplicationSupportFolder(t *testing.T) {
 	}
 	if strings.Contains(got, "~") {
 		t.Fatalf("path should be expanded from the locator home: %q", got)
+	}
+	dev := DiscoveryPathForBundleIdentifier("/tmp/home", testBundleIdentifier)
+	if want := filepath.Join("/tmp/home", "Library", "Application Support", "hex-test", "local-api.json"); dev != want {
+		t.Fatalf("test discovery path = %q, want %q", dev, want)
+	}
+	if DiscoveryPathForBundleIdentifier("/tmp/home", "other.bundle") != "" {
+		t.Fatal("unknown app identity was assigned a discovery path")
 	}
 }
