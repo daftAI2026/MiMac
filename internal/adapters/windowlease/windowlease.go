@@ -344,7 +344,7 @@ func (s *Lease) ObserveWindow() (LeaseWindowObservation, error) {
 // ReparkIfReturnedToOriginal performs at most one WeType-compatible repair:
 // it writes the parked point only after the same window and process have
 // explicitly returned to the captured original point with unchanged geometry.
-func (s *Lease) ReparkIfReturnedToOriginal(observation LeaseWindowObservation) (bool, error) {
+func (s *Lease) ReparkIfReturnedToOriginal() (bool, error) {
 	if s == nil {
 		return false, ErrUnavailable
 	}
@@ -356,18 +356,11 @@ func (s *Lease) ReparkIfReturnedToOriginal(observation LeaseWindowObservation) (
 	if s.reparkAttempted {
 		return false, nil
 	}
-	if !observation.Found || !observation.Window.OnScreen || (!observation.AtOriginal && !observation.AtParked) || !observation.SameGeometry ||
-		observation.Window.ID != s.windowID || observation.Window.OwnerPID != s.pid {
-		return false, nil
-	}
-	if err := s.checkIdentity(); err != nil {
-		return false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
-	}
 	window, found, err := s.probe.WindowByID(s.pid, s.windowID)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
 	}
-	if !found || window.OwnerPID != s.pid {
+	if !found || window.OwnerPID != s.pid || window.ID != s.windowID {
 		return false, ErrWindowChanged
 	}
 	currentCGOriginIsKnown := samePoint(window.Frame.Origin, s.original) || samePoint(window.Frame.Origin, s.parked)

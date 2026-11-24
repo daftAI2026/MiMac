@@ -56,7 +56,9 @@ func restoreWeTypeAfterDismissal(ctx context.Context, lease *windowlease.Lease) 
 	if events == nil {
 		return lease.WaitForOrderOut(ctx)
 	}
-	fallback := time.NewTicker(200 * time.Millisecond)
+	// A window can be ordered out without destroying its AX element.
+	// The common move/destroy path wakes by notification.
+	fallback := time.NewTicker(2 * time.Second)
 	defer fallback.Stop()
 	for {
 		select {
@@ -68,17 +70,9 @@ func restoreWeTypeAfterDismissal(ctx context.Context, lease *windowlease.Lease) 
 			}
 			switch event {
 			case windowlease.WindowEventMoved:
-				observation, err := lease.ObserveWindow()
-				if err != nil {
+				// AX can move before the compositor updates this window's frame.
+				if _, err := lease.ReparkIfReturnedToOriginal(); err != nil {
 					return lease.ReleaseWithoutRestore()
-				}
-				if observation.Found && observation.Window.OnScreen && observation.SameGeometry &&
-					(observation.AtOriginal || observation.AtParked) {
-					// A notification can lead CG by a display frame. Repark validates
-					// the exact AX element/position before writing in either case.
-					if _, err := lease.ReparkIfReturnedToOriginal(observation); err != nil {
-						return lease.ReleaseWithoutRestore()
-					}
 				}
 			case windowlease.WindowEventDestroyed:
 				// The tracked AX element is gone; retire it without querying a

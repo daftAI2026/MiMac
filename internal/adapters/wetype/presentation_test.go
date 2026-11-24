@@ -126,6 +126,7 @@ func TestWeTypeMovedEventReparksOnceAndDestroyedEventRetiresLease(t *testing.T) 
 	window := probe.windows[52574]
 	window.Position = windowlease.Point{X: 860, Y: 980}
 	probe.windows[52574] = window
+	queriesBeforeEnd := probe.windowQueries
 	driverDone := make(chan struct{})
 	go func() {
 		probe.events.events <- windowlease.WindowEventMoved
@@ -140,6 +141,9 @@ func TestWeTypeMovedEventReparksOnceAndDestroyedEventRetiresLease(t *testing.T) 
 		t.Fatalf("normal dismissal cleanup error = %v", err)
 	}
 	<-driverDone
+	if queries := probe.windowQueries - queriesBeforeEnd; queries != 1 {
+		t.Fatalf("window queries for a move followed by destruction = %d, want 1", queries)
+	}
 	if got := probe.windows[52574].Position; got != (windowlease.Point{X: -1000000, Y: -1000000}) {
 		t.Fatalf("repark position = %+v, want parked", got)
 	}
@@ -170,7 +174,7 @@ func TestWeTypeReparksWhenAXReturnsBeforeCGGeometryUpdates(t *testing.T) {
 	if err != nil || !observed.Found || !observed.AtParked || !observed.SameGeometry {
 		t.Fatalf("ObserveWindow() = (%+v, %v), want CG still parked with same geometry", observed, err)
 	}
-	reparked, err := lease.ReparkIfReturnedToOriginal(observed)
+	reparked, err := lease.ReparkIfReturnedToOriginal()
 	if err != nil || !reparked {
 		t.Fatalf("ReparkIfReturnedToOriginal() = (%v, %v), want a confirmed repark", reparked, err)
 	}
@@ -230,7 +234,7 @@ func TestWeTypeReparkLeavesUserMoveAndChangedGeometryAlone(t *testing.T) {
 			}
 			reparked := false
 			if observed.Found {
-				reparked, err = lease.ReparkIfReturnedToOriginal(observed)
+				reparked, err = lease.ReparkIfReturnedToOriginal()
 			}
 			if reparked || (test.name != "owner changed" && err != nil) {
 				t.Fatalf("ReparkIfReturnedToOriginal() = (%v, %v), want no write", reparked, err)
@@ -295,10 +299,11 @@ func testWeTypeWindow(id uint32, pid int32, width, height float64, childrenKnown
 }
 
 type recordingProbe struct {
-	windows     map[uint32]windowlease.Window
-	writes      int
-	events      *recordingEventSource
-	writeSignal chan int
+	windowQueries int
+	windows       map[uint32]windowlease.Window
+	writes        int
+	events        *recordingEventSource
+	writeSignal   chan int
 }
 
 func newRecordingProbe() *recordingProbe {
@@ -329,6 +334,7 @@ func (p *recordingProbe) Windows(pid int32, newerThan map[uint32]struct{}) ([]wi
 }
 
 func (p *recordingProbe) WindowByID(pid int32, id uint32) (windowlease.Window, bool, error) {
+	p.windowQueries++
 	window, ok := p.windows[id]
 	return window, ok && window.OwnerPID == pid, nil
 }
