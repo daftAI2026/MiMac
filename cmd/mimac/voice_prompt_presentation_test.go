@@ -76,17 +76,30 @@ func (l *voicePromptTestLease) Restore(context.Context) error {
 }
 
 type voicePromptTestSuppressor struct {
-	called chan struct{}
-	lease  voicePromptLease
+	called   chan struct{}
+	lease    voicePromptLease
+	blockFor time.Duration
+	calls    atomic.Int32
 }
 
 func (s *voicePromptTestSuppressor) Suppress(ctx context.Context) (voicePromptLease, string, error) {
+	s.calls.Add(1)
 	select {
 	case <-ctx.Done():
 		return nil, "cancelled", ctx.Err()
 	default:
 	}
 	close(s.called)
+	if s.blockFor > 0 {
+		timer := time.NewTimer(s.blockFor)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, "cancelled", ctx.Err()
+		case <-timer.C:
+			return nil, "unchanged", nil
+		}
+	}
 	return s.lease, "suppressed", nil
 }
 

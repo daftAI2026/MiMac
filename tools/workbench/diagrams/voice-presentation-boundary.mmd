@@ -22,7 +22,7 @@ flowchart TD
     frame --> enabled
     enabled -->|否| hidden["关闭 MiMac 面板和频谱分析"]
     hidden --> toolDisplay["语音工具自行决定是否显示原生提示"]
-    enabled -->|语音球| panel["MyGo Panel：ShowInactive、鼠标穿透、仅可见时 30 Hz"]
+    enabled -->|语音球| panel["MiMac 语音球：工作区底部居中，ShowInactive、鼠标穿透、仅可见时 30 Hz"]
     enabled -->|点阵语音条| dots["鼠标穿透、不抢键盘；读取当前会话去除直流偏置的 RMS"]
     dots --> placement["持久位置：顶部（默认）或底部；底部点阵在 Dock 上方保留 24 pt 间距"]
     placement --> motion["收音随音量；收尾变窄；确认交付或错误才显示终态"]
@@ -60,7 +60,9 @@ flowchart TD
     incoming["Apple 或支持临时结果的 Hex 模型：当前会话的文字"] --> caption
     caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]
     controls --> grouping["通用设置的语音提示区选择样式；点阵可选择位置"]
-    controls --> exclusive["仅显示 MiMac 语音提示，由各工具按能力处理"]
+    material --> localReady["本次会话的本地提示已显示"]
+    dots --> localReady
+    localReady --> exclusive["按当前偏好，由已选工具处理自己的录音条"]
     exclusive --> externalBar["已选工具：豆包或微信输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
     baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
     park -->|微信自行移回| moved["监听本次听写窗的移动通知；核对窗口与原坐标后移开"]

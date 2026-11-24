@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/dotscope"
@@ -104,6 +105,267 @@ func TestVoiceOverlayFailureDoesNotFailAudioOrRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	runHostTask(t, tasks)
+}
+
+func TestVoiceOverlayRenderFailureDoesNotStartTargetSuppression(t *testing.T) {
+	for _, mode := range []voicePresentationMode{voicePresentationMiMacSphere, voicePresentationDotBar} {
+		t.Run(string(mode), func(t *testing.T) {
+			s, tasks, _, _ := newSessionHostTest(t)
+			suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), blockFor: time.Second}
+			setupVoicePromptSessionTarget(t, s, mode, suppressor)
+			view := &fakeVoiceOverlay{updateErr: errors.New("local surface failed")}
+			s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+				return view, nil
+			}
+
+			press := beginHostVoice(t, s)
+			runHostTask(t, tasks)
+			if phase := s.coordinator.core.Snapshot().Session.Phase; phase != bridge.PhaseCapturing {
+				t.Fatalf("test did not reach the first capturing render: %v", phase)
+			}
+			s.syncVoiceOverlay()
+			if s.voiceOverlay.err == nil || view.closes != 1 {
+				t.Fatal("failed local surface was not retired")
+			}
+			if len(s.voiceOverlay.voicePrompt.jobs) != 0 || s.voiceOverlay.voicePrompt.baseline != nil {
+				t.Fatal("target suppression started before the first local render succeeded")
+			}
+			select {
+			case <-suppressor.called:
+				t.Fatal("target suppressor was called for a failed local surface")
+			default:
+			}
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks)
+		})
+	}
+}
+
+func TestVoiceOverlayRenderDoesNotWaitForTargetWindowDiscovery(t *testing.T) {
+	for _, mode := range []voicePresentationMode{voicePresentationMiMacSphere, voicePresentationDotBar} {
+		t.Run(string(mode), func(t *testing.T) {
+			s, tasks, _, _ := newSessionHostTest(t)
+			suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), blockFor: 800 * time.Millisecond}
+			setupVoicePromptSessionTarget(t, s, mode, suppressor)
+			view := &fakeVoiceOverlay{}
+			s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+				return view, nil
+			}
+
+			press := beginHostVoice(t, s)
+			s.syncVoiceOverlay() // The initial preparing frame makes the local surface visible.
+			if len(view.frames) != 1 || view.frames[0].Phase != bridge.PhasePreparing {
+				t.Fatalf("local surface was not shown during preparation: %+v", view.frames)
+			}
+			runHostTask(t, tasks)
+			s.syncVoiceOverlay()
+			waitForVoicePromptSignal(t, suppressor.called)
+			started := time.Now()
+			s.syncVoiceOverlay()
+			if elapsed := time.Since(started); elapsed >= suppressor.blockFor/2 {
+				t.Fatalf("local render waited for target-window discovery: %s", elapsed)
+			}
+			if len(view.frames) < 2 || view.frames[len(view.frames)-1].Phase != bridge.PhaseCapturing {
+				t.Fatalf("local surface did not update while target discovery was active: %+v", view.frames)
+			}
+
+			s.closeVoiceOverlay() // Cancels and joins the deliberately blocked lookup.
+			if !s.coordinator.core.Snapshot().HasSession {
+				t.Fatal("closing the local display ended the audio session")
+			}
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks)
+		})
+	}
+}
+
+func TestFollowToolKeepsNativePromptAndDoesNotCaptureBaseline(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	suppressor := &voicePromptTestSuppressor{called: make(chan struct{})}
+	setupVoicePromptSessionTarget(t, s, voicePresentationFollowTool, suppressor)
+	if s.voicePresentationActive() || s.voiceOverlay.voicePrompt.baseline != nil {
+		t.Fatal("follow-tool mode enabled a local surface or captured a suppression baseline")
+	}
+	press := beginHostVoice(t, s)
+	runHostTask(t, tasks)
+	s.syncVoiceOverlay()
+	select {
+	case <-suppressor.called:
+		t.Fatal("follow-tool mode suppressed the native input-method prompt")
+	default:
+	}
+	if !s.coordinator.core.Snapshot().HasSession {
+		t.Fatal("follow-tool display mode changed the voice session")
+	}
+	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	runHostTask(t, tasks)
+}
+
+func TestLocalPresentationStyleSwapKeepsTheSessionPromptLease(t *testing.T) {
+	for _, transition := range [][2]voicePresentationMode{
+		{voicePresentationMiMacSphere, voicePresentationDotBar},
+		{voicePresentationDotBar, voicePresentationMiMacSphere},
+	} {
+		name := string(transition[0]) + "-to-" + string(transition[1])
+		t.Run(name, func(t *testing.T) {
+			s, tasks, _, _ := newSessionHostTest(t)
+			lease := newVoicePromptTestLease()
+			suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), lease: lease}
+			setupVoicePromptSessionTarget(t, s, transition[0], suppressor)
+			var views []*fakeVoiceOverlay
+			s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+				view := &fakeVoiceOverlay{}
+				views = append(views, view)
+				return view, nil
+			}
+
+			press := beginHostVoice(t, s)
+			s.syncVoiceOverlay()
+			runHostTask(t, tasks)
+			s.syncVoiceOverlay()
+			waitForVoicePromptSignal(t, suppressor.called)
+			token := s.coordinator.core.Snapshot().Session.Token
+			job := s.voiceOverlay.voicePrompt.jobs[token]
+			if job == nil {
+				t.Fatal("capturing session did not own its target lease")
+			}
+
+			if err := s.applyVoicePresentationPreference(transition[1]); err != nil {
+				t.Fatal(err)
+			}
+			if !s.voicePresentationActive() || s.voiceOverlay.mode != transition[1] || len(views) != 2 || views[0].closes != 1 {
+				t.Fatal("local style replacement did not install the next display")
+			}
+			if s.voiceOverlay.voicePrompt.jobs[token] != job || job.explicitStop || suppressor.calls.Load() != 1 || lease.restoreCalls.Load() != 0 {
+				t.Fatal("local style replacement retired or duplicated the same session prompt lease")
+			}
+			if !s.coordinator.core.Snapshot().HasSession || s.coordinator.core.Snapshot().Session.Token != token {
+				t.Fatal("local style replacement changed the audio session")
+			}
+
+			s.finishVoicePromptPresentation(token)
+			waitForVoicePromptSignal(t, lease.dismissStarted)
+			close(lease.allowDismiss)
+			s.waitVoicePromptPresentationRestore()
+			if lease.dismissCalls.Load() != 1 || lease.restoreCalls.Load() != 0 {
+				t.Fatal("natural end did not preserve the lease's dismissal path")
+			}
+			s.closeVoiceOverlay()
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks)
+		})
+	}
+}
+
+func TestFailedLocalStyleReplacementRestoresTargetPrompt(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	lease := newVoicePromptTestLease()
+	suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), lease: lease}
+	setupVoicePromptSessionTarget(t, s, voicePresentationMiMacSphere, suppressor)
+	var views []*fakeVoiceOverlay
+	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+		view := &fakeVoiceOverlay{}
+		if len(views) == 1 {
+			view.updateErr = errors.New("replacement local surface failed")
+		}
+		views = append(views, view)
+		return view, nil
+	}
+
+	press := beginHostVoice(t, s)
+	s.syncVoiceOverlay()
+	runHostTask(t, tasks)
+	s.syncVoiceOverlay()
+	waitForVoicePromptSignal(t, suppressor.called)
+	token := s.coordinator.core.Snapshot().Session.Token
+	if err := s.applyVoicePresentationPreference(voicePresentationDotBar); err != nil {
+		t.Fatal(err)
+	}
+	waitForVoicePromptSignal(t, lease.restoreStarted)
+	if s.voiceOverlay.err == nil || s.voiceOverlay.view != nil || !s.voiceOverlay.voicePrompt.jobs[token].explicitStop {
+		t.Fatal("failed replacement did not retire the local view and restore the target prompt")
+	}
+	if !s.coordinator.core.Snapshot().HasSession || s.coordinator.core.Snapshot().Session.Token != token {
+		t.Fatal("local renderer failure changed the audio session")
+	}
+	s.closeVoiceOverlay()
+	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	runHostTask(t, tasks)
+}
+
+func TestSwitchingToFollowToolImmediatelyRestoresTargetPrompt(t *testing.T) {
+	s, tasks, _, _ := newSessionHostTest(t)
+	lease := newVoicePromptTestLease()
+	suppressor := &voicePromptTestSuppressor{called: make(chan struct{}), lease: lease}
+	setupVoicePromptSessionTarget(t, s, voicePresentationDotBar, suppressor)
+	s.voiceOverlay.open = func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error) {
+		return &fakeVoiceOverlay{}, nil
+	}
+
+	press := beginHostVoice(t, s)
+	s.syncVoiceOverlay()
+	runHostTask(t, tasks)
+	s.syncVoiceOverlay()
+	waitForVoicePromptSignal(t, suppressor.called)
+	token := s.coordinator.core.Snapshot().Session.Token
+	if err := s.applyVoicePresentationPreference(voicePresentationFollowTool); err != nil {
+		t.Fatal(err)
+	}
+	waitForVoicePromptSignal(t, lease.restoreStarted)
+	if s.voicePresentationActive() || !s.voiceOverlay.voicePrompt.jobs[token].explicitStop {
+		t.Fatal("follow-tool mode did not immediately retire local presentation ownership")
+	}
+	if suppressor.calls.Load() != 1 {
+		t.Fatal("follow-tool mode started a new native-prompt suppression")
+	}
+	s.closeVoiceOverlay()
+	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+		t.Fatal(err)
+	}
+	runHostTask(t, tasks)
+}
+
+func setupVoicePromptSessionTarget(t *testing.T, s *shell, mode voicePresentationMode, suppressor voicePromptSuppressor) {
+	t.Helper()
+	const toolID = "voice-doubao"
+	const bundleID = "test.voice.inputmethod"
+	tool := &voiceTool{
+		id: toolID, voicePromptBundleID: bundleID,
+		voicePromptSuppressor: func(int32, string) voicePromptSuppressor { return suppressor },
+	}
+	s.voiceToolsState = voiceToolsState{tools: []*voiceTool{tool}, currentVoiceTool: toolID}
+	s.liveAudio.toolID = toolID
+	s.liveAudio.appPath = "/Applications/DoubaoIme.app"
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+		return &voicePromptTestRoute{bundleID: bundleID, pid: 42, executable: "DoubaoIme"}, nil
+	})
+	waitForVoicePromptSignal(t, connection.Done())
+	s.liveAudio.connection = connection
+	t.Cleanup(func() {
+		s.stopVoicePromptPresentation()
+		s.waitVoicePromptPresentationRestore()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := connection.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	s.preferencesState.value = defaultHostPreferences()
+	s.preferencesState.value.VoicePresentation = mode
+	s.preferencesState.value.OnlyShowMiMacVoicePrompt = true
+	s.preferencesState.path = filepath.Join(t.TempDir(), "preferences.json")
+	s.applyVoicePresentationSelection()
+	s.prepareVoicePromptPresentation()
 }
 
 func TestVoiceOverlayCancelHidesAndCloseFailureRetainsOwner(t *testing.T) {

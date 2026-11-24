@@ -68,8 +68,20 @@ func (s *shell) applyVoicePresentationSelection() {
 	}
 	mode := s.preferencesState.value.VoicePresentation
 	if mode != s.voiceOverlay.mode {
-		// Retire the previous surface before opening the next on the same token.
-		if err := s.releaseVoiceOverlay(); err != nil {
+		// A healthy local-to-local swap keeps the already leased target prompt
+		// hidden for this same Core session. Other transitions retire that lease.
+		localToLocal := isLocalVoicePresentation(s.voiceOverlay.mode) && isLocalVoicePresentation(mode) &&
+			s.voicePresentationActive() && s.voiceOverlay.err == nil && !s.closing && !s.preferencesState.loadFailed
+		var err error
+		if localToLocal {
+			err = s.releaseVoiceOverlayView()
+		} else {
+			err = s.releaseVoiceOverlay()
+		}
+		if err != nil {
+			// A failed replacement cannot claim that the local surface still
+			// covers the target prompt.
+			s.stopVoicePromptPresentation()
 			s.recordVoiceOverlayError(err)
 			return
 		}
@@ -77,7 +89,7 @@ func (s *shell) applyVoicePresentationSelection() {
 		s.voiceOverlay.err = nil
 		s.report.VoiceOverlayError = ""
 	}
-	local := mode == voicePresentationMiMacSphere || mode == voicePresentationDotBar
+	local := isLocalVoicePresentation(mode)
 	if !local || s.preferencesState.loadFailed || s.closing {
 		s.stopVoicePresentation()
 		return
@@ -88,6 +100,10 @@ func (s *shell) applyVoicePresentationSelection() {
 		s.voiceOverlay.meter.setEnabled(s.voiceOverlay.err == nil && mode == voicePresentationMiMacSphere)
 	}
 	s.syncVoiceOverlay()
+}
+
+func isLocalVoicePresentation(mode voicePresentationMode) bool {
+	return mode == voicePresentationMiMacSphere || mode == voicePresentationDotBar
 }
 
 func (s *shell) stopVoicePresentation() {
@@ -180,8 +196,9 @@ func (s *shell) syncVoiceOverlay() {
 		return
 	}
 	frame := s.voiceOverlayFrameAt(time.Now())
-	s.syncVoicePromptPresentation(frame)
 	if !frame.Visible {
+		// Normal session end still belongs to the target presentation adapter.
+		s.syncVoicePromptPresentation(frame)
 		if state.view != nil {
 			if err := state.view.Hide(); err != nil {
 				s.failVoiceOverlay(err)
@@ -203,7 +220,12 @@ func (s *shell) syncVoiceOverlay() {
 	}
 	if err := state.view.Update(frame); err != nil {
 		s.failVoiceOverlay(err)
+		return
 	}
+	// Keep the target's recognition-window discovery independent from input
+	// delivery, and don't suppress its prompt unless the local surface for
+	// this same frame actually rendered successfully.
+	s.syncVoicePromptPresentation(frame)
 }
 
 // Report an explicit outcome only to renderers that can present it.
@@ -237,6 +259,10 @@ func (s *shell) recordVoiceOverlayError(err error) {
 
 func (s *shell) releaseVoiceOverlay() error {
 	s.stopVoicePromptPresentation()
+	return s.releaseVoiceOverlayView()
+}
+
+func (s *shell) releaseVoiceOverlayView() error {
 	s.endVoiceInterim()
 	s.voiceOverlay.interim.Clear()
 	view := s.voiceOverlay.view

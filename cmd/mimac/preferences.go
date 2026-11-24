@@ -334,14 +334,10 @@ func (s *shell) applyVoicePresentationPreference(mode voicePresentationMode) err
 		s.preferencesState.errorText = "语音提示选项无效"
 		return errors.New("unsupported voice presentation preference")
 	}
-	previous := s.preferencesState.value.VoicePresentation
 	next := s.preferencesState.value
 	next.VoicePresentation = mode
 	if err := s.savePreferences(next); err != nil {
 		return err
-	}
-	if previous != mode {
-		s.stopVoicePromptPresentation()
 	}
 	s.applyVoicePresentationSelection()
 	return nil
