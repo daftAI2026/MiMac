@@ -168,62 +168,78 @@ func TestAudioSessionHostCombinesCorePluginsAndPCM(t *testing.T) {
 }
 
 func TestLiveAudioRecoveryLatchRearmsOnlyAfterSuccessfulAudioDrain(t *testing.T) {
-	s, tasks, source, _ := newSessionHostTest(t)
-	route := newLiveAudioConnectionTestRoute()
-	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
-		return route, nil
-	})
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := connection.Close(ctx); err != nil {
-			t.Errorf("close test live route: %v", err)
-		}
-	})
-	select {
-	case <-connection.Done():
-	case <-time.After(time.Second):
-		t.Fatal("test live route did not start")
-	}
-	waitXiaomiRoute(t, connection.Ready)
-	s.liveAudio.connection = connection
-	s.liveAudio.recoveryAttempted = true
+	for name, policy := range map[string]bridge.EndPolicy{
+		"local": bridge.PolicyAudio, "hold": bridge.PolicyAfterDrain, "toggle": bridge.PolicyToggle,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, tasks, source, _ := newSessionHostTest(t)
+			route := newLiveAudioConnectionTestRoute()
+			connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+				return route, nil
+			})
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := connection.Close(ctx); err != nil {
+					t.Errorf("close test live route: %v", err)
+				}
+			})
+			select {
+			case <-connection.Done():
+			case <-time.After(time.Second):
+				t.Fatal("test live route did not start")
+			}
+			waitXiaomiRoute(t, connection.Ready)
+			s.liveAudio.connection = connection
+			s.liveAudio.recoveryAttempted = true
 
-	device, err := bridge.NewDevice("synthetic-source", 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.coordinator.step(bridge.Configure(bridge.NewAudioBinding())); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.coordinator.step(bridge.DeviceConnected(device)); err != nil {
-		t.Fatal(err)
-	}
-	s.liveAudio.generation = s.coordinator.core.Snapshot().Generation
-	if err := s.coordinator.step(bridge.RouteAvailable(true)); err != nil {
-		t.Fatal(err)
-	}
-	press, err := bridge.NewPressToken(device, "voice", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.coordinator.step(bridge.VoiceBegan(press)); err != nil {
-		t.Fatal(err)
-	}
-	runHostTask(t, tasks) // Prepared opens the Core gate, but is not a completed session.
-	waitHostSignal(t, source.reading)
-	if !s.liveAudio.recoveryAttempted {
-		t.Fatal("route readiness or SourcePrepared prematurely rearmed recovery")
-	}
-	if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
-		t.Fatal(err)
-	}
-	runHostTask(t, tasks) // Source EOF + local drain completes the actual audio session.
-	if snapshot := s.coordinator.core.Snapshot(); snapshot.HasSession {
-		t.Fatalf("audio session did not finish: %+v", snapshot)
-	}
-	if s.liveAudio.recoveryAttempted {
-		t.Fatal("successful local audio drain did not rearm one later recovery")
+			device, err := bridge.NewDevice("synthetic-source", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := bridge.NewAudioBinding()
+			if policy != bridge.PolicyAudio {
+				if err := s.coordinator.attachOutput(&routedEffectsKeySink{}); err != nil {
+					t.Fatal(err)
+				}
+				binding, err = bridge.NewBinding(policy, "RightCommand")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.coordinator.step(bridge.Configure(binding)); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.coordinator.step(bridge.DeviceConnected(device)); err != nil {
+				t.Fatal(err)
+			}
+			s.liveAudio.generation = s.coordinator.core.Snapshot().Generation
+			if err := s.coordinator.step(bridge.RouteAvailable(true)); err != nil {
+				t.Fatal(err)
+			}
+			press, err := bridge.NewPressToken(device, "voice", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.coordinator.step(bridge.VoiceBegan(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks) // Prepared opens the Core gate, but is not a completed session.
+			waitHostSignal(t, source.reading)
+			if !s.liveAudio.recoveryAttempted {
+				t.Fatal("route readiness or SourcePrepared prematurely rearmed recovery")
+			}
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			runHostTask(t, tasks) // Source EOF + local drain completes the actual audio session.
+			if snapshot := s.coordinator.core.Snapshot(); snapshot.HasSession {
+				t.Fatalf("audio session did not finish: %+v", snapshot)
+			}
+			if s.liveAudio.recoveryAttempted {
+				t.Fatal("successful audio drain did not rearm one later recovery")
+			}
+		})
 	}
 }
 

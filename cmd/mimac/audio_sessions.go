@@ -238,9 +238,14 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					return
 				}
 				s.logAudioCompletion(completion.Event, completion.CleanupFailed, completion.Err)
+				event, completionToken := bridge.AudioEventIdentity(completion.Event)
+				if completion.CleanupFailed {
+					event = "cleanup_failed"
+				}
+				traceAudioSession(completionToken.Device().Generation(), 0, completionToken.ID(), event, completion.Err)
 				before := s.coordinator.core.Snapshot()
 				successfulAudioDrain := completion.Err == nil && !completion.CleanupFailed && before.HasSession &&
-					before.Session.Phase == bridge.PhaseDraining && before.Session.Binding.Policy() == bridge.PolicyAudio &&
+					before.Session.Phase == bridge.PhaseDraining &&
 					completion.Event == bridge.SourceDrained(before.Session.Token)
 				var deliveryErr error
 				var attemptedText bool
@@ -278,9 +283,10 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					// successfully drained audio session proves that the rebuilt
 					// source worked; a later independent source failure gets one
 					// fresh recovery attempt.
-					if successfulAudioDrain && stepErr == nil && !after.HasSession && after.Generation == before.Generation &&
+					if s.liveAudio.recoveryAttempted && successfulAudioDrain && stepErr == nil && !after.HasSession && after.Generation == before.Generation &&
 						s.liveAudio.generation == before.Generation && connection.sourceFailure() == nil {
 						s.liveAudio.recoveryAttempted = false
+						traceAudioSession(before.Generation, 0, before.Session.Token.ID(), "source_recovery_rearmed", nil)
 					}
 					s.recoverFailedLiveAudio(connection)
 				}

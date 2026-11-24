@@ -297,7 +297,7 @@ func (r *Runtime) startReceiverWatch(s *resource, watch func(context.Context) er
 		if err == nil {
 			err = errReceiverWatchReturned
 		}
-		r.fail(s, err)
+		r.fail(s, atStage("receiver_watch", err))
 	}()
 	return watcher
 }
@@ -321,7 +321,7 @@ func (r *Runtime) stop(s *resource) {
 	}
 	if err := s.resources.Source.Stop(s.stopCtx); err != nil {
 		if s.ctx.Err() == nil {
-			r.fail(s, err)
+			r.fail(s, atStage("source_stop", err))
 		}
 		return
 	}
@@ -350,7 +350,7 @@ func (r *Runtime) armStopDeadlineLocked(s *resource, budget time.Duration) {
 		var completion Completion
 		claimed := false
 		if s.stopCtx == ctx && errors.Is(ctx.Err(), context.DeadlineExceeded) && !s.finished && !s.terminalSent && s.ctx.Err() == nil && s.cause == nil {
-			s.cause = context.DeadlineExceeded
+			s.cause = atStage("stop_deadline", context.DeadlineExceeded)
 			s.cancel()
 			completion, claimed = r.claimFailureLocked(s)
 		}
@@ -397,11 +397,12 @@ func (r *Runtime) run(s *resource) {
 	if err == nil && (resources.Source == nil || resources.Sink == nil || (resources.SampleRate != 8000 && resources.SampleRate != 16000)) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
 	}
+	err = atStage("prepare", err)
 	if s.ctx.Err() == nil && err == nil {
 		// The resources now belong to Runtime and have a valid negotiated PCM
 		// format. Consume an armed source before sink setup or receiver readiness
 		// can leave its bounded producer queue idle; the reader can only stage.
-		err = sourceHealth(resources.Source)
+		err = atStage("source_ready", sourceHealth(resources.Source))
 	}
 	var reader *startupReader
 	if s.ctx.Err() == nil && err == nil {
@@ -410,7 +411,7 @@ func (r *Runtime) run(s *resource) {
 	}
 	if s.ctx.Err() == nil && err == nil {
 		if sink, ok := resources.Sink.(SessionSink); ok {
-			err = sink.StartSession(s.ctx)
+			err = atStage("sink_start", sink.StartSession(s.ctx))
 		}
 	}
 	if s.ctx.Err() == nil && err == nil && resources.WaitReceiver != nil {
@@ -419,13 +420,13 @@ func (r *Runtime) run(s *resource) {
 		// long enough to open the gate and drain its captured tail.
 		readyCtx, cancelReady := context.WithTimeout(s.ctx, receiverWaitBudget)
 		err = resources.WaitReceiver(readyCtx)
-		err = errors.Join(err, readyCtx.Err())
+		err = atStage("receiver_wait", errors.Join(err, readyCtx.Err()))
 		cancelReady()
 	}
 	if s.ctx.Err() == nil && err == nil {
 		// Native callbacks can fault a pre-armed source while the receiver waits.
 		// Do not publish readiness for a source already known to have failed.
-		err = sourceHealth(resources.Source)
+		err = atStage("source_ready", sourceHealth(resources.Source))
 	}
 	var watcher *receiverWatch
 	if s.ctx.Err() == nil && err == nil {
@@ -436,7 +437,7 @@ func (r *Runtime) run(s *resource) {
 			if s.ctx.Err() == nil {
 				// A source can fault asynchronously while the Core gate is closed.
 				// Recheck it before the first staged sample can reach the sink.
-				err = sourceHealth(resources.Source)
+				err = atStage("source_ready", sourceHealth(resources.Source))
 				if err == nil {
 					reader.openDelivery()
 					err = r.copyPCM(s, reader, watcher)
@@ -503,14 +504,14 @@ func (r *Runtime) copyPCM(s *resource, reader *startupReader, watcher *receiverW
 				s.resources.Observer.Observe(pcm[:n], time.Now())
 			}
 			if err := writePCM(s.ctx, s.resources.Sink, pcm[:n]); err != nil {
-				return err
+				return atStage("sink_write", err)
 			}
 		}
 		if readErr == io.EOF {
 			return r.drainEOF(s, watcher)
 		}
 		if readErr != nil {
-			return readErr
+			return atStage("source_read", readErr)
 		}
 		if n == 0 {
 			return io.ErrNoProgress
@@ -541,7 +542,7 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 	stopCtx := s.stopCtx
 	r.mu.Unlock()
 	if err := s.resources.Sink.Drain(stopCtx); err != nil {
-		return err
+		return atStage("sink_drain", err)
 	}
 	if err := s.ctx.Err(); err != nil {
 		return err
@@ -551,7 +552,7 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 	if sink, ok := s.resources.Sink.(TranscriptSink); ok {
 		text, present, err := sink.Transcript()
 		if err != nil {
-			return err
+			return atStage("transcript", err)
 		}
 		if present {
 			completion.Transcript = &Transcript{Token: s.token, Text: text}

@@ -338,6 +338,6 @@ func (r *startupReader) finishFaultWithPCM(pcm []int16, err error) {
 	preGate, terminal := r.stage.finishFault(pcm, err)
 	r.result = terminal
 	if preGate {
-		r.runtime.fail(r.session, terminal)
+		r.runtime.fail(r.session, atStage("source_read", terminal))
 	}
 }

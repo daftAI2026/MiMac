@@ -192,6 +192,21 @@ type sourcePreparedEvent struct {
 }
 type sourceFailedEvent struct{ token SessionToken }
 type sourceDrainedEvent struct{ token SessionToken }
+
+// AudioEventIdentity returns the session carried by a completion even when a later press is active.
+func AudioEventIdentity(event Event) (string, SessionToken) {
+	switch e := event.(type) {
+	case sourcePreparedEvent:
+		return "prepared", e.token
+	case sourceDrainedEvent:
+		return "drained", e.token
+	case sourceFailedEvent:
+		return "failed", e.token
+	default:
+		return "", SessionToken{}
+	}
+}
+
 type timeoutEvent struct{ token SessionToken }
 type routeEvent struct{ available bool }
 type scopeEvent struct{ available bool }

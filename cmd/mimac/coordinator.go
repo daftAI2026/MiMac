@@ -125,7 +125,21 @@ func (d *deviceCoordinator) acceptWithRecorderIsolation(event devices.InputEvent
 			// any button that has no explicit ordinary-key mapping.
 			input = bridge.ObservedBegan(edge.Press)
 		}
-		eventErr = errors.Join(eventErr, d.step(input))
+		stepErr := d.step(input)
+		if !recording && edge.Press.PhysicalButtonID() == d.voiceButton {
+			state := d.core.Snapshot()
+			eventName := "press"
+			switch {
+			case edge.Kind == devices.EdgeUp:
+				eventName = "release"
+			case !state.HasSession:
+				eventName = "press_without_session"
+			case state.Session.Press != edge.Press:
+				eventName = "press_during_session"
+			}
+			traceAudioSession(edge.Press.Device().Generation(), edge.Press.PressID(), state.Session.Token.ID(), eventName, stepErr)
+		}
+		eventErr = errors.Join(eventErr, stepErr)
 	}
 	return true, eventErr
 }
@@ -187,26 +201,45 @@ func voiceAudioBindingForAction(plan bridge.ActionPlan) (bridge.Binding, error) 
 // keyboard ActionPlan. External tools keep their verified shortcut contract.
 func (d *deviceCoordinator) voiceInput(press bridge.PressToken) (bridge.Event, error) {
 	observed := bridge.ObservedBegan(press)
+	report := func(event string, err error) {
+		traceAudioSession(press.Device().Generation(), press.PressID(), 0, event, err)
+	}
 	if d.resolveLocalVoice != nil {
 		binding, selected, err := d.resolveLocalVoice()
 		if selected {
 			if err != nil {
+				report("local_binding_rejected", err)
 				return observed, err
 			}
 			if d.audio == nil {
+				report("local_audio_unavailable", nil)
 				return observed, nil
 			}
 			return d.audioInput(press, binding)
 		}
 	}
 	if d.voiceAudioBinding != nil {
-		if d.sink != nil && d.audio != nil && d.resolveVoiceAction != nil {
-			if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
-				if binding, err := d.voiceAudioBinding(plan); err == nil {
-					return d.audioInput(press, binding)
-				}
+		if d.sink == nil || d.audio == nil || d.resolveVoiceAction == nil {
+			report("audio_unavailable", nil)
+			return observed, nil
+		}
+		plan, err := d.resolveVoiceAction()
+		if err != nil {
+			report("action_unavailable", err)
+			return observed, nil
+		}
+		if d.preflightAction != nil {
+			if err := d.preflightAction(plan); err != nil {
+				report("action_preflight_rejected", err)
+				return observed, nil
 			}
 		}
+		binding, err := d.voiceAudioBinding(plan)
+		if err != nil {
+			report("audio_binding_unready", err)
+			return observed, nil
+		}
+		return d.audioInput(press, binding)
 	} else if d.sink != nil && d.resolveVoiceAction != nil {
 		if plan, err := d.resolveVoiceAction(); err == nil && d.actionMayStart(plan) {
 			return bridge.TargetActionBegan(press, plan), nil
@@ -221,6 +254,7 @@ func (d *deviceCoordinator) audioInput(press bridge.PressToken, binding bridge.B
 	}
 	if d.beforeAudioStart != nil && d.core.CanBeginVoice(press) {
 		if err := d.beforeAudioStart(); err != nil {
+			traceAudioSession(press.Device().Generation(), press.PressID(), 0, "route_preflight_rejected", err)
 			return bridge.ObservedBegan(press), err
 		}
 	}

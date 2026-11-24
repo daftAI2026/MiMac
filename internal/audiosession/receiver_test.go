@@ -113,7 +113,7 @@ func TestReceiverFailureClosesWithoutPCM(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion := waitCompletion(t, r)
-	if !errors.Is(completion.Err, fault) {
+	if !errors.Is(completion.Err, fault) || FailureStage(completion.Err) != "receiver_wait" {
 		t.Fatalf("failure lost: %+v", completion)
 	}
 	applySourceEffects(t, r, applyExpectedFailure(t, core, completion))
@@ -144,7 +144,7 @@ func TestReceiverDeadlineDoesNotTreatLateNilAsReady(t *testing.T) {
 	}
 	select {
 	case c := <-r.Completions():
-		if !errors.Is(c.Err, context.DeadlineExceeded) {
+		if !errors.Is(c.Err, context.DeadlineExceeded) || FailureStage(c.Err) != "receiver_wait" {
 			t.Fatalf("late nil became ready: %+v", c)
 		}
 	case <-time.After(4 * time.Second):
@@ -298,7 +298,7 @@ func TestReceiverWatchFailureCancelsBlockedReadWithoutSecondToggle(t *testing.T)
 
 	close(stopTarget)
 	failed := waitCompletion(t, r)
-	if !errors.Is(failed.Err, fault) {
+	if !errors.Is(failed.Err, fault) || FailureStage(failed.Err) != "receiver_watch" {
 		t.Fatalf("receiver watch failure was lost: %+v", failed)
 	}
 	effects, err := core.Step(failed.Event)

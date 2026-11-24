@@ -12,7 +12,7 @@ import (
 	"mimac.local/mimac/internal/platform/permissionguide"
 )
 
-const permissionGuideTraceMaxBytes = 1 << 20
+const privateTraceMaxBytes = 1 << 20
 
 type permissionGuideTraceEvent string
 
@@ -101,6 +101,11 @@ func permissionGuideTrace(event permissionGuideTraceEvent, id permissionGuideID,
 	if err != nil {
 		return
 	}
+	appendPrivateTrace(path, message)
+}
+
+// Callers serialize writes to each individual trace file.
+func appendPrivateTrace(path, message string) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return
@@ -110,7 +115,7 @@ func permissionGuideTrace(event permissionGuideTraceEvent, id permissionGuideID,
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 		return
 	}
-	if info.Size() >= permissionGuideTraceMaxBytes {
+	if info.Size() >= privateTraceMaxBytes {
 		if err := file.Truncate(0); err != nil {
 			return
 		}

@@ -144,7 +144,14 @@ func TestLiveAudioRecoveryRearmsAfterSessionAndBoundsNextFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.coordinator.step(bridge.Configure(bridge.NewAudioBinding())); err != nil {
+	binding, err := bridge.NewBinding(bridge.PolicyAfterDrain, "RightCommand")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.coordinator.attachOutput(&routedEffectsKeySink{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.coordinator.step(bridge.Configure(binding)); err != nil {
 		t.Fatal(err)
 	}
 	press, err := bridge.NewPressToken(device, "voice", 1)

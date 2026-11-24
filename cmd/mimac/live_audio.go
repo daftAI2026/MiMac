@@ -158,6 +158,7 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 			}
 			ready, err := connection.Ready(), connection.Err()
 			if err != nil {
+				traceAudioSession(s.liveAudio.generation, 0, 0, "route_unavailable", err)
 				s.report.AudioError = err.Error()
 				s.liveAudio.audioFailure = err
 				if errors.Is(err, errCompatRouteDeviceUID) {
@@ -213,6 +214,7 @@ func (s *shell) recoverFailedLiveAudio(connection *liveAudioConnection) bool {
 		return false
 	}
 	s.liveAudio.recoveryAttempted = true
+	traceAudioSession(snapshot.Generation, 0, 0, "source_rebuild", connection.sourceFailure())
 	s.retireLiveAudio()
 	return s.liveAudio.retiring
 }
