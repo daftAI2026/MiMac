@@ -63,4 +63,5 @@ flowchart TD
     controls --> exclusive["仅显示 MiMac 语音提示，由各工具按能力处理"]
     exclusive --> externalBar["已选工具：豆包或微信输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
     baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
+    park -->|微信自行移回| moved["监听本次听写窗的移动通知；核对窗口与原坐标后移开"]
     baseline -->|候选窗或匹配不确定| leave["保留原窗"]

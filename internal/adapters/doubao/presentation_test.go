@@ -38,6 +38,7 @@ type presentationProbe interface {
 	windowByID(pid int32, id uint32) (presentationWindow, bool, error)
 	setPosition(element uintptr, point presentationPoint) error
 	position(element uintptr) (presentationPoint, error)
+	size(element uintptr) (presentationSize, error)
 	elementPID(element uintptr) (int32, error)
 	retain(element uintptr) uintptr
 	release(element uintptr)
@@ -438,6 +439,15 @@ func (p *fakePresentationProbe) positionOf(element uintptr) presentationPoint {
 	return position
 }
 
+func (p *fakePresentationProbe) size(element uintptr) (presentationSize, error) {
+	for _, window := range p.records {
+		if window.element == element {
+			return window.size, nil
+		}
+	}
+	return presentationSize{}, ErrPresentationWindowChanged
+}
+
 func (p *fakePresentationProbe) elementPID(element uintptr) (int32, error) {
 	for _, window := range p.records {
 		if window.element == element {
@@ -490,6 +500,10 @@ func (p testPresentationProbeAdapter) SetPosition(element uintptr, point windowl
 func (p testPresentationProbeAdapter) Position(element uintptr) (windowlease.Point, error) {
 	point, err := p.probe.position(element)
 	return windowlease.Point{X: point.x, Y: point.y}, err
+}
+func (p testPresentationProbeAdapter) Size(element uintptr) (windowlease.Size, error) {
+	size, err := p.probe.size(element)
+	return windowlease.Size{Width: size.width, Height: size.height}, err
 }
 func (p testPresentationProbeAdapter) ElementPID(element uintptr) (int32, error) {
 	return p.probe.elementPID(element)

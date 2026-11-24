@@ -35,7 +35,70 @@ func (b *RecordingBarBaseline) Suppress(ctx context.Context) (*RecordingBarSuppr
 	if b == nil || b.inner == nil {
 		return nil, windowlease.OutcomeUnavailable, ErrPresentationUnavailable
 	}
-	return b.inner.Suppress(ctx, wechatRecordingWindow, recordingObserveLimit, recordingPollInterval, recordingStableInterval)
+	lease, outcome, err := b.inner.SuppressWithDismissal(ctx, wechatRecordingWindow,
+		recordingObserveLimit, recordingPollInterval, recordingStableInterval, restoreWeTypeAfterDismissal)
+	if lease != nil && outcome == windowlease.OutcomeSuppressed {
+		// The host gets the lease only after this returns, so the observer is
+		// ready before a short key-up can start WeType's finish animation.
+		_ = lease.StartWindowEvents()
+	}
+	return lease, outcome, err
+}
+
+func restoreWeTypeAfterDismissal(ctx context.Context, lease *windowlease.Lease) error {
+	if lease == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	events := lease.WindowEvents()
+	if events == nil {
+		return lease.WaitForOrderOut(ctx)
+	}
+	fallback := time.NewTicker(200 * time.Millisecond)
+	defer fallback.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return lease.Restore(context.Background())
+		case event, ok := <-events:
+			if !ok {
+				return lease.WaitForOrderOut(ctx)
+			}
+			switch event {
+			case windowlease.WindowEventMoved:
+				observation, err := lease.ObserveWindow()
+				if err != nil {
+					return lease.ReleaseWithoutRestore()
+				}
+				if observation.Found && observation.Window.OnScreen && observation.SameGeometry &&
+					(observation.AtOriginal || observation.AtParked) {
+					// A notification can lead CG by a display frame. Repark validates
+					// the exact AX element/position before writing in either case.
+					if _, err := lease.ReparkIfReturnedToOriginal(observation); err != nil {
+						return lease.ReleaseWithoutRestore()
+					}
+				}
+			case windowlease.WindowEventDestroyed:
+				// The tracked AX element is gone; retire it without querying a
+				// potentially reused CGWindowID or moving a replacement window.
+				return lease.ReleaseWithoutRestore()
+			}
+		case <-fallback.C:
+			observation, err := lease.ObserveWindow()
+			if err != nil || !observation.Found {
+				return lease.ReleaseWithoutRestore()
+			}
+			if !observation.Window.OnScreen {
+				return lease.WaitForOrderOut(ctx)
+			}
+			if !observation.SameGeometry || (!observation.AtOriginal && !observation.AtParked) {
+				// A changed shape or user move retires this lease without a write.
+				return lease.ReleaseWithoutRestore()
+			}
+		}
+	}
 }
 
 func wechatRecordingWindow(window windowlease.Window) bool {

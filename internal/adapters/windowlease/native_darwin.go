@@ -3,6 +3,7 @@
 package windowlease
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -44,23 +45,34 @@ type presentationNativeAPI struct {
 	copyNative      func(*uintptr, uintptr, uintptr) uintptr
 	rectFromDict    func(uintptr, *Rect) uint8
 
-	axCreateApplication func(int32) uintptr
-	axCopyAttribute     func(uintptr, uintptr, *uintptr) int32
-	axGetPID            func(uintptr, *int32) int32
-	axIsSettable        func(uintptr, uintptr, *uint8) int32
-	axSetAttribute      func(uintptr, uintptr, uintptr) int32
-	axValueGetType      func(uintptr) uint32
-	axValueGetValue     func(uintptr, uint32, unsafe.Pointer) uint8
-	axValueCreate       func(uint32, unsafe.Pointer) uintptr
-	axSetTimeout        func(uintptr, float32)
+	axCreateApplication   func(int32) uintptr
+	axCopyAttribute       func(uintptr, uintptr, *uintptr) int32
+	axGetPID              func(uintptr, *int32) int32
+	axIsSettable          func(uintptr, uintptr, *uint8) int32
+	axSetAttribute        func(uintptr, uintptr, uintptr) int32
+	axValueGetType        func(uintptr) uint32
+	axValueGetValue       func(uintptr, uint32, unsafe.Pointer) uint8
+	axValueCreate         func(uint32, unsafe.Pointer) uintptr
+	axSetTimeout          func(uintptr, float32)
+	axObserverCreate      func(int32, uintptr, *uintptr) int32
+	axObserverAdd         func(uintptr, uintptr, uintptr, uintptr) int32
+	axObserverRemove      func(uintptr, uintptr, uintptr) int32
+	axObserverGetSource   func(uintptr) uintptr
+	cfRunLoopGetCurrent   func() uintptr
+	cfRunLoopAddSource    func(uintptr, uintptr, uintptr)
+	cfRunLoopRemoveSource func(uintptr, uintptr, uintptr)
+	cfRunLoopRunInMode    func(uintptr, float64, uint8) int32
+	cfRunLoopStop         func(uintptr)
+	cfRunLoopWakeUp       func(uintptr)
 
-	keyWindowNumber   uintptr
-	keyWindowOwnerPID uintptr
-	keyWindowLayer    uintptr
-	keyWindowBounds   uintptr
-	keyWindowOnscreen uintptr
-	attributes        map[string]uintptr
-	libraries         []uintptr
+	keyWindowNumber    uintptr
+	keyWindowOwnerPID  uintptr
+	keyWindowLayer     uintptr
+	keyWindowBounds    uintptr
+	keyWindowOnscreen  uintptr
+	attributes         map[string]uintptr
+	libraries          []uintptr
+	defaultRunLoopMode uintptr
 }
 
 var presentationNativeRuntime struct {
@@ -70,6 +82,40 @@ var presentationNativeRuntime struct {
 }
 
 type darwinPresentationProbe struct{ api *presentationNativeAPI }
+
+const (
+	windowAXMovedRefcon     = uintptr(1)
+	windowAXDestroyedRefcon = uintptr(2)
+)
+
+var (
+	windowAXObservers sync.Map // observer AXObserverRef -> chan WindowEvent
+	windowAXCallback  = purego.NewCallback(dispatchWindowAXNotification)
+)
+
+func dispatchWindowAXNotification(observer, _element, _notification, refcon uintptr) {
+	value, ok := windowAXObservers.Load(observer)
+	if !ok {
+		return
+	}
+	var event WindowEvent
+	switch refcon {
+	case windowAXMovedRefcon:
+		event = WindowEventMoved
+	case windowAXDestroyedRefcon:
+		event = WindowEventDestroyed
+	default:
+		return
+	}
+	channel, ok := value.(chan WindowEvent)
+	if !ok {
+		return
+	}
+	select {
+	case channel <- event:
+	default:
+	}
+}
 
 func LoadDarwinProbe() (Probe, error) {
 	api, err := loadPresentationNativeAPI()
@@ -130,6 +176,16 @@ func loadPresentationNativeAPI() (*presentationNativeAPI, error) {
 			{2, "AXValueGetValue", &api.axValueGetValue},
 			{2, "AXValueCreate", &api.axValueCreate},
 			{2, "AXUIElementSetMessagingTimeout", &api.axSetTimeout},
+			{2, "AXObserverCreate", &api.axObserverCreate},
+			{2, "AXObserverAddNotification", &api.axObserverAdd},
+			{2, "AXObserverRemoveNotification", &api.axObserverRemove},
+			{2, "AXObserverGetRunLoopSource", &api.axObserverGetSource},
+			{0, "CFRunLoopGetCurrent", &api.cfRunLoopGetCurrent},
+			{0, "CFRunLoopAddSource", &api.cfRunLoopAddSource},
+			{0, "CFRunLoopRemoveSource", &api.cfRunLoopRemoveSource},
+			{0, "CFRunLoopRunInMode", &api.cfRunLoopRunInMode},
+			{0, "CFRunLoopStop", &api.cfRunLoopStop},
+			{0, "CFRunLoopWakeUp", &api.cfRunLoopWakeUp},
 		}
 		for _, binding := range bindings {
 			address, err := purego.Dlsym(libs[binding.library], binding.name)
@@ -160,7 +216,19 @@ func loadPresentationNativeAPI() (*presentationNativeAPI, error) {
 				return
 			}
 		}
-		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription"} {
+		modeAddress, err := purego.Dlsym(libs[0], "kCFRunLoopDefaultMode")
+		if err != nil {
+			closePresentationLibraries(libs)
+			presentationNativeRuntime.err = fmt.Errorf("recording window: resolve default run loop mode: %w", err)
+			return
+		}
+		api.copyNative(&api.defaultRunLoopMode, modeAddress, unsafe.Sizeof(api.defaultRunLoopMode))
+		if api.defaultRunLoopMode == 0 {
+			closePresentationLibraries(libs)
+			presentationNativeRuntime.err = errors.New("recording window: null default run loop mode")
+			return
+		}
+		for _, name := range []string{"AXWindows", "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXChildren", "AXIdentifier", "AXDescription", "AXMoved", "AXUIElementDestroyed"} {
 			ref, err := api.newString(name)
 			if err != nil {
 				closePresentationLibraries(libs)
@@ -553,6 +621,14 @@ func (probe darwinPresentationProbe) Position(element uintptr) (Point, error) {
 	return value, nil
 }
 
+func (probe darwinPresentationProbe) Size(element uintptr) (Size, error) {
+	value, ok := probe.api.sizeAttribute(element, "AXSize")
+	if !ok {
+		return Size{}, ErrUnavailable
+	}
+	return value, nil
+}
+
 func (probe darwinPresentationProbe) ElementPID(element uintptr) (int32, error) {
 	var pid int32
 	if element == 0 || probe.api.axGetPID(element, &pid) != 0 || pid <= 0 {
@@ -571,5 +647,140 @@ func (probe darwinPresentationProbe) Retain(element uintptr) uintptr {
 func (probe darwinPresentationProbe) Release(element uintptr) {
 	if element != 0 {
 		probe.api.cfRelease(element)
+	}
+}
+
+func (probe darwinPresentationProbe) WatchWindow(pid int32, element uintptr) (WindowEventSource, error) {
+	if element == 0 {
+		return nil, ErrUnavailable
+	}
+	actualPID, err := probe.ElementPID(element)
+	if err != nil || actualPID != pid {
+		return nil, ErrWindowChanged
+	}
+	source := &darwinWindowEventSource{
+		api: probe.api, element: element, events: make(chan WindowEvent, 8),
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	ready := make(chan error, 1)
+	go source.run(pid, ready)
+	if err := <-ready; err != nil {
+		<-source.done
+		return nil, err
+	}
+	return source, nil
+}
+
+type darwinWindowEventSource struct {
+	api       *presentationNativeAPI
+	element   uintptr
+	events    chan WindowEvent
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	stateMu   sync.Mutex
+	runLoop   uintptr
+}
+
+func (s *darwinWindowEventSource) Events() <-chan WindowEvent { return s.events }
+
+func (s *darwinWindowEventSource) Close() {
+	if s == nil {
+		return
+	}
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		s.stateMu.Lock()
+		runLoop := s.runLoop
+		s.stateMu.Unlock()
+		if runLoop != 0 {
+			s.api.cfRunLoopStop(runLoop)
+			s.api.cfRunLoopWakeUp(runLoop)
+		}
+	})
+	<-s.done
+}
+
+func (s *darwinWindowEventSource) run(pid int32, ready chan<- error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	defer close(s.done)
+	defer close(s.events)
+	readySent := false
+	sendReady := func(err error) {
+		if readySent {
+			return
+		}
+		ready <- err
+		readySent = true
+	}
+	var observer, runLoop, runLoopSource uintptr
+	movedName := s.api.attributes["AXMoved"]
+	destroyedName := s.api.attributes["AXUIElementDestroyed"]
+	var movedRegistered, destroyedRegistered bool
+	cleanup := func() {
+		if observer != 0 {
+			if movedRegistered {
+				_ = s.api.axObserverRemove(observer, s.element, movedName)
+			}
+			if destroyedRegistered {
+				_ = s.api.axObserverRemove(observer, s.element, destroyedName)
+			}
+		}
+		if runLoop != 0 && runLoopSource != 0 {
+			s.api.cfRunLoopRemoveSource(runLoop, runLoopSource, s.api.defaultRunLoopMode)
+		}
+		if observer != 0 {
+			windowAXObservers.Delete(observer)
+			s.api.cfRelease(observer)
+		}
+	}
+	fail := func(err error) {
+		sendReady(err)
+		cleanup()
+	}
+	if code := s.api.axObserverCreate(pid, windowAXCallback, &observer); code != 0 || observer == 0 {
+		if code == 0 {
+			code = -1
+		}
+		fail(fmt.Errorf("%w: AXObserverCreate returned %d", ErrUnavailable, code))
+		return
+	}
+	runLoop = s.api.cfRunLoopGetCurrent()
+	runLoopSource = s.api.axObserverGetSource(observer)
+	if runLoop == 0 || runLoopSource == 0 {
+		fail(ErrUnavailable)
+		return
+	}
+	if movedName == 0 || destroyedName == 0 {
+		fail(ErrUnavailable)
+		return
+	}
+	windowAXObservers.Store(observer, s.events)
+	if code := s.api.axObserverAdd(observer, s.element, movedName, windowAXMovedRefcon); code != 0 {
+		fail(fmt.Errorf("%w: AXMoved subscription returned %d", ErrUnavailable, code))
+		return
+	}
+	movedRegistered = true
+	if code := s.api.axObserverAdd(observer, s.element, destroyedName, windowAXDestroyedRefcon); code != 0 {
+		fail(fmt.Errorf("%w: AXUIElementDestroyed subscription returned %d", ErrUnavailable, code))
+		return
+	}
+	destroyedRegistered = true
+	s.api.cfRunLoopAddSource(runLoop, runLoopSource, s.api.defaultRunLoopMode)
+	s.stateMu.Lock()
+	s.runLoop = runLoop
+	s.stateMu.Unlock()
+	sendReady(nil)
+	for {
+		select {
+		case <-s.stop:
+			cleanup()
+			return
+		default:
+		}
+		// AX callbacks wake this run loop. The one-second timeout is only a
+		// shutdown bound; window movement is not polled here.
+		s.api.cfRunLoopRunInMode(s.api.defaultRunLoopMode, 1, 1)
 	}
 }
