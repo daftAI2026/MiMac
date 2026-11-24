@@ -144,7 +144,7 @@ func (m *weTypeWindowEventMonitor) maintain(ctx context.Context, lease *windowle
 }
 
 func (m *weTypeWindowEventMonitor) layoutDecision(window windowlease.Window, original, parked windowlease.Point, originalSize windowlease.Size) windowlease.ReparkDecision {
-	if !wechatRecordingWindowIdentity(window) || !finiteWindowGeometry(window) {
+	if !wechatBoundRecordingWindow(window) || !finiteWindowGeometry(window) {
 		return m.disableRepark()
 	}
 	if m.knownSizes == nil {
@@ -205,6 +205,14 @@ func wechatRecordingWindowIdentity(window windowlease.Window) bool {
 		window.IdentifierKnown && window.IdentifierEmpty && window.DescriptionKnown && window.DescriptionEmpty &&
 		window.ChildrenKnown && len(window.ChildRoles) == 0 && window.AXMatchCount == 1 &&
 		window.Element != 0 && window.PositionSettable
+}
+
+// The full role/children/string classifier runs once when the new window is
+// claimed. During its lease, the exact retained AX element, owner PID, CG ID,
+// layer, and captured writable-position capability are the identity fence.
+func wechatBoundRecordingWindow(window windowlease.Window) bool {
+	return window.OnScreen && window.OwnerPID > 0 && window.Layer == wechatRecordingLayer &&
+		window.AXMatchCount == 1 && window.Element != 0 && window.PositionSettable
 }
 
 func finiteWindowGeometry(window windowlease.Window) bool {

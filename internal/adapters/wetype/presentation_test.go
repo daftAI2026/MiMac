@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,6 +179,65 @@ func TestWeTypeReparksResizeDuringCaptureAndAfterKeyUp(t *testing.T) {
 	}
 }
 
+func TestWeTypeReparkUsesOneBoundSnapshotWithoutRepeatedIdentityChecks(t *testing.T) {
+	const pid = int32(4162)
+	probe := newRecordingProbe()
+	var identityChecks atomic.Int32
+	baseline, err := windowlease.CaptureBaseline(pid, func() error {
+		identityChecks.Add(1)
+		return nil
+	}, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.setWindow(testWeTypeWindow(52574, pid, 200, 130, true, nil))
+	probe.writeSignal = make(chan int, 2)
+	probe.querySignal = make(chan struct{}, 2)
+	lease, _, err := (&RecordingBarBaseline{inner: baseline}).Suppress(context.Background())
+	if err != nil || lease == nil {
+		t.Fatalf("Suppress() = (%v, %v), want lease", lease != nil, err)
+	}
+	if got := waitWrite(t, probe.writeSignal); got != 1 {
+		t.Fatalf("initial AX write = %d, want park", got)
+	}
+	metricsBefore := probe.metrics()
+	identityBefore := identityChecks.Load()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	maintained := make(chan error, 1)
+	go func() { maintained <- lease.Maintain(ctx, nil) }()
+
+	window := probe.window(52574)
+	window.Position = windowlease.Point{X: 833, Y: 980}
+	window.Size = windowlease.Size{Width: 254, Height: 130}
+	probe.setWindow(window)
+	probe.sendEvent(windowlease.WindowEventResized)
+	waitProbeQuery(t, probe.querySignal)
+	if got := waitWrite(t, probe.writeSignal); got != 2 {
+		t.Fatalf("repark AX write = %d, want one repark", got)
+	}
+	probe.sendEvent(windowlease.WindowEventDestroyed)
+	if err := waitMaintenance(t, maintained); err != nil {
+		t.Fatalf("maintained lease returned error: %v", err)
+	}
+	metricsAfter := probe.metrics()
+	if got := metricsAfter.boundSnapshots - metricsBefore.boundSnapshots; got != 1 {
+		t.Fatalf("bound AX/CG snapshots = %d, want one", got)
+	}
+	if got := metricsAfter.elementPIDReads - metricsBefore.elementPIDReads; got != 1 {
+		t.Fatalf("retained-element PID reads = %d, want one", got)
+	}
+	if got := metricsAfter.positionReads - metricsBefore.positionReads; got != 2 {
+		t.Fatalf("AXPosition reads = %d, want one snapshot plus write confirmation", got)
+	}
+	if got := metricsAfter.sizeReads - metricsBefore.sizeReads; got != 1 {
+		t.Fatalf("AXSize reads = %d, want one snapshot", got)
+	}
+	if got := identityChecks.Load() - identityBefore; got != 0 {
+		t.Fatalf("process-file identity checks in repark hot path = %d, want zero", got)
+	}
+}
+
 func TestWeTypeDoesNotReparkUserMoveAndDoesNotReenableLater(t *testing.T) {
 	const pid = int32(4162)
 	probe := newRecordingProbe()
@@ -298,12 +358,16 @@ func testWeTypeWindow(id uint32, pid int32, width, height float64, childrenKnown
 }
 
 type recordingProbe struct {
-	mu          sync.Mutex
-	windows     map[uint32]windowlease.Window
-	writes      int
-	events      *recordingEventSource
-	writeSignal chan int
-	querySignal chan struct{}
+	mu              sync.Mutex
+	windows         map[uint32]windowlease.Window
+	writes          int
+	boundSnapshots  int
+	elementPIDReads int
+	positionReads   int
+	sizeReads       int
+	events          *recordingEventSource
+	writeSignal     chan int
+	querySignal     chan struct{}
 }
 
 func newRecordingProbe() *recordingProbe {
@@ -346,6 +410,10 @@ func (p *recordingProbe) WindowByID(pid int32, id uint32) (windowlease.Window, b
 
 func (p *recordingProbe) WindowByIDWithAX(pid int32, id uint32, element uintptr) (windowlease.Window, bool, error) {
 	p.mu.Lock()
+	p.boundSnapshots++
+	p.elementPIDReads++
+	p.positionReads++
+	p.sizeReads++
 	window, ok := p.windows[id]
 	querySignal := p.querySignal
 	p.mu.Unlock()
@@ -379,6 +447,7 @@ func (p *recordingProbe) SetPosition(element uintptr, point windowlease.Point) e
 func (p *recordingProbe) Position(element uintptr) (windowlease.Point, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.positionReads++
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.Position, nil
@@ -390,6 +459,7 @@ func (p *recordingProbe) Position(element uintptr) (windowlease.Point, error) {
 func (p *recordingProbe) Size(element uintptr) (windowlease.Size, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.sizeReads++
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.Size, nil
@@ -401,6 +471,7 @@ func (p *recordingProbe) Size(element uintptr) (windowlease.Size, error) {
 func (p *recordingProbe) ElementPID(element uintptr) (int32, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.elementPIDReads++
 	for _, window := range p.windows {
 		if window.Element == element {
 			return window.OwnerPID, nil
@@ -439,6 +510,24 @@ func (p *recordingProbe) writeCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.writes
+}
+
+type recordingProbeMetrics struct {
+	boundSnapshots  int
+	elementPIDReads int
+	positionReads   int
+	sizeReads       int
+}
+
+func (p *recordingProbe) metrics() recordingProbeMetrics {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return recordingProbeMetrics{
+		boundSnapshots:  p.boundSnapshots,
+		elementPIDReads: p.elementPIDReads,
+		positionReads:   p.positionReads,
+		sizeReads:       p.sizeReads,
+	}
 }
 
 func (p *recordingProbe) eventSource() *recordingEventSource {

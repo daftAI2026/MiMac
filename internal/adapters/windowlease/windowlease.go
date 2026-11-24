@@ -88,6 +88,9 @@ type windowEventProbe interface {
 }
 
 type boundWindowProbe interface {
+	// WindowByIDWithAX returns one CG record and one geometry snapshot for the
+	// already-retained AX element. It verifies that element's PID and does not
+	// enumerate the application's AXWindows for this bound lookup.
 	WindowByIDWithAX(pid int32, id uint32, element uintptr) (Window, bool, error)
 }
 
@@ -273,7 +276,7 @@ func (b *Baseline) moveWindow(ctx context.Context, window Window, watchWindowEve
 	lease := &Lease{
 		pid: b.pid, windowID: window.ID, checkIdentity: b.checkIdentity,
 		probe: b.probe, element: retained, original: position, parked: parked,
-		layer: window.Layer, frameSize: window.Frame.Size,
+		layer: window.Layer, frameSize: window.Frame.Size, positionSettable: window.PositionSettable,
 	}
 	if watchWindowEvents {
 		if err := lease.startWindowEvents(); err != nil {
@@ -380,20 +383,21 @@ func releaseWindows(probe Probe, windows []Window) {
 }
 
 type Lease struct {
-	mu             sync.Mutex
-	pid            int32
-	windowID       uint32
-	checkIdentity  func() error
-	probe          Probe
-	element        uintptr
-	original       Point
-	parked         Point
-	layer          int32
-	frameSize      Size
-	reparkDisabled bool
-	eventSource    WindowEventSource
-	released       bool
-	restored       bool
+	mu               sync.Mutex
+	pid              int32
+	windowID         uint32
+	checkIdentity    func() error
+	probe            Probe
+	element          uintptr
+	original         Point
+	parked           Point
+	layer            int32
+	frameSize        Size
+	positionSettable bool
+	reparkDisabled   bool
+	eventSource      WindowEventSource
+	released         bool
+	restored         bool
 }
 
 // LeaseWindowObservation contains only the exact CG window's identity and
@@ -442,7 +446,7 @@ func (s *Lease) ReparkIfLayout(policy ReparkPolicy) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.released || s.restored || s.element == 0 || s.probe == nil || s.checkIdentity == nil || policy == nil {
+	if s.released || s.restored || s.element == 0 || s.probe == nil || policy == nil {
 		return false, ErrUnavailable
 	}
 	if s.reparkDisabled {
@@ -469,34 +473,11 @@ func (s *Lease) ReparkIfLayout(policy ReparkPolicy) (bool, error) {
 		s.reparkDisabled = true
 		return false, ErrWindowChanged
 	}
-	pid, err := s.probe.ElementPID(s.element)
-	if err != nil || pid != s.pid {
-		s.reparkDisabled = true
-		if err != nil {
-			return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
-		}
-		return false, ErrWindowChanged
-	}
-	position, err := s.probe.Position(s.element)
-	if err != nil {
-		s.reparkDisabled = true
-		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
-	}
-	size, err := s.probe.Size(s.element)
-	if err != nil {
-		s.reparkDisabled = true
-		return false, fmt.Errorf("%w: %v", ErrWindowChanged, err)
-	}
-	if !samePoint(position, window.Position) || !sameSize(size, window.Size) {
-		// AX and CG can publish a geometry change on adjacent run-loop turns.
-		// Wait for the next native notification rather than classifying this
-		// one-frame mismatch as a user move.
-		return false, nil
-	}
-	if err := s.checkIdentity(); err != nil {
-		s.reparkDisabled = true
-		return false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
-	}
+	// The native probe's bound lookup checks the retained element's PID and
+	// samples AX geometry once alongside this CG record. The event source has
+	// already matched this notification to the same retained AX element.
+	window.PositionSettable = s.positionSettable
+	position := window.Position
 	switch policy(window, s.original, s.parked, s.frameSize) {
 	case ReparkWait:
 		return false, nil
@@ -511,13 +492,9 @@ func (s *Lease) ReparkIfLayout(policy ReparkPolicy) (bool, error) {
 		s.reparkDisabled = true
 		return false, ErrUnavailable
 	}
-	if !window.PositionSettable {
+	if !s.positionSettable {
 		s.reparkDisabled = true
 		return false, ErrUnavailable
-	}
-	if err := s.checkIdentity(); err != nil {
-		s.reparkDisabled = true
-		return false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 	}
 	if err := s.probe.SetPosition(s.element, s.parked); err != nil {
 		s.reparkDisabled = true
