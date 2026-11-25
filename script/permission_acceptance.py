@@ -3,6 +3,7 @@
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -29,6 +30,15 @@ BLUETOOTH_PERMISSION_NAMES = ("蓝牙", "藍牙", "Bluetooth")
 BLUETOOTH_ROW_TITLES = tuple("在系统设置中管理" + name for name in BLUETOOTH_PERMISSION_NAMES)
 BLUETOOTH_REQUEST_BUNDLE = "com.apple.UserNotificationCenter"
 BLUETOOTH_REQUEST_PATH = "/System/Library/CoreServices/UserNotificationCenter.app"
+BLUETOOTH_DENY_LABELS = ("Don't Allow", "Don’t Allow", "不允许")
+DEFAULT_BLUETOOTH_ALLOW_ACTOR = "runner"
+PERMISSION_GUIDE_TRACE_LINE = re.compile(
+    r"^permission_guide time=(?P<time>\S+) pid=(?P<pid>\d+) "
+    r"event=(?P<event>[a-z_]+) service=(?P<service>[A-Za-z]+) "
+    r"result=(?P<result>[a-z_]+) status=(?P<status>[a-z_]+) "
+    r"previous=(?P<previous>[a-z_]+)$"
+)
+SYSTEM_SETTINGS_PATH = "/System/Applications/System Settings.app"
 GENERAL_INPUT_MANAGE = "管理输入监控"
 GENERAL_CONTROL_MANAGE = tuple("管理" + title for title in CONTROL_PERMISSION_NAMES)
 GENERAL_BLUETOOTH_MANAGE = tuple("管理" + title for title in BLUETOOTH_PERMISSION_NAMES)
@@ -73,6 +83,10 @@ def bluetooth_prompt_matches(lines, app_name):
     return isinstance(lines, (list, tuple)) and expected in lines
 
 
+def bluetooth_allow_actor_for_args(args):
+    return getattr(args, "bluetooth_allow_actor", None) or DEFAULT_BLUETOOTH_ALLOW_ACTOR
+
+
 def bluetooth_request_evidence_matches(evidence, *, pid, app_name, bundle_id, bundle_path):
     """Check the native inspector's target identity and exact system request evidence."""
     if not isinstance(evidence, dict):
@@ -91,7 +105,9 @@ def bluetooth_request_evidence_matches(evidence, *, pid, app_name, bundle_id, bu
     status = evidence.get("status")
     if status == "absent":
         return True
-    if status != "ready" and evidence.get("performed") != "AXPress Allow":
+    if status != "ready" and evidence.get("performed") not in (
+        "AXPress Allow", "AXPress Don't Allow", "AXPress Don’t Allow", "AXPress 不允许",
+    ):
         return False
     button_label = evidence.get("allow_button_label", evidence.get("button_label"))
     return (
@@ -104,6 +120,113 @@ def bluetooth_request_evidence_matches(evidence, *, pid, app_name, bundle_id, bu
         evidence.get("requested_app_name_matched") is True and
         evidence.get("allow_button_count") == 1 and button_label == "Allow"
     )
+
+
+def bluetooth_deny_action_matches(action, *, pid, app_name, bundle_id, bundle_path):
+    """Require the exact trusted Bluetooth request and its one explicit denial control."""
+    return (
+        bluetooth_request_evidence_matches(
+            action, pid=pid, app_name=app_name, bundle_id=bundle_id, bundle_path=bundle_path,
+        ) and
+        action.get("authorization_actor") == "acceptance_runner" and
+        action.get("performed") in (
+            "AXPress Don't Allow", "AXPress Don’t Allow", "AXPress 不允许",
+        ) and
+        action.get("deny_button_count") == 1 and
+        action.get("deny_button_label") in BLUETOOTH_DENY_LABELS and
+        action.get("exact_prompt_line_matched") is True and
+        action.get("system_process_trusted") is True
+    )
+
+
+def permission_guide_trace_event(line):
+    match = PERMISSION_GUIDE_TRACE_LINE.fullmatch(line.strip())
+    if not match:
+        return None
+    values = match.groupdict()
+    try:
+        at = datetime.fromisoformat(values["time"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        return None
+    return {**values, "pid": int(values["pid"]), "epoch": at.timestamp()}
+
+
+def bluetooth_denial_trace_evidence(lines, *, action, pid, bundle_id, app_name, bundle_path,
+                                   inspected_at_epoch=None, verification_deadline_epoch=None):
+    """Bind the product's actual denied readback to one exact native denial press."""
+    if not bluetooth_deny_action_matches(
+        action, pid=pid, app_name=app_name, bundle_id=bundle_id, bundle_path=bundle_path,
+    ):
+        return None
+    started = action.get("ax_press_started_at")
+    completed = action.get("ax_press_completed_at")
+    if (not isinstance(started, (int, float)) or isinstance(started, bool) or
+        not isinstance(completed, (int, float)) or isinstance(completed, bool) or
+        started <= 0 or completed < started):
+        return None
+    inspected_at = time.time() if inspected_at_epoch is None else inspected_at_epoch
+    deadline = started + 12 if verification_deadline_epoch is None else verification_deadline_epoch
+    if (not isinstance(inspected_at, (int, float)) or isinstance(inspected_at, bool) or
+        not isinstance(deadline, (int, float)) or isinstance(deadline, bool) or
+        inspected_at < started or deadline < completed):
+        return None
+    cutoff = min(inspected_at, deadline)
+    matching_transition = []
+    bluetooth_changes = []
+    for line in lines:
+        event = permission_guide_trace_event(line)
+        if (event is None or event["pid"] != pid or event["event"] != "permission_change" or
+            event["service"] != "Bluetooth" or event["epoch"] > inspected_at):
+            continue
+        bluetooth_changes.append(event)
+        if (event["result"] == "changed" and event["status"] == "denied" and
+            event["previous"] == "not_determined" and started <= event["epoch"] <= cutoff):
+            matching_transition.append(event)
+    if len(matching_transition) != 1:
+        return None
+    event = matching_transition[0]
+    if not bluetooth_changes or bluetooth_changes[-1] is not event:
+        return None
+    return {
+        "status": "denied", "service": "Bluetooth", "result": "changed",
+        "previous": "not_determined", "pid": pid, "bundle_id": bundle_id,
+        "bundle_path": str(bundle_path), "event_time": event["time"],
+        "event_epoch": event["epoch"], "deny_press_started_at": started,
+        "deny_press_completed_at": completed,
+        "event_after_press_start_ms": round((event["epoch"] - started) * 1_000, 3),
+        "event_before_press_return_ms": round((completed - event["epoch"]) * 1_000, 3),
+        "event_after_press_return_ms": round((event["epoch"] - completed) * 1_000, 3),
+        "verification_cutoff_epoch": cutoff,
+        "checked_at_epoch": inspected_at,
+        "final_trace_status": bluetooth_changes[-1]["status"],
+        "readback_source": "same_app_permission_guide_trace",
+    }
+
+
+def first_use_denial_presentation_contract(nodes, name):
+    """The active first-use card keeps denied permissions actionable and counts only grants."""
+    counts = first_use_permission_counts(nodes, name)
+    summary = first_use_progress_summary(nodes, 3)
+    expected_rows = {"input": "granted", "device_control": "granted", "bluetooth": "pending"}
+    if (counts is None or counts["rows"] != expected_rows or
+        summary is None or summary[:2] != (2, 3) or summary[2] != "已授权 2/3"):
+        return None
+    panel = next(node for node in nodes if node.get("role") == "AXWindow" and
+                 node.get("title") == name + " 系统权限")
+    card = nodes_in_window(nodes, panel)
+    rows = permission_route_rows(card) if card is not None else None
+    bluetooth_row = rows.get("bluetooth") if isinstance(rows, dict) else None
+    if (bluetooth_row is None or
+        row_action_count(card, bluetooth_row["route_title"]) != 1):
+        return None
+    return {
+        "surface": "first_use_permission_card", "bluetooth_display": PERMISSION_ACTION_LABEL,
+        "bluetooth_ax_presentation_state": "pending_action_available",
+        "summary": summary[2], "permission_rows": counts,
+        "denied_status_label_expected_on_this_surface": False,
+    }
 
 
 class Acceptance:
@@ -122,35 +245,54 @@ class Acceptance:
         self.focus_check = getattr(args, "focus_check", False)
         self.two_list_permissions_only = getattr(args, "two_list_permissions_only", False)
         self.bluetooth_only = getattr(args, "bluetooth_only", False)
-        self.bluetooth_allow_actor = getattr(args, "bluetooth_allow_actor", None) or "runner"
+        self.cold_settings_reattach = getattr(args, "cold_settings_reattach", False)
+        self.bluetooth_deny = getattr(args, "bluetooth_deny", False)
+        self.capture_device_control_frames = getattr(args, "capture_device_control_frames", False)
+        self.bluetooth_allow_actor = bluetooth_allow_actor_for_args(args)
         if getattr(args, "bluetooth_allow_actor", None) and (
             self.existing_input or self.two_list_permissions_only or self.cancel_reentry or
-            self.drag_regressions_only or self.focus_check or self.resume_input_drop or args.finish
+            self.drag_regressions_only or self.focus_check or self.resume_input_drop or
+            self.cold_settings_reattach or args.finish
         ):
             raise RuntimeError("--bluetooth-allow-actor is only valid for full first-use, full general permissions, or --bluetooth-only")
+        if self.bluetooth_deny and (self.fixed_dev or getattr(args, "bluetooth_allow_actor", None)):
+            raise RuntimeError("--bluetooth-deny requires an isolated first-use bundle and cannot be combined with --bluetooth-allow-actor")
+        if self.bluetooth_deny and (
+            self.existing_input or self.general_permissions or
+            self.drag_regressions_only or self.cancel_reentry or self.focus_check or
+            self.bluetooth_only or args.finish or self.two_list_permissions_only or
+            self.cold_settings_reattach
+        ):
+            raise RuntimeError("--bluetooth-deny is only valid on the full isolated first-use route or its recorded input-drop resume")
+        if self.capture_device_control_frames and (
+            self.fixed_dev or self.existing_input or self.general_permissions or
+            self.drag_regressions_only or self.cancel_reentry or self.focus_check or
+            self.bluetooth_only or args.finish or self.cold_settings_reattach
+        ):
+            raise RuntimeError("--capture-device-control-frames is only valid on the isolated full first-use route or its recorded input-drop resume")
         if self.two_list_permissions_only and not self.general_permissions:
             raise RuntimeError("--two-list-permissions-only requires --general-permissions")
         self.focus_recovery_attempts = set()
         self.focus_visit_sequence = 0
         selected_scopes = sum((self.existing_input, self.general_permissions, self.resume_input_drop,
                                self.drag_regressions_only, self.cancel_reentry, self.focus_check,
-                               self.bluetooth_only, args.finish))
+                               self.bluetooth_only, self.cold_settings_reattach, args.finish))
         if selected_scopes > 1:
-            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only, --focus-check, --bluetooth-only and --finish are separate acceptance scopes")
+            raise RuntimeError("--existing-input, --general-permissions, --cancel-reentry, --resume-input-drop, --drag-regressions-only, --focus-check, --bluetooth-only, --cold-settings-reattach and --finish are separate acceptance scopes")
         if self.existing_input and not self.fixed_dev:
             raise RuntimeError("--existing-input requires the verified canonical Dev receipt")
         if self.general_permissions and not self.fixed_dev:
             raise RuntimeError("--general-permissions requires the verified canonical Dev receipt")
         if self.cancel_reentry and not self.fixed_dev:
             raise RuntimeError("--cancel-reentry requires the verified canonical Dev receipt")
-        if self.resume_input_drop and not self.fixed_dev:
-            raise RuntimeError("--resume-input-drop requires the verified canonical Dev receipt")
         if self.drag_regressions_only and not self.fixed_dev:
             raise RuntimeError("--drag-regressions-only requires the verified canonical Dev receipt")
         if self.focus_check and not self.fixed_dev:
             raise RuntimeError("--focus-check requires the verified canonical Dev receipt")
         if self.bluetooth_only and not self.fixed_dev:
             raise RuntimeError("--bluetooth-only requires the verified canonical Dev receipt")
+        if self.cold_settings_reattach and self.fixed_dev:
+            raise RuntimeError("--cold-settings-reattach requires an isolated verification identity")
         if self.fixed_dev:
             from live_acceptance import verify_fixed_dev
             fixed, _ = verify_fixed_dev(args.fixed_dev_receipt)
@@ -172,7 +314,7 @@ class Acceptance:
         self.config = Path.home() / "Library/Application Support" / self.name
         if self.config.exists() and not (args.finish or self.existing_input or self.general_permissions or
                                          self.cancel_reentry or self.resume_input_drop or self.drag_regressions_only or
-                                         self.focus_check or self.bluetooth_only):
+                                         self.focus_check or self.bluetooth_only or self.cold_settings_reattach):
             raise RuntimeError("use a fresh verification identity with an unused configuration directory")
         self.output = args.output.resolve()
         if not self.output.is_relative_to(CACHE.resolve()):
@@ -182,19 +324,32 @@ class Acceptance:
             raise RuntimeError("--auth-timeout must be zero or greater")
         self.driver = self.output / "permission-driver"
         self.ax = self.output / "app-ax"
+        self.window_recorder = self.output / "permission-window-recorder"
+        self.frame_scan = self.output / "permission-frame-scan"
         identity = {"bundle": str(self.bundle), "bundle_id": self.identifier, "sha256": self.sha}
         self.identity = identity
         if args.finish:
             entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
-            self.finish_args = finish_args(entries, identity)
+            self.finish_args = finish_args(entries, identity, app_name=self.name)
+            self.finish_postgrant_checkpoint = next(
+                (entry for entry in reversed(entries) if entry.get("stage") == "both_granted"), None,
+            )
             self.confirmed_control = entries[-1].get("stage") == "system_control_confirmed"
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
         elif self.resume_input_drop:
             entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
-            self.resume_input_args = resume_input_drop_args(entries, identity, app_name=self.name)
+            self.resume_input_args = resume_input_drop_args(
+                entries, identity, app_name=self.name,
+                bluetooth_deny=self.bluetooth_deny,
+                capture_device_control_frames=self.capture_device_control_frames,
+            )
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
-        elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry or self.focus_check or self.bluetooth_only:
+            if self.capture_device_control_frames:
+                self.compile_fixture("PermissionWindowRecorder.swift", self.window_recorder)
+                self.compile_fixture("PermissionFrameScan.swift", self.frame_scan)
+        elif (self.drag_regressions_only or self.general_permissions or self.cancel_reentry or
+              self.focus_check or self.bluetooth_only or self.cold_settings_reattach):
             self.output.mkdir()
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             if not self.focus_check:
@@ -203,6 +358,7 @@ class Acceptance:
                 "drag-regressions-only" if self.drag_regressions_only else
                 "focus-recovery-only" if self.focus_check else
                 "bluetooth-only" if self.bluetooth_only else
+                "cold-settings-reattach" if self.cold_settings_reattach else
                 "ordinary-cancel-reentry" if self.cancel_reentry else
                 "ordinary-general-two-list-only" if self.two_list_permissions_only else
                 "ordinary-general-permissions"
@@ -212,7 +368,19 @@ class Acceptance:
             self.output.mkdir()
             for name, destination in (("PermissionAcceptance.swift", self.driver), ("LiveAcceptanceAX.swift", self.ax)):
                 self.compile_fixture(name, destination)
-            self.record("identity", {**identity, "mode": "existing-input-device-control" if self.existing_input else "full-first-use"})
+            if self.capture_device_control_frames:
+                for name, destination in (
+                    ("PermissionWindowRecorder.swift", self.window_recorder),
+                    ("PermissionFrameScan.swift", self.frame_scan),
+                ):
+                    self.compile_fixture(name, destination)
+            identity_event = {
+                **identity,
+                "mode": "existing-input-device-control" if self.existing_input else "full-first-use",
+                "bluetooth_denial_requested": bool(self.bluetooth_deny),
+                "device_control_frame_capture_requested": bool(self.capture_device_control_frames),
+            }
+            self.record("identity", identity_event)
 
     @contextmanager
     def observe_feedback(self):
@@ -225,13 +393,28 @@ class Acceptance:
             try:
                 yield
             finally:
+                if getattr(self, "device_control_capture_process", None) is not None:
+                    try:
+                        self.stop_device_control_recorder()
+                        self.record("device_control_video_capture_stopped_on_runner_exit", {
+                            "video": str(getattr(self, "device_control_capture_video", "")),
+                            "observer_only": True,
+                            "frame_scan_completed": False,
+                        })
+                    except Exception as error:
+                        self.record("device_control_video_capture_cleanup_failed", {
+                            "error": str(error), "observer_only": True,
+                        })
                 for observer in observers:
                     observer.terminate()
                 for observer in observers:
                     observer.wait(timeout=4)
 
     def compile_fixture(self, name, destination):
-        subprocess.run(["/usr/bin/xcrun", "swiftc", HERE / "fixtures" / name, "-o", destination], check=True)
+        command = ["/usr/bin/xcrun", "swiftc"]
+        if name in ("PermissionWindowRecorder.swift", "PermissionFrameScan.swift"):
+            command.extend(["-parse-as-library", HERE / "fixtures" / "PermissionFramePixels.swift"])
+        subprocess.run([*command, HERE / "fixtures" / name, "-o", destination], check=True)
 
     def check_identity(self):
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", self.bundle], check=True)
@@ -475,9 +658,9 @@ class Acceptance:
             raise RuntimeError("preflight found an existing macOS security or Settings sheet; resolve it manually before this run")
         return state
 
-    def run_general_permissions(self):
-        two_list_only = getattr(self, "two_list_permissions_only", False)
-        state = self.preflight_no_existing_sheet("ordinary-general-permissions")
+    def open_ordinary_general_permission_card(self, *, scope, initial_state=None):
+        """Open the app's ordinary General page and permission card without granting access."""
+        state = initial_state or self.preflight_no_existing_sheet(scope)
         if not state["app"]:
             subprocess.run([
                 "/usr/bin/open", "--stderr", str(self.output / "app-stderr.log"),
@@ -485,30 +668,39 @@ class Acceptance:
             ], check=True)
             state = wait_for(
                 lambda: (current if (current := self.probe()).get("app") else None),
-                "frozen Dev settings window",
+                "frozen verification app settings window",
             )
-        pid = state["app"]
+        pid = state.get("app")
         if not pid:
-            raise RuntimeError("--general-permissions could not find the frozen Dev process")
+            raise RuntimeError("the frozen verification app process is unavailable")
+        if getattr(self, "cold_settings_reattach", False):
+            self.cold_settings_opened_app_pid = pid
 
         nodes = wait_for(
             lambda: (current if ordinary_general_startup_ready(
                 pid, current := self.view_if_windows_available(pid), self.name
             ) else None),
-            "the frozen Dev main window and visible General button",
+            "the frozen verification app's main window and visible General button",
         )
         if not ordinary_general_surface_ready(nodes, self.name):
             self.press(pid, "通用")
             nodes = wait_for(
                 lambda: (current if ordinary_general_surface_ready(current := self.view(pid), self.name) else None),
-                "the frozen Dev General settings page",
+                "the frozen verification app's General settings page",
             )
         if not ordinary_permission_guide_card_present(nodes, self.name):
             self.press(pid, "管理输入监控")
 
         initial_nodes = wait_for(
             lambda: (current if ordinary_permission_counts(current := self.view(pid), self.name) else None),
-            "the ordinary permission card with all rows visible on both surfaces",
+            "the ordinary permission card with all rows visible on both app surfaces",
+        )
+        return state, pid, initial_nodes
+
+    def run_general_permissions(self):
+        two_list_only = getattr(self, "two_list_permissions_only", False)
+        state, pid, initial_nodes = self.open_ordinary_general_permission_card(
+            scope="ordinary-general-permissions",
         )
         # Reuse existing grants if a previous run ended on this card.
         initial_counts = ordinary_permission_counts(initial_nodes, self.name)
@@ -613,6 +805,221 @@ class Acceptance:
         return self.complete_general_list_permissions(
             post_input, self.view(post_input["app"]), "ordinary-general-input-monitoring",
         )
+
+    def run_cold_settings_reattach(self):
+        """Verify a granted row cold-opens and joins Settings without a permission action."""
+        initial = self.preflight_no_existing_sheet("cold-settings-reattach")
+        if not cold_settings_reattach_preflight_ready(initial):
+            self.record("COLD_SETTINGS_REATTACH_BLOCKED", {
+                "scope": "cold-settings-reattach", "probe": focus_probe_summary(initial),
+                "reason": "requires the exact QA app and Settings to be closed, no modal, and a restorable foreground app",
+                "permission_change_requested": False, "native_permission_action_performed": False,
+            })
+            raise RuntimeError("--cold-settings-reattach requires a cold System Settings state, a closed QA process, and a known foreground app")
+
+        restore_pid = initial["front"]
+        restore_bundle_id = initial["frontmost_bundle_id"]
+        self.record("cold_settings_reattach_preflight", {
+            "scope": "cold-settings-reattach", "probe": focus_probe_summary(initial),
+            "initial_foreground_pid": restore_pid, "initial_foreground_bundle_id": restore_bundle_id,
+            "system_settings_cold": True, "qa_process_closed": True,
+            "permission_change_requested": False, "native_permission_action_performed": False,
+        })
+
+        app_pid = None
+        verified_settings_pid = 0
+        verified_settings_page = ""
+        flow_error = None
+        cleanup = None
+        try:
+            state, app_pid, before_nodes = self.open_ordinary_general_permission_card(
+                scope="cold-settings-reattach", initial_state=initial,
+            )
+            state = self.probe()
+            if (state.get("app") != app_pid or state.get("settings") != 0 or
+                state.get("front") != app_pid or state.get("bundle_id") != self.identifier or
+                state.get("bundle_path") != str(self.bundle) or state.get("password") or
+                state.get("system_sheet") or state.get("restart") or
+                state.get("permission_card_visible") is not True or
+                state.get("permission_card_window_count") != 1):
+                raise RuntimeError("the exact QA General page and permission card are not frontmost with Settings still cold")
+
+            before_counts = ordinary_permission_counts(before_nodes, self.name)
+            if not ordinary_three_grants_ready(before_counts):
+                self.record("COLD_SETTINGS_REATTACH_BLOCKED", {
+                    "scope": "cold-settings-reattach", "app": app_pid,
+                    "permission_rows_before": before_counts,
+                    "reason": "the ordinary General surfaces do not show exactly three granted rows",
+                    "permission_change_requested": False, "native_permission_action_performed": False,
+                })
+                raise RuntimeError("--cold-settings-reattach requires Input Monitoring, Device Control, and Bluetooth to be granted")
+
+            surfaces = ordinary_permission_surfaces(before_nodes, self.name)
+            target = surfaces[3]["device_control"] if surfaces else None
+            row_title = target.get("route_title") if isinstance(target, dict) else None
+            if row_title not in CONTROL_ROW_TITLES:
+                raise RuntimeError("the exact granted Device Control title is not available on the ordinary permission card")
+            target_bounds = target.get("bounds")
+            if not isinstance(target_bounds, dict):
+                raise RuntimeError("the exact granted Device Control title has no readable AX bounds")
+
+            def cold_card_sample():
+                observation = self.latest_window_observation()
+                before_state = observation.get("state", {}) if isinstance(observation, dict) else {}
+                before_visible = before_state.get("visible_windows", [])
+                before_card = [item for item in before_visible if item.get("owner") == "dev" and
+                               item.get("pid") == app_pid and item.get("title") == self.name + " 系统权限"]
+                if (before_state.get("dev_pids") == [app_pid] and
+                    before_state.get("settings_pid") == 0 and len(before_card) == 1):
+                    return observation
+                return None
+
+            before_windows = wait_for(
+                cold_card_sample, "the exact QA permission card with no System Settings process",
+            )
+
+            self.record("cold_settings_reattach_before", {
+                "scope": "cold-settings-reattach", "app": app_pid,
+                "settings": 0, "front": app_pid, "permission_rows": before_counts,
+                "target_row_title": row_title, "target_row_bounds": target_bounds,
+                "window_observation": before_windows,
+                "permission_change_requested": False, "native_permission_action_performed": False,
+            })
+            press = self.press(app_pid, row_title)
+            self.record("cold_settings_reattach_title_press", {
+                "app": app_pid, "row_title": row_title,
+                "press_started_at": press["ax_press_started_at"],
+                "press_completed_at": press["ax_press_completed_at"],
+                "target_row_bounds": target_bounds,
+                "action": "exact AXButton title/description press",
+                "permission_change_requested": False, "native_drop_performed": False,
+            })
+
+            def settings_opened_in_front():
+                current = self.probe()
+                if current.get("app") != app_pid:
+                    raise RuntimeError("the QA app process changed after the granted-title press")
+                if current.get("password") or current.get("system_sheet") or current.get("restart"):
+                    raise RuntimeError("a system authentication or modal appeared; the read-only cold-attach run stopped without acting on it")
+                if cold_settings_reattach_settings_ready(current, app_pid, CONTROL_PAGES):
+                    return current
+                return None
+
+            opened = wait_for(
+                settings_opened_in_front, "the exact frontmost System Settings Device Control page",
+            )
+            settings_pid = opened["settings"]
+            verified_settings_pid = settings_pid
+            verified_settings_page = opened["page"]
+            after_nodes = wait_for(
+                lambda: (current if ordinary_permission_counts(
+                    current := self.view(app_pid), self.name,
+                ) else None),
+                "the same ordinary General surfaces after Settings opens",
+            )
+            after_counts = ordinary_permission_counts(after_nodes, self.name)
+            if not ordinary_three_grants_ready(after_counts) or after_counts != before_counts:
+                raise RuntimeError("the three ordinary permission rows changed during the title-only Settings visit")
+
+            def attached_sample():
+                observation = self.latest_window_observation()
+                if (isinstance(observation, dict) and
+                    observation.get("sample_completed_at", 0) >= press["ax_press_completed_at"] and
+                    cold_settings_attachment_ready(
+                        observation, app_pid=app_pid, app_name=self.name,
+                        settings_pid=settings_pid, page=opened["page"],
+                    )):
+                    return observation
+                return None
+
+            observed = wait_for(attached_sample, "the same QA permission card attached beside the cold-opened Settings page")
+            self.record_window_latencies("cold-settings-reattach", press)
+            attachment = observed["state"]["attachment"]
+            card_bounds = attachment["permission_card_bounds"]
+            settings_bounds = attachment["settings_bounds"]
+            direction = "right" if card_bounds[0] >= settings_bounds[0] + settings_bounds[2] else "left"
+            self.record("cold_settings_reattach_observed", {
+                "app": app_pid, "settings": settings_pid, "page": opened["page"],
+                "front": opened["front"], "permission_rows_before": before_counts,
+                "permission_rows_after": after_counts, "permission_rows_unchanged": True,
+                "title_press_started_at": press["ax_press_started_at"],
+                "title_press_completed_at": press["ax_press_completed_at"],
+                "settings_frontmost": opened["front"] == settings_pid,
+                "attachment_direction": direction,
+                "horizontal_gap": attachment["horizontal_gap"],
+                "top_delta": attachment["top_delta"],
+                "permission_card_bounds": card_bounds, "settings_bounds": settings_bounds,
+                "window_observation": observed,
+                "permission_change_requested": False, "native_permission_action_performed": False,
+                "native_drop_performed": False,
+            })
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+            flow_error = error
+            self.record("cold_settings_reattach_flow_failed", {
+                "error": str(error), "app": app_pid,
+                "permission_change_requested": False, "native_permission_action_performed": False,
+                "native_drop_performed": False,
+            })
+        finally:
+            app_pid = app_pid or getattr(self, "cold_settings_opened_app_pid", None)
+            if app_pid:
+                current = None
+                try:
+                    current = self.probe()
+                    cleanup = capture(
+                        self.driver, "close-cold-attach", self.bundle,
+                        str(app_pid), str(verified_settings_pid), verified_settings_page,
+                        str(restore_pid), restore_bundle_id,
+                    )
+                    self.record("cold_settings_reattach_cleanup", cleanup)
+                except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+                    self.record("cold_settings_reattach_cleanup_failed", {
+                        "error": str(error), "app": app_pid,
+                        "last_probe": focus_probe_summary(current) if isinstance(current, dict) else None,
+                        "settings_pid_owned_by_this_run": verified_settings_pid,
+                        "foreground_restore_attempted": False,
+                    })
+                    if verified_settings_pid:
+                        try:
+                            cleanup = capture(
+                                self.driver, "close-cold-attach", self.bundle,
+                                str(app_pid), "0", "", str(restore_pid), restore_bundle_id,
+                            )
+                            self.record("cold_settings_reattach_qa_only_cleanup", cleanup)
+                        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as fallback_error:
+                            self.record("cold_settings_reattach_qa_only_cleanup_failed", {
+                                "error": str(fallback_error), "app": app_pid,
+                                "settings_closed_by_fallback": False,
+                                "foreground_activation_performed_by_fallback": False,
+                            })
+
+        if flow_error is not None:
+            raise flow_error
+        if not isinstance(cleanup, dict) or cleanup.get("app_closed") is not True or \
+                cleanup.get("settings_closed") is not True or cleanup.get("foreground_restored") is not True:
+            raise RuntimeError("the cold Settings re-entry run could not close its exact QA/Settings processes and restore the prior foreground")
+
+        def clean_foreground_sample():
+            observation = self.latest_window_observation()
+            state = observation.get("state", {}) if isinstance(observation, dict) else {}
+            if (state.get("dev_pids") == [] and state.get("settings_pid") == 0 and
+                state.get("frontmost_pid") == restore_pid):
+                return observation
+            return None
+
+        cleanup_windows = wait_for(
+            clean_foreground_sample, "the QA and Settings windows closed with the original app frontmost",
+        )
+        self.record("COLD_SETTINGS_REATTACH_PASS", {
+            "scope": "cold-settings-reattach", "app_closed": cleanup["app_closed"],
+            "settings_closed": cleanup["settings_closed"],
+            "foreground_restored": cleanup["foreground_restored"],
+            "restored_front_pid": restore_pid, "restored_front_bundle_id": restore_bundle_id,
+            "cleanup_window_observation": cleanup_windows,
+            "permission_change_requested": False, "native_permission_action_performed": False,
+            "native_drop_performed": False,
+        })
+        return cleanup
 
     def complete_general_list_permissions(self, state, nodes, scope):
         if not ordinary_permission_guide_complete(nodes, self.name, allow_bluetooth_pending=True):
@@ -1029,7 +1436,9 @@ class Acceptance:
         })
 
     def record(self, stage, values):
-        entry = {"stage": stage, "timestamp": time.time(), **values}
+        # Event names and wall timestamps are protocol fields, even when a
+        # caller accidentally passes colliding keys in its detail mapping.
+        entry = {**values, "stage": stage, "timestamp": time.time()}
         with (self.output / "run.ndjson").open("a") as log:
             log.write(json.dumps(entry, ensure_ascii=False) + "\n")
         print(json.dumps(entry, ensure_ascii=False), flush=True)
@@ -1103,6 +1512,8 @@ class Acceptance:
             })
             return initial
         if initial["state"] == "granted":
+            if getattr(self, "bluetooth_deny", False):
+                raise RuntimeError("Bluetooth was already authorized before the denial action; use a fresh QA identity")
             actor = "user" if actor_requested == "user" else "preexisting_or_external"
             self.record("bluetooth_permission_readback", {
                 "scope": scope, "app": pid, "permission": "bluetooth",
@@ -1164,6 +1575,40 @@ class Acceptance:
         self.record("bluetooth_system_request_matched", {
             "scope": scope, "app": pid, "permission": "bluetooth", **request,
         })
+        if getattr(self, "bluetooth_deny", False):
+            action = capture(self.driver, "deny-bluetooth", self.bundle, str(pid))
+            if not bluetooth_deny_action_matches(
+                action, pid=pid, app_name=self.name,
+                bundle_id=self.identifier, bundle_path=self.bundle,
+            ):
+                raise RuntimeError("the native Bluetooth denial action did not prove the exact target and unique Don't Allow button")
+            self.record("bluetooth_system_deny_action", {"scope": scope, **action})
+            final = self.wait_for_bluetooth_state(
+                pid, scope, timeout=12, initial=initial, deny_action=action,
+            )
+            if final["kind"] != "denied":
+                raise RuntimeError("the same app did not report Bluetooth denied after the native Don't Allow action")
+            target = final["target"]
+            capability_source = final.get(
+                "permission_state_source", "same_app_permission_guide_CoreBluetooth_CBManager_authorization",
+            )
+            denial = {
+                **target, "state": "denied", "presentation_state": target["state"],
+                "capability_state": "denied", "capability_source": capability_source,
+                "capability_trace": final.get("capability_trace"),
+            }
+            self.record("bluetooth_permission_readback", {
+                "scope": scope, "app": pid, "permission": "bluetooth",
+                "status": "denied", "authorization_actor": "acceptance_runner",
+                "actor_source": "exact_native_deny_button_action",
+                "action": action["performed"], "system_request": request,
+                "permission_rows": target["counts"],
+                "ui_presentation_state": target["state"],
+                "permission_state_source": capability_source,
+                "capability_trace": final.get("capability_trace"),
+                "source": capability_source,
+            })
+            return denial
         if actor_requested == "runner":
             action = capture(self.driver, "allow-bluetooth", self.bundle, str(pid))
             if (action.get("performed") != "AXPress Allow" or
@@ -1229,17 +1674,20 @@ class Acceptance:
             "other_permissions_reset": False,
         })
 
-    def wait_for_bluetooth_state(self, pid, scope, *, timeout, request_expected=False, initial=None):
+    def wait_for_bluetooth_state(self, pid, scope, *, timeout, request_expected=False, initial=None,
+                                 deny_action=None):
         actor_requested = getattr(self, "bluetooth_allow_actor", "runner")
         started = time.monotonic()
+        started_epoch = time.time()
         deadline = None if timeout == 0 else started + timeout
+        deadline_epoch = None if timeout == 0 else started_epoch + timeout
         polls = 0
         while deadline is None or time.monotonic() < deadline:
             polls += 1
             nodes = self.view(pid)
             target = bluetooth_permission_target(nodes, self.name, scope)
             readback_source = "same_app_accessibility_row_snapshot"
-            if target is None or target["state"] not in ("pending", "granted"):
+            if target is None or target["state"] not in ("pending", "granted", "denied"):
                 completed_first_use = (
                     bluetooth_completed_first_use_target(initial, nodes, self.name)
                     if initial is not None else None
@@ -1279,6 +1727,44 @@ class Acceptance:
                     "kind": "granted", "request": request, "target": target,
                     "readback_source": readback_source,
                 }
+            if request.get("status") == "absent" and target["state"] == "denied":
+                self.record("bluetooth_state_observation", {
+                    "scope": scope, "app": pid, "outcome": "denied", "poll_count": polls,
+                    "elapsed_ms": round((time.monotonic() - started) * 1_000, 2),
+                    "permission_state_source": "same_app_permission_guide_CoreBluetooth_CBManager_authorization",
+                    "ui_presentation_state": target["state"],
+                })
+                return {
+                    "kind": "denied", "request": request, "target": target,
+                    "readback_source": "same_app_accessibility_row_snapshot",
+                    "permission_state_source": "same_app_permission_guide_CoreBluetooth_CBManager_authorization",
+                }
+            if request.get("status") == "absent" and target["state"] == "pending" and deny_action is not None:
+                trace_path = self.config / f"permission-guide-{self.identifier}.log"
+                try:
+                    trace_lines = trace_path.read_text().splitlines()
+                except OSError:
+                    trace_lines = []
+                trace = bluetooth_denial_trace_evidence(
+                    trace_lines, action=deny_action, pid=pid, app_name=self.name,
+                    bundle_id=self.identifier, bundle_path=self.bundle,
+                    inspected_at_epoch=time.time(), verification_deadline_epoch=deadline_epoch,
+                )
+                if trace is not None:
+                    self.record("bluetooth_state_observation", {
+                        "scope": scope, "app": pid, "outcome": "denied", "poll_count": polls,
+                        "elapsed_ms": round((time.monotonic() - started) * 1_000, 2),
+                        "permission_state_source": trace["readback_source"],
+                        "ui_presentation_state": target["state"], "capability_trace": trace,
+                        "readback_started_at_epoch": started_epoch,
+                        "readback_deadline_epoch": deadline_epoch,
+                    })
+                    return {
+                        "kind": "denied", "request": request, "target": target,
+                        "readback_source": trace["readback_source"],
+                        "permission_state_source": trace["readback_source"],
+                        "capability_trace": trace,
+                    }
             if request.get("status") not in ("absent", "ready"):
                 raise RuntimeError("an unrelated or ambiguous system request is visible; no Allow button was pressed")
             time.sleep(0.18)
@@ -1287,6 +1773,8 @@ class Acceptance:
             "permission_state": "pending", "request_expected": request_expected,
             "system_action_performed_by_runner": False, "poll_count": polls,
             "elapsed_ms": round((time.monotonic() - started) * 1_000, 2),
+            "readback_started_at_epoch": started_epoch,
+            "readback_deadline_epoch": deadline_epoch,
         })
         raise RuntimeError("the exact Dev Bluetooth request or authorized row did not appear")
 
@@ -1478,6 +1966,7 @@ class Acceptance:
         current = initial
         consecutive_settings_samples = 0
         observations = []
+        activation_attempted = False
         self.record("restart_prompt_observed", {
             "app_pid": app_pid, "settings_pid": settings_pid,
             "initial_frontmost_pid": initial.get("front"),
@@ -1513,8 +2002,24 @@ class Acceptance:
                     "restart_prompt_disappeared" if not current.get("restart") else
                     "settings_did_not_regain_frontmost_ownership"
                 )
+                if reason == "settings_did_not_regain_frontmost_ownership" and not activation_attempted:
+                    activation_attempted = True
+                    bundle_id = getattr(self, "identifier", None)
+                    bundle_path = str(getattr(self, "bundle", ""))
+                    if restart_prompt_focus_recovery_candidate(
+                        current, app_pid, settings_pid, bundle_id, bundle_path,
+                    ):
+                        current = self.recover_restart_prompt_focus_once(current, app_pid, settings_pid)
+                        deadline = time.monotonic() + RESTART_FOCUS_RECOVERY_SECONDS
+                        continue
+                    self.record("restart_prompt_focus_recovery_blocked", {
+                        "app_pid": app_pid, "settings_pid": settings_pid,
+                        "observation": focus_probe_summary(current),
+                        "activation_performed": False,
+                        "permission_change_requested": False, "native_drag_performed": False,
+                    })
                 self.record("RESTART_FOCUS_INTERRUPTED", {
-                    "stage": "restart_prompt_before_click",
+                    "phase": "restart_prompt_before_click",
                     "reason": reason,
                     "last_observation": summary,
                     "observations": observations,
@@ -1529,6 +2034,80 @@ class Acceptance:
                 )
             current = self.probe()
             time.sleep(0.18)
+
+    def recover_restart_prompt_focus_once(self, state, app_pid, settings_pid):
+        if not restart_prompt_focus_recovery_candidate(
+            state, app_pid, settings_pid, self.identifier, str(self.bundle),
+        ):
+            self.record("restart_prompt_focus_recovery_blocked", {
+                "app_pid": app_pid, "settings_pid": settings_pid,
+                "observation": focus_probe_summary(state),
+                "activation_performed": False,
+                "permission_change_requested": False, "native_drag_performed": False,
+            })
+            raise RuntimeError(
+                "the exact app, Settings page and unique restart prompt were not safe for a one-time focus recovery"
+            )
+        existing = []
+        journal = self.output / "run.ndjson"
+        if journal.is_file():
+            for line in journal.read_text().splitlines():
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (entry.get("stage") == "restart_prompt_focus_recovery_requested" and
+                        entry.get("app_pid") == app_pid and entry.get("settings_pid") == settings_pid):
+                    existing.append(entry)
+        if existing:
+            self.record("restart_prompt_focus_recovery_blocked", {
+                "app_pid": app_pid, "settings_pid": settings_pid,
+                "prior_attempt_count": len(existing), "activation_performed": False,
+                "permission_change_requested": False, "native_drag_performed": False,
+            })
+            raise RuntimeError("the one-time restart prompt focus recovery was already attempted for this PID pair")
+        request = {
+            "app_pid": app_pid, "settings_pid": settings_pid,
+            "page": state["page"], "initial_frontmost_pid": state["front"],
+            "initial_frontmost_bundle_id": state["frontmost_bundle_id"],
+            "app_bundle_id": self.identifier, "app_bundle_path": str(self.bundle),
+            "permission_change_requested": False, "native_drag_performed": False,
+            "activation_count": 1,
+        }
+        self.record("restart_prompt_focus_recovery_requested", request)
+        try:
+            action = capture(
+                self.driver, "recover-restart-prompt-focus", self.bundle,
+                str(app_pid), str(settings_pid), state["page"],
+                str(state["front"]), state["frontmost_bundle_id"],
+            )
+        except RuntimeError as error:
+            detail = error.args[0] if error.args else str(error)
+            self.record("restart_prompt_focus_recovery_failed", {**request, "error": detail})
+            raise
+        if not restart_prompt_focus_action_matches(
+            action, app_pid=app_pid, settings_pid=settings_pid, page=state["page"],
+            front_pid=state["front"], front_bundle_id=state["frontmost_bundle_id"],
+            bundle_id=self.identifier, bundle_path=str(self.bundle),
+        ):
+            self.record("restart_prompt_focus_recovery_failed", {
+                **request, "native_action": action, "activation_performed": action.get("activation_performed"),
+            })
+            raise RuntimeError("the one-time System Settings activation did not match the exact restart-prompt evidence")
+        self.record("restart_prompt_focus_recovery_native", {**request, **action})
+        readback = self.probe()
+        if not restart_prompt_focus_ready(readback, app_pid, settings_pid):
+            self.record("restart_prompt_focus_recovery_readback_failed", {
+                **request, "readback": focus_probe_summary(readback),
+                "activation_performed": True,
+            })
+            raise RuntimeError("Settings did not retain the same restart prompt after the one-time activation")
+        self.record("restart_prompt_focus_recovery_readback", {
+            **request, "readback": focus_probe_summary(readback),
+            "settings_frontmost": True, "exact_restart_prompt_still_visible": True,
+            "permission_change_requested": False, "native_drag_performed": False,
+        })
+        return readback
 
     def wait_for_resumed_settings_focus(self, initial, app_pid, settings_pid):
         """Keep the resumed page's real Settings-front assertion, allowing transient focus to settle."""
@@ -1554,7 +2133,7 @@ class Acceptance:
                 consecutive_settings_samples = 0
             if time.monotonic() >= deadline:
                 self.record("RESTART_FOCUS_INTERRUPTED", {
-                    "stage": "resumed_permission_page",
+                    "phase": "resumed_permission_page",
                     "reason": "settings_did_not_retain_frontmost_ownership_or_cover_order",
                     "last_observation": summary,
                     "observation_count": len(observations),
@@ -1669,7 +2248,11 @@ class Acceptance:
 
     def finish_input_drop(self, pid, settings_pid):
         entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
-        recorded_pid, recorded_settings_pid = resume_input_drop_args(entries, self.identity, app_name=self.name)
+        recorded_pid, recorded_settings_pid = resume_input_drop_args(
+            entries, self.identity, app_name=self.name,
+            bluetooth_deny=self.bluetooth_deny,
+            capture_device_control_frames=self.capture_device_control_frames,
+        )
         if (pid, settings_pid) != (recorded_pid, recorded_settings_pid):
             raise RuntimeError("the supplied PIDs do not match the recorded input drop")
         self.record("input_drop_resume_started", {
@@ -1682,25 +2265,68 @@ class Acceptance:
                 return None
             if state["app"] == pid and state["restart"]:
                 return state
-            if state["app"] not in (0, pid) and not pid_exists(pid):
+            if state["app"] == 0 and state["restart"]:
+                inspected = self.probe("inspect-restart-prompt")
+                if restart_prompt_owner_matches(
+                    inspected, previous_app_pid=pid, settings_pid=settings_pid,
+                    app_name=self.name, bundle_id=self.identifier, bundle_path=str(self.bundle),
+                ):
+                    details = inspected["restart_prompt_inspection"]
+                    self.record("restart_prompt_owner_verified", {
+                        "previous_app_pid": pid, "app_pid_absent": True,
+                        "settings_pid": settings_pid, "bundle_id": self.identifier,
+                        "bundle_path": str(self.bundle), "app_display_name": self.name,
+                        "source": "unique_axsheet_exact_quoted_app_name",
+                        "restart_action_count": details["restart_action_count"],
+                        "restart_sheet_count": details["restart_sheet_count"],
+                        "restart_sheet_name_match_count": details["restart_sheet_name_match_count"],
+                        "matched_text_templates": details["matched_text_templates"],
+                        "password": inspected["password"],
+                        "native_drag_performed": False,
+                    })
+                    return inspected
+            if state["app"] not in (0, pid):
                 return state
             return None
 
         state = self.wait_auth_or("input-monitoring", restart_available)
         if state["app"] == pid:
             state = self.wait_for_restart_prompt_focus(state, pid, settings_pid)
-        if state["app"] == pid:
             self.record("system_restart", self.probe("restart"))
+            reopened_before_action = False
+        elif state["app"] == 0 and state.get("restart"):
+            if not restart_prompt_owner_matches(
+                state, previous_app_pid=pid, settings_pid=settings_pid,
+                app_name=self.name, bundle_id=self.identifier, bundle_path=str(self.bundle),
+            ):
+                raise RuntimeError("the orphaned restart sheet is not explicitly owned by this exact isolated app")
+            action = capture(
+                self.driver, "restart-owned-orphan", self.bundle, str(pid), str(settings_pid),
+                str(state["front"]), state["frontmost_bundle_id"],
+            )
+            if not orphan_restart_action_matches(
+                action, previous_app_pid=pid, settings_pid=settings_pid,
+                front_pid=state["front"], front_bundle_id=state["frontmost_bundle_id"],
+                bundle_id=self.identifier, bundle_path=str(self.bundle),
+            ):
+                raise RuntimeError("the owned restart sheet did not return the exact one-time native Quit & Reopen action")
+            self.record("system_restart", action)
+            reopened_before_action = False
         else:
-            if not any(entry.get("stage") == "reopened_between_probes" and
-                       entry.get("previous_pid") == pid and entry.get("app") == state["app"]
-                       for entry in entries):
-                self.record("reopened_between_probes", {"previous_pid": pid, "app": state["app"],
-                                                        "settings": settings_pid})
+            if state["app"] <= 0:
+                raise RuntimeError("the target app did not expose a verified owned restart action or new PID")
+            self.record("reopened_between_probes", {
+                "previous_pid": pid, "app": state["app"], "settings": settings_pid,
+                "bundle_id": self.identifier, "bundle_path": str(self.bundle),
+                "executable_sha256": self.sha, "source": "observed_before_restart_action",
+            })
+            reopened_before_action = True
 
         def resumed():
             state = self.probe()
-            if state["app"] in (pid, 0) or state["settings"] != settings_pid or state["page"] not in CONTROL_PAGES:
+            if (state["app"] in (pid, 0) or state["settings"] != settings_pid or
+                state["page"] not in CONTROL_PAGES or state.get("bundle_id") != self.identifier or
+                state.get("bundle_path") != str(self.bundle)):
                 return None
             nodes = self.view(state["app"])
             if first_use_existing_input_target(nodes, self.name, allow_bluetooth_pending=True):
@@ -1709,6 +2335,12 @@ class Acceptance:
 
         state = wait_for(resumed, "new PID with input monitoring granted and device control open")
         resumed_pid = state["app"]
+        if not reopened_before_action:
+            self.record("reopened_between_probes", {
+                "previous_pid": pid, "app": resumed_pid, "settings": settings_pid,
+                "bundle_id": self.identifier, "bundle_path": str(self.bundle),
+                "executable_sha256": self.sha, "source": "same_app_new_pid_after_system_restart",
+            })
         state = self.wait_for_resumed_settings_focus(state, resumed_pid, settings_pid)
         if not any(entry.get("stage") == "resumed" and entry.get("app") == resumed_pid and
                    entry.get("settings") == settings_pid for entry in entries):
@@ -1739,13 +2371,269 @@ class Acceptance:
             state, app_pid=resumed_pid, pages=CONTROL_PAGES, stage="resumed-device-control",
         )
         self.record("device_control_ready", {**state, **focus})
-        self.record("native_drop", self.drag(
+        if self.capture_device_control_frames:
+            self.start_device_control_capture(resumed_pid, control_press)
+        control_drop = self.drag(
             "drag-control", permission="device-control", app_pid=resumed_pid,
             settings_pid=settings_pid, pages=CONTROL_PAGES,
-        ))
+        )
+        self.device_control_drop_result = control_drop
+        self.record("native_drop", control_drop)
         self.finish(pid, resumed_pid, settings_pid)
 
+    def start_device_control_capture(self, pid, press_result):
+        video = self.output / "device-control-first-use.mp4"
+        log = self.output / "device-control-recorder.ndjson"
+        stop_file = self.output / "device-control-recorder.stop"
+        if video.exists() or log.exists() or stop_file.exists():
+            raise RuntimeError("the Device Control frame evidence path already exists; use a fresh acceptance output")
+        nodes = self.view(pid)
+        panel_windows = [
+            node for node in nodes
+            if node.get("role") == "AXWindow" and node.get("title") == self.name + " 系统权限"
+        ]
+        panel = panel_windows[0].get("bounds") if len(panel_windows) == 1 else None
+        row = press_result.get("row_anchor_bounds")
+        action = press_result.get("action_bounds")
+        if (not isinstance(panel, dict) or not isinstance(row, dict) or not isinstance(action, dict) or
+                not all(isinstance(panel.get(key), (int, float)) for key in ("x", "y", "width", "height"))):
+            raise RuntimeError("the read-only Device Control capture has no unique permission-card and row geometry")
+        scale = 2
+        left = max(0.0, action["x"] - panel["x"] - 8)
+        right = min(panel["width"], action["x"] + action["width"] - panel["x"] + 8)
+        center_y = row["y"] + row["height"] / 2 - panel["y"]
+        top = max(0.0, center_y - 18)
+        bottom = min(panel["height"], center_y + 18)
+        roi = (int(left * scale), int(top * scale),
+               max(1, int((right - left) * scale)), max(1, int((bottom - top) * scale)))
+        roi_points = (left, top, right - left, bottom - top)
+        log_handle = log.open("w")
+        try:
+            process = subprocess.Popen(
+                [self.window_recorder, self.identifier, str(self.bundle), str(pid),
+                 self.name + " 系统权限", str(video), "0", *(str(value) for value in roi), str(stop_file)],
+                stdout=log_handle, stderr=log_handle,
+            )
+        except Exception:
+            log_handle.close()
+            raise
+        self.device_control_capture_process = process
+        self.device_control_capture_log_handle = log_handle
+        self.device_control_capture_video = video
+        self.device_control_capture_log = log
+        self.device_control_capture_stop_file = stop_file
+        self.device_control_capture_press = press_result
+        self.device_control_capture_roi = roi
+        self.device_control_capture_roi_points = roi_points
+        self.device_control_capture_panel_bounds = panel
+        deadline = time.monotonic() + 12
+        prepared = None
+        running = False
+        while time.monotonic() < deadline:
+            events = self.read_device_control_capture_events()
+            prepared = next((event for event in events if event.get("event") == "capture_prepared"), prepared)
+            running = any(event.get("event") == "capture_running" for event in events)
+            if running:
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+        if not running or prepared is None:
+            detail = self.device_control_capture_log.read_text(errors="replace")[-1_200:]
+            raise RuntimeError("the read-only Device Control window recorder did not start: " + detail)
+        frame = prepared.get("window_frame_points")
+        if (prepared.get("bundle_id") != self.identifier or prepared.get("bundle_path") != str(self.bundle) or
+                prepared.get("pid") != pid or not isinstance(frame, list) or len(frame) != 4 or
+                any(abs(float(actual) - float(expected)) > 2 for actual, expected in zip(
+                    frame, (panel["x"], panel["y"], panel["width"], panel["height"]),
+                ))):
+            raise RuntimeError("the ScreenCaptureKit window geometry did not match the same app's AX permission card")
+        self.record("device_control_video_capture_started", {
+            "app": pid, "window_title": self.name + " 系统权限",
+            "video": str(video), "log": str(log),
+            "permission_row_anchor_bounds": press_result.get("row_anchor_bounds"),
+            "permission_action_bounds": press_result.get("action_bounds"),
+            "capture": prepared, "audio": False, "microphone": False, "cursor": False,
+            "roi_pixels": list(roi), "roi_panel_points": list(roi_points),
+            "observer_only": True,
+        })
+
+    def stop_device_control_recorder(self):
+        process = getattr(self, "device_control_capture_process", None)
+        if process is None:
+            return
+        stop_file = getattr(self, "device_control_capture_stop_file", None)
+        if stop_file is not None:
+            stop_file.write_text("stop\n")
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.wait(timeout=4)
+        handle = getattr(self, "device_control_capture_log_handle", None)
+        if handle is not None:
+            handle.close()
+            self.device_control_capture_log_handle = None
+        self.device_control_capture_process = None
+
+    def read_device_control_capture_events(self):
+        path = getattr(self, "device_control_capture_log", None)
+        if path is None or not path.is_file():
+            return []
+        events = []
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        return events
+
+    def finish_device_control_capture(self):
+        process = getattr(self, "device_control_capture_process", None)
+        if not getattr(self, "capture_device_control_frames", False) or process is None:
+            return None
+        stop_file = self.device_control_capture_stop_file
+        stop_file.write_text("stop\n")
+        try:
+            return_code = process.wait(timeout=20)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError("the read-only Device Control window recorder did not finalize") from error
+        finally:
+            handle = getattr(self, "device_control_capture_log_handle", None)
+            if handle is not None:
+                handle.close()
+                self.device_control_capture_log_handle = None
+        self.device_control_capture_process = None
+        events = self.read_device_control_capture_events()
+        if return_code != 0 or not any(event.get("event") == "recording_finished" for event in events):
+            raise RuntimeError("the read-only Device Control window recording failed to finalize")
+        prepared = next((event for event in events if event.get("event") == "capture_prepared"), None)
+        if prepared is None:
+            raise RuntimeError("the Device Control recording has no exact-window geometry receipt")
+        frame = prepared.get("window_frame_points")
+        if not isinstance(frame, list) or len(frame) != 4:
+            raise RuntimeError("the Device Control recording is missing its exact-window geometry receipt")
+        roi = self.device_control_capture_roi
+        scan = subprocess.run(
+            [self.frame_scan, str(self.device_control_capture_video), *(str(value) for value in roi),
+             str(self.output / "device-control-first-use")],
+            text=True, capture_output=True, timeout=90,
+        )
+        scan_events = []
+        for line in scan.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                scan_events.append(event)
+        if scan.returncode:
+            raise RuntimeError("the Device Control video frame scan failed: " + (scan.stderr.strip() or scan.stdout[-1_200:]))
+        summary = next((event for event in reversed(scan_events) if event.get("event") == "scan_complete"), None)
+        if summary is None:
+            raise RuntimeError("the Device Control video frame scan produced no completion summary")
+        green_event = next((event for event in events if event.get("event") == "first_green_live_sample"), None)
+        green = green_event.get("current_green_sample") if isinstance(green_event, dict) else None
+        previous_non_green = green_event.get("previous_non_green_sample") if isinstance(green_event, dict) else None
+        drop = getattr(self, "device_control_drop_result", {})
+        green_wall = None
+        green_delta_ms = None
+        if isinstance(green, dict):
+            green_wall = green.get("wall_received_epoch")
+            if green_wall is not None and isinstance(drop, dict) and drop.get("mouse_up_posted_at"):
+                green_delta_ms = round((green_wall - drop["mouse_up_posted_at"]) * 1_000, 2)
+        sample_interval_ms = None
+        if (isinstance(green, dict) and isinstance(previous_non_green, dict) and
+                isinstance(green.get("wall_received_epoch"), (int, float)) and
+                isinstance(previous_non_green.get("wall_received_epoch"), (int, float))):
+            sample_interval_ms = round(
+                (green["wall_received_epoch"] - previous_non_green["wall_received_epoch"]) * 1_000, 2,
+            )
+        timing = {
+            "permission": "device-control", "observer_only": True,
+            "video": str(self.device_control_capture_video), "roi_pixels": list(roi),
+            "green_threshold_pixels": 8,
+            "mouse_up_at": drop.get("mouse_up_at") if isinstance(drop, dict) else None,
+            "mouse_up_posted_at": drop.get("mouse_up_posted_at") if isinstance(drop, dict) else None,
+            "first_green_frame_presentation_seconds": green.get("presentation_seconds") if isinstance(green, dict) else None,
+            "first_green_frame_index": green.get("frame_index") if isinstance(green, dict) else None,
+            "first_green_frame_callback_sample_index": green.get("index") if isinstance(green, dict) else None,
+            "first_green_frame_pixel_count": green.get("greenish_pixels_in_roi") if isinstance(green, dict) else None,
+            "previous_non_green_sample": previous_non_green,
+            "first_green_frame_png": green_event,
+            "first_green_frame_callback_wall_epoch": green_wall,
+            "first_green_after_mouse_up_posted_ms": green_delta_ms,
+            "previous_non_green_to_first_green_sample_interval_ms": sample_interval_ms,
+            "target_row_status_text": summary.get("first_target_row_status_text"),
+            "frame_scan": summary,
+            "timing_semantics": "live ScreenCaptureKit callback wall time paired on the same sample as ROI pixels; previous non-green and first green sample bound presentation detection; release-to-callback is an upper-bound observation, not hardware-vsync time; AVAsset decode PTS is not used for wall-time subtraction",
+        }
+        self.record("device_control_first_frame_scan", timing)
+        return timing
+
+    def resume_postgrant_completion_if_needed(self, pid, resumed_pid, settings_pid):
+        if getattr(self, "finish_postgrant_checkpoint", None) is None:
+            return pid, resumed_pid, settings_pid
+        state = self.probe()
+        if state.get("app") == resumed_pid:
+            return pid, resumed_pid, settings_pid
+        if state.get("app") != 0:
+            raise RuntimeError("a different app process appeared before post-grant first-use completion")
+        checkpoint = self.finish_postgrant_checkpoint
+        progress_path = self.config / "onboarding.json"
+        progress = read_json(progress_path)
+        if not finish_postgrant_relaunch_preflight(
+            state, progress, bundle_id=self.identifier, bundle_path=str(self.bundle), checkpoint=checkpoint,
+        ):
+            raise RuntimeError("the exited post-grant app is not safe to relaunch for first-use completion")
+        self.record("finish_postgrant_relaunch_started", {
+            "previous_pid": resumed_pid, "bundle_id": self.identifier,
+            "bundle_path": str(self.bundle), "source": "verified_same_run_both_granted_checkpoint",
+            "permission_action_performed": False, "system_restart_performed": False,
+        })
+        subprocess.run([
+            "/usr/bin/open", "--stderr", str(self.output / "app-stderr.log"), str(self.bundle),
+        ], check=True)
+
+        def launched():
+            current = self.probe()
+            if (current.get("app", 0) <= 0 or current.get("app") in (pid, resumed_pid) or
+                current.get("bundle_id") != self.identifier or current.get("bundle_path") != str(self.bundle)):
+                return None
+            return current
+
+        reopened = wait_for(launched, "same verified app after post-grant completion relaunch")
+        new_pid = reopened["app"]
+        if (reopened.get("settings") != 0 or reopened.get("restart") or reopened.get("password") or
+            reopened.get("system_sheet") or reopened.get("extra_access_warning")):
+            raise RuntimeError("the post-grant relaunch exposed a system prompt or Settings window")
+
+        def completed_view():
+            nodes = self.view_if_windows_available(new_pid)
+            return nodes if nodes and complete_permission_view(nodes, self.name) else None
+
+        wait_for(completed_view, "first-use completion page with all permissions granted")
+        final = self.probe()
+        if (final.get("app") != new_pid or final.get("bundle_id") != self.identifier or
+            final.get("bundle_path") != str(self.bundle) or final.get("front") != new_pid or
+            final.get("settings") != 0 or final.get("restart") or final.get("password") or
+            final.get("system_sheet") or final.get("extra_access_warning")):
+            raise RuntimeError("the post-grant completion page changed app identity or exposed a system prompt")
+        self.record("finish_postgrant_relaunched", {
+            "previous_pid": resumed_pid, "app": new_pid, "bundle_id": self.identifier,
+            "bundle_path": str(self.bundle), "source": "verified_same_run_both_granted_checkpoint",
+            "permission_action_performed": False, "system_restart_performed": False,
+            "permission_summary": "全部已授权",
+            "continuity": "new_pid_for_post_grant_completion_only",
+        })
+        return pid, new_pid, settings_pid
+
     def finish(self, pid, resumed_pid, settings_pid):
+        pid, resumed_pid, settings_pid = self.resume_postgrant_completion_if_needed(
+            pid, resumed_pid, settings_pid,
+        )
         progress = self.config / "onboarding.json"
 
         def granted(state):
@@ -1753,11 +2641,21 @@ class Acceptance:
                 state.get("settings") in (settings_pid, 0) and not state.get("restart")):
                 nodes = self.view_if_windows_available(resumed_pid)
                 target = bluetooth_permission_target(nodes, self.name, "full-first-use") if nodes else None
+                if (getattr(self, "bluetooth_deny", False) and target is not None and
+                    target["state"] != "pending"):
+                    raise RuntimeError("the fresh first-use Bluetooth row was not pending before the denial action")
                 if bluetooth_is_last_pending(target):
                     self.record("list_permissions_ready_for_bluetooth", {
                         "app": resumed_pid, "scope": "full-first-use", "permission_rows": target["counts"],
                     })
-                    self.ensure_bluetooth_permission(resumed_pid, scope="full-first-use")
+                    bluetooth_final = self.ensure_bluetooth_permission(resumed_pid, scope="full-first-use")
+                    if getattr(self, "bluetooth_deny", False):
+                        if bluetooth_final.get("state") != "denied":
+                            raise RuntimeError("the isolated Bluetooth denial run did not read back denied")
+                        self.bluetooth_denial_target = bluetooth_final
+                        self.bluetooth_denial_verified = True
+                        return {"bluetooth_denial_terminal": True, "app": resumed_pid,
+                                "settings": state.get("settings", 0), "front": resumed_pid}
                     state = self.probe()
             return self.granted_after_restart(state, pid, settings_pid, resumed_pid)
 
@@ -1792,7 +2690,30 @@ class Acceptance:
             return None
 
         state = self.wait_auth_or("device-control", confirm_or_finish)
+        if getattr(self, "bluetooth_denial_verified", False):
+            target = self.bluetooth_denial_target
+            if not target or target.get("state") != "denied":
+                raise RuntimeError("the verified Bluetooth denial has no same-app row evidence")
+            self.finish_device_control_capture()
+            self.close(resumed_pid)
+            self.record("BLUETOOTH_DENIAL_PASS", {
+                "initial_pid": pid, "resumed_pid": resumed_pid, "settings_pid": settings_pid,
+                "bundle_id": self.identifier, "bundle": str(self.bundle),
+                "executable_sha256": self.sha,
+                "permission_rows": target["counts"],
+                "permission_ui_presentation_state": target.get("presentation_state"),
+                "actual_capability_state": target.get("capability_state", "denied"),
+                "actual_capability_source": target.get(
+                    "capability_source", "same_app_permission_guide_CoreBluetooth_CBManager_authorization",
+                ),
+                "actual_capability_trace": target.get("capability_trace"),
+                "device_control_granted_before_bluetooth_request": True,
+                "first_use_completed": False,
+                "app_closed_after_readback": True,
+            })
+            return
         self.record("both_granted", state)
+        self.finish_device_control_capture()
         self.press(resumed_pid, "继续")
         start = "开始使用 " + self.name
         wait_for(lambda: has_button(self.view(resumed_pid), start), "completion page")
@@ -1845,22 +2766,95 @@ class Acceptance:
         wait_for(lambda: not pid_exists(pid), "verification process exit")
 
 
-def finish_args(entries, identity):
+def finish_args(entries, identity, *, app_name=None):
     if not entries or entries[0].get("stage") != "identity" or any(
         entries[0].get(key) != value for key, value in identity.items()
     ):
         raise RuntimeError("the existing run belongs to a different frozen bundle")
     last = entries[-1]
-    if last.get("stage") == "system_control_confirmed" and len(entries) > 1:
-        drop = entries[-2]
+    drops = [entry for entry in entries if entry.get("stage") == "native_drop" and
+             entry.get("performed") == "drag-control"]
+    if len(drops) != 1:
+        raise RuntimeError("the existing run must contain exactly one device-control drop")
+    drop = drops[0]
+    drop_index = entries.index(drop)
+    trailing = entries[drop_index + 1:]
+    if last.get("stage") == "system_control_confirmed":
         if last.get("settings") != drop.get("settings") or last.get("app") != drop.get("app"):
             raise RuntimeError("permission confirmation belongs to a different visit")
-        last = drop
+    elif last.get("stage") != "native_drop":
+        allowed_after_drop = {
+            "AUTH_STATE_CHANGED", "bluetooth_permission_request", "bluetooth_state_observation",
+            "bluetooth_system_request_matched", "bluetooth_system_allow_action",
+            "bluetooth_permission_readback", "list_permissions_ready_for_bluetooth",
+            "app_button", "both_granted", "AUTH_WAIT_TIMEOUT",
+            "finish_postgrant_relaunch_started", "finish_postgrant_relaunched",
+            "device_control_video_capture_stopped_on_runner_exit",
+            "device_control_video_capture_cleanup_failed", "device_control_first_frame_scan",
+        }
+        if (not trailing or any(entry.get("stage") not in allowed_after_drop for entry in trailing) or
+            not any(entry.get("stage") == "both_granted" for entry in trailing)):
+            raise RuntimeError("the existing run has no verified post-grant completion checkpoint")
+        granted_entry = next(entry for entry in reversed(trailing)
+                             if entry.get("stage") == "both_granted")
+        state = granted_entry.get("state", granted_entry)
+        if (not isinstance(state, dict) or state.get("app") != drop.get("app") or
+            state.get("settings") not in (0, drop.get("settings")) or
+            state.get("front") != drop.get("app")):
+            raise RuntimeError("the completed grant checkpoint belongs to a different app or Settings visit")
+        permission_ready = [entry for entry in trailing if entry.get("stage") == "list_permissions_ready_for_bluetooth"]
+        if (len(permission_ready) > 1 or any(
+            entry.get("app") != drop.get("app") or entry.get("scope") != "full-first-use" or
+            entry.get("permission_rows", {}).get("rows") != {
+                "input": "granted", "device_control": "granted", "bluetooth": "pending",
+            }
+            for entry in permission_ready
+        )):
+            raise RuntimeError("the Bluetooth request did not begin from the same app's final pending row")
+        button_events = [entry for entry in trailing if entry.get("stage") == "app_button"]
+        if any(
+            app_name is None or entry.get("app") != drop.get("app") or
+            entry.get("panel_title") != app_name + " 系统权限" or
+            entry.get("row_title") not in BLUETOOTH_ROW_TITLES or
+            entry.get("action") != PERMISSION_ACTION_LABEL or
+            entry.get("scope") != "permissions_panel_and_row"
+            for entry in button_events
+        ):
+            raise RuntimeError("a post-drop permission row action does not belong to this app's Bluetooth row")
+        requests = [entry for entry in trailing if entry.get("stage") == "bluetooth_permission_request"]
+        readbacks = [entry for entry in trailing if entry.get("stage") == "bluetooth_permission_readback"]
+        allow_actions = [entry for entry in trailing if entry.get("stage") == "bluetooth_system_allow_action"]
+        if len(requests) > 1 or len(readbacks) > 1 or len(allow_actions) > 1:
+            raise RuntimeError("the recorded Bluetooth request or Allow action is duplicated")
+        if requests:
+            request = requests[0]
+            if (request.get("app") != drop.get("app") or request.get("scope") != "full-first-use" or
+                request.get("permission") != "bluetooth" or request.get("permission_state_before") != "pending"):
+                raise RuntimeError("the recorded Bluetooth request belongs to a different app or prior state")
+        if allow_actions:
+            action = allow_actions[0]
+            action_data = {key: value for key, value in action.items() if key not in ("stage", "timestamp", "scope")}
+            if (action.get("scope") != "full-first-use" or action.get("target_app_pid") != drop.get("app") or
+                action_data.get("performed") != "AXPress Allow" or
+                action_data.get("authorization_actor") != "acceptance_runner" or
+                not bluetooth_request_evidence_matches(
+                    action_data, pid=drop.get("app"), app_name=app_name,
+                    bundle_id=identity.get("bundle_id"), bundle_path=identity.get("bundle"),
+                )):
+                raise RuntimeError("the recorded Bluetooth Allow action does not match the exact isolated app request")
+        if any(entry.get("status") not in ("granted", "not_applicable", "granted_before_run")
+               for entry in readbacks):
+            raise RuntimeError("the recorded Bluetooth readback is not a completed Allow result")
+        for entry in (item for item in trailing if item.get("stage") == "AUTH_WAIT_TIMEOUT"):
+            last_state = entry.get("last_state")
+            if (entry.get("permission") != "device-control" or not isinstance(last_state, dict) or
+                last_state.get("app_present") is not False or last_state.get("settings_present") is not False or
+                last_state.get("password_prompt") is not False or last_state.get("security_popup") is not False):
+                raise RuntimeError("the prior finish timeout did not describe a clean post-grant exit")
     restart = next((entry for entry in entries if entry["stage"] == "system_restart"), None)
     resumed = next((entry for entry in entries if entry["stage"] == "resumed"), None)
-    if (restart is None or resumed is None or last.get("stage") != "native_drop" or
-        last.get("performed") != "drag-control" or restart["settings"] != resumed["settings"] or
-        last["settings"] != resumed["settings"] or last["app"] != resumed["app"] or
+    if (restart is None or resumed is None or drop["settings"] != resumed["settings"] or
+        drop["app"] != resumed["app"] or restart["settings"] != resumed["settings"] or
         restart["app"] == resumed["app"] or
         resumed["front"] != resumed["settings"] or not resumed["settings_above_setup"]
     ):
@@ -1868,13 +2862,30 @@ def finish_args(entries, identity):
     return restart["app"], resumed["app"], resumed["settings"]
 
 
-def resume_input_drop_args(entries, identity, *, app_name):
+def finish_postgrant_relaunch_preflight(state, progress, *, bundle_id, bundle_path, checkpoint):
+    return (
+        isinstance(checkpoint, dict) and checkpoint.get("stage") == "both_granted" and
+        isinstance(state, dict) and state.get("app") == 0 and state.get("settings") == 0 and
+        state.get("bundle_id") == bundle_id and state.get("bundle_path") == bundle_path and
+        state.get("password") is False and state.get("system_sheet") is False and
+        state.get("restart") is False and state.get("extra_access_warning") is False and
+        isinstance(progress, dict) and progress.get("started") is True and
+        progress.get("completed") is False and progress.get("step") == 2
+    )
+
+
+def resume_input_drop_args(entries, identity, *, app_name, bluetooth_deny=False,
+                           capture_device_control_frames=False):
     if not entries or entries[0].get("stage") != "identity" or any(
         entries[0].get(key) != value for key, value in identity.items()
     ):
         raise RuntimeError("the existing run belongs to a different frozen bundle")
     if entries[0].get("mode") != "full-first-use":
         raise RuntimeError("--resume-input-drop requires a full-first-use run")
+    if bool(entries[0].get("bluetooth_denial_requested", False)) != bool(bluetooth_deny):
+        raise RuntimeError("the resumed Bluetooth denial flag must match the original run journal")
+    if bool(entries[0].get("device_control_frame_capture_requested", False)) != bool(capture_device_control_frames):
+        raise RuntimeError("the resumed Device Control frame capture flag must match the original run journal")
 
     drops = [entry for entry in entries if entry.get("stage") == "native_drop" and
              entry.get("performed") == "drag-input"]
@@ -1898,7 +2909,8 @@ def resume_input_drop_args(entries, identity, *, app_name):
             continue
         matching_button = any(
             button.get("stage") == "app_button" and button.get("app") == initial_pid and
-            button.get("panel_title") == app_name + " 系统权限" and button.get("row_title") == INPUT_ROW_TITLE and
+            button.get("panel_title") == (app_name + " 系统权限") and
+            button.get("row_title") == INPUT_ROW_TITLE and
             button.get("action") == PERMISSION_ACTION_LABEL and button.get("scope") == "permissions_panel_and_row" and
             button.get("ax_press_started_at") == entry.get("press_started_at") and
             button.get("ax_press_completed_at") == entry.get("press_completed_at")
@@ -2171,9 +3183,12 @@ def permission_route_rows(card):
 
 def permission_row_state(card, row):
     granted = row_exact_label_count(card, "已授权", row) == 1
+    denied = row_exact_label_count(card, "已拒绝", row) == 1
     actions = row_action_count(card, row["route_title"])
     if granted and actions == 0:
         return "granted"
+    if denied and actions == 1:
+        return "denied"
     if not granted and actions == 1:
         return "pending"
     return "invalid"
@@ -2241,7 +3256,7 @@ def ordinary_permission_counts(nodes, name):
     }
 
 
-def first_use_permission_counts(nodes, name):
+def first_use_permission_counts(nodes, name, *, allow_bluetooth_denied=False):
     """Read the first-use card as one internally consistent set of permission rows."""
     names = window_names(nodes)
     panel_title = name + " 系统权限"
@@ -2256,9 +3271,14 @@ def first_use_permission_counts(nodes, name):
     states = {kind: permission_row_state(card, row) for kind, row in rows.items()}
     granted_count = sum(state == "granted" for state in states.values())
     pending_count = sum(state == "pending" for state in states.values())
-    if any(state not in ("granted", "pending") for state in states.values()):
+    denied_count = sum(state == "denied" for state in states.values())
+    if any(state not in ("granted", "pending", "denied") for state in states.values()):
         return None
-    if exact_button_count(card, PERMISSION_ACTION_LABEL) != pending_count:
+    if denied_count and (not allow_bluetooth_denied or any(
+        kind != "bluetooth" and state == "denied" for kind, state in states.items()
+    )):
+        return None
+    if exact_button_count(card, PERMISSION_ACTION_LABEL) != pending_count + denied_count:
         return None
     summary = first_use_progress_summary(nodes, len(rows))
     if summary is None or summary[:2] != (granted_count, len(rows)):
@@ -2288,7 +3308,7 @@ def bluetooth_completed_first_use_target(initial, nodes, name):
 def bluetooth_permission_target(nodes, name, scope):
     """Return the exact Bluetooth card row and status for a full acceptance surface."""
     if scope == "full-first-use":
-        counts = first_use_permission_counts(nodes, name)
+        counts = first_use_permission_counts(nodes, name, allow_bluetooth_denied=True)
         panel_title = name + " 系统权限"
         if counts is None:
             return None
@@ -2309,7 +3329,7 @@ def bluetooth_permission_target(nodes, name, scope):
     if not isinstance(rows, dict) or "bluetooth" not in rows:
         return None
     state = counts["rows"]["bluetooth"]
-    if state not in ("pending", "granted"):
+    if state not in ("pending", "granted", "denied"):
         return None
     return {"state": state, "row_title": rows["bluetooth"]["route_title"], "counts": counts}
 
@@ -2421,6 +3441,122 @@ def restart_prompt_focus_ready(state, app_pid, settings_pid):
         state.get("settings") == settings_pid and state.get("front") == settings_pid and
         state.get("restart") is True and not state.get("system_sheet") and
         not state.get("password")
+    )
+
+
+def restart_prompt_focus_recovery_candidate(state, app_pid, settings_pid, bundle_id, bundle_path):
+    front_pid = state.get("front") if isinstance(state, dict) else None
+    front_bundle_id = state.get("frontmost_bundle_id") if isinstance(state, dict) else None
+    return (
+        isinstance(state, dict) and
+        state.get("app") == app_pid and isinstance(app_pid, int) and not isinstance(app_pid, bool) and app_pid > 0 and
+        state.get("bundle_id") == bundle_id and state.get("bundle_path") == bundle_path and
+        state.get("settings") == settings_pid and isinstance(settings_pid, int) and
+        not isinstance(settings_pid, bool) and settings_pid > 0 and
+        state.get("settings_bundle_id") == "com.apple.systempreferences" and
+        state.get("settings_bundle_path") == SYSTEM_SETTINGS_PATH and
+        state.get("settings_process_count") == 1 and state.get("settings_page_count") == 1 and
+        state.get("page") in INPUT_PAGES + CONTROL_PAGES and
+        isinstance(front_pid, int) and not isinstance(front_pid, bool) and
+        front_pid > 0 and front_pid != settings_pid and
+        isinstance(front_bundle_id, str) and front_bundle_id and front_bundle_id not in AUTH_PROMPT_BUNDLES and
+        state.get("restart") is True and state.get("password") is False and
+        state.get("system_sheet") is False and state.get("extra_access_warning") is False and
+        state.get("permission_card_visible") is True and state.get("permission_card_window_count") == 1 and
+        state.get("settings_above_setup") is True
+    )
+
+
+def restart_prompt_focus_action_matches(action, *, app_pid, settings_pid, page, front_pid,
+                                         front_bundle_id, bundle_id, bundle_path):
+    before = action.get("before") if isinstance(action, dict) else None
+    if not isinstance(before, dict):
+        return False
+    return (
+        action.get("performed") == "recover-restart-prompt-focus" and
+        action.get("app") == app_pid and action.get("settings") == settings_pid and
+        action.get("expected_page") == page and
+        action.get("expected_front_pid") == front_pid and
+        action.get("expected_front_bundle_id") == front_bundle_id and
+        action.get("already_frontmost") is False and
+        action.get("activation_performed") is True and
+        action.get("activation_accepted") is True and
+        action.get("settings_frontmost_after") is True and
+        action.get("frontmost_after_pid") == settings_pid and
+        action.get("restart_action_count_before") == 1 and
+        action.get("restart_action_count_after") == 1 and
+        action.get("page_window_count_after") == 1 and
+        action.get("system_sheet_count_after") == 0 and
+        action.get("password_prompt_before") is False and
+        action.get("extra_access_warning_before") is False and
+        action.get("permission_change_requested") is False and
+        action.get("native_drag_performed") is False and
+        before.get("app") == app_pid and before.get("settings") == settings_pid and
+        before.get("front") == front_pid and before.get("frontmost_bundle_id") == front_bundle_id and
+        before.get("page") == page and before.get("app_bundle_id") == bundle_id and
+        before.get("app_bundle_path") == bundle_path and
+        before.get("settings_bundle_id") == "com.apple.systempreferences" and
+        before.get("settings_bundle_path") == SYSTEM_SETTINGS_PATH and
+        before.get("settings_process_count") == 1 and before.get("settings_page_count") == 1 and
+        before.get("permission_card_visible") is True and before.get("permission_card_window_count") == 1 and
+        before.get("password") is False and before.get("system_sheet_count") == 0 and
+        before.get("restart_action_visible") is True and before.get("extra_access_warning") is False
+    )
+
+
+def restart_prompt_owner_matches(state, *, previous_app_pid, settings_pid, app_name, bundle_id, bundle_path):
+    details = state.get("restart_prompt_inspection") if isinstance(state, dict) else None
+    if not isinstance(details, dict):
+        return False
+    return (
+        isinstance(previous_app_pid, int) and not isinstance(previous_app_pid, bool) and previous_app_pid > 0 and
+        isinstance(settings_pid, int) and not isinstance(settings_pid, bool) and settings_pid > 0 and
+        state.get("app") == 0 and state.get("bundle_id") == bundle_id and state.get("bundle_path") == bundle_path and
+        state.get("settings") == settings_pid and state.get("settings_bundle_id") == "com.apple.systempreferences" and
+        state.get("settings_bundle_path") == SYSTEM_SETTINGS_PATH and
+        state.get("settings_process_count") == 1 and state.get("settings_page_count") == 1 and
+        state.get("page") in INPUT_PAGES and state.get("restart") is True and
+        isinstance(state.get("front"), int) and not isinstance(state.get("front"), bool) and state.get("front") > 0 and
+        isinstance(state.get("frontmost_bundle_id"), str) and bool(state.get("frontmost_bundle_id")) and
+        state.get("password") is False and state.get("system_sheet") is False and
+        state.get("extra_access_warning") is False and
+        details.get("app_display_name") == app_name and
+        details.get("app_display_name_title_count") == 1 and
+        details.get("restart_action_count") == 1 and details.get("restart_sheet_count") == 1 and
+        details.get("app_name_in_restart_sheet") is True and
+        details.get("restart_prompt_owned_by_target") is True and
+        isinstance(details.get("restart_sheet_name_match_count"), int) and
+        details.get("restart_sheet_name_match_count") >= 1 and
+        any("<TARGET_APP>" in text for text in details.get("matched_text_templates", [])
+            if isinstance(text, str)) and
+        isinstance(app_name, str) and app_name.startswith("MiMac ")
+    )
+
+
+def orphan_restart_action_matches(action, *, previous_app_pid, settings_pid, front_pid,
+                                  front_bundle_id, bundle_id, bundle_path):
+    if not isinstance(action, dict):
+        return False
+    started = action.get("restart_press_started_at")
+    completed = action.get("restart_press_completed_at")
+    activated = action.get("activation_completed_at")
+    return (
+        action.get("performed") == "restart-owned-orphan" and action.get("app") == 0 and
+        action.get("previous_app_pid") == previous_app_pid and action.get("settings") == settings_pid and
+        action.get("bundle_id") == bundle_id and action.get("bundle_path") == bundle_path and
+        isinstance(action.get("app_display_name"), str) and action.get("app_display_name").startswith("MiMac ") and
+        action.get("expected_front_pid") == front_pid and
+        action.get("expected_front_bundle_id") == front_bundle_id and
+        action.get("settings_frontmost_before_action") is True and
+        action.get("activation_performed") is True and action.get("activation_accepted") is True and
+        action.get("restart_prompt_owned_by_target") is True and
+        action.get("restart_action_count") == 1 and action.get("restart_sheet_count") == 1 and
+        action.get("app_name_in_restart_sheet") is True and
+        action.get("password_prompt_before") is False and action.get("password_prompt_after_activation") is False and
+        action.get("permission_change_requested") is False and action.get("native_drag_performed") is False and
+        isinstance(started, (int, float)) and not isinstance(started, bool) and
+        isinstance(completed, (int, float)) and not isinstance(completed, bool) and completed >= started and
+        isinstance(activated, (int, float)) and not isinstance(activated, bool) and started >= activated
     )
 
 
@@ -2589,6 +3725,61 @@ def settings_page_opened(state, app_pid, pages):
         state.get("permission_card_visible") is True and
         state.get("permission_card_window_count") == 1 and
         not state.get("password") and not state.get("system_sheet") and not state.get("restart")
+    )
+
+
+def cold_settings_reattach_preflight_ready(state):
+    """Require a truly cold Settings process before the isolated app is launched."""
+    return (
+        isinstance(state, dict) and state.get("app") == 0 and state.get("settings") == 0 and
+        state.get("settings_process_count") == 0 and state.get("page", "") == "" and
+        positive_pid(state.get("front")) and isinstance(state.get("frontmost_bundle_id"), str) and
+        bool(state.get("frontmost_bundle_id")) and not state.get("password") and
+        not state.get("system_sheet") and not state.get("restart") and
+        state.get("extra_access_warning") is False
+    )
+
+
+def ordinary_three_grants_ready(counts):
+    return (
+        isinstance(counts, dict) and counts.get("row_count") == 3 and
+        counts.get("granted_row_count") == 3 and counts.get("rows") == {
+            "input": "granted", "device_control": "granted", "bluetooth": "granted",
+        }
+    )
+
+
+def cold_settings_reattach_settings_ready(state, app_pid, pages):
+    return (
+        settings_page_opened(state, app_pid, pages) and state.get("front") == state.get("settings") and
+        state.get("settings_bundle_path") == SYSTEM_SETTINGS_PATH and
+        state.get("extra_access_warning") is False
+    )
+
+
+def cold_settings_attachment_ready(observation, *, app_pid, app_name, settings_pid, page):
+    if not isinstance(observation, dict) or not isinstance(observation.get("state"), dict):
+        return False
+    state = observation["state"]
+    attachment = state.get("attachment")
+    windows = state.get("visible_windows")
+    if not isinstance(attachment, dict) or not isinstance(windows, list):
+        return False
+    card_windows = [item for item in windows if item.get("owner") == "dev" and
+                    item.get("pid") == app_pid and item.get("title") == app_name + " 系统权限"]
+    settings_windows = [item for item in windows if item.get("owner") == "settings" and
+                        item.get("pid") == settings_pid and item.get("title") == page]
+    pages = state.get("settings_page_title_matches")
+    return (
+        state.get("dev_pids") == [app_pid] and state.get("settings_pid") == settings_pid and
+        state.get("frontmost_pid") == settings_pid and len(card_windows) == 1 and
+        len(settings_windows) == 1 and isinstance(pages, list) and len(pages) == 1 and
+        pages[0].get("title") == page and attachment.get("known") is True and
+        attachment.get("attached") is True and
+        isinstance(attachment.get("horizontal_gap"), (int, float)) and
+        abs(attachment["horizontal_gap"] - 16) <= 1 and
+        isinstance(attachment.get("top_delta"), (int, float)) and
+        abs(attachment["top_delta"]) <= 1
     )
 
 
@@ -2795,8 +3986,14 @@ def main():
     parser.add_argument("--auth-timeout", default=120, type=int)
     parser.add_argument("--bluetooth-allow-actor", choices=("runner", "user"),
                         help="record the Bluetooth Allow actor; runner mode AXPresses only the exact verified request, user mode waits for a manual Allow")
+    parser.add_argument("--bluetooth-deny", action="store_true",
+                        help="on a fresh isolated first-use run, press only the unique exact macOS Bluetooth Don't Allow button and verify the same app's denied capability trace")
+    parser.add_argument("--capture-device-control-frames", action="store_true",
+                        help="record and scan only the exact isolated app permission card around the first-use Device Control drag; no audio or microphone")
     parser.add_argument("--bluetooth-only", action="store_true",
                         help="handle only Bluetooth on the already-open fixed Dev permission card")
+    parser.add_argument("--cold-settings-reattach", action="store_true",
+                        help="on an isolated QA with three ordinary permissions already granted, open Settings from a granted row title and verify the cold companion attachment without a permission action")
     parser.add_argument("--interact", required=True, action="store_true",
                         help="allow the isolated flow to use system settings and the pointer")
     parser.add_argument("--existing-input", action="store_true",
@@ -2821,6 +4018,8 @@ def main():
         with acceptance.observe_feedback():
             if args.bluetooth_only:
                 acceptance.run_bluetooth_only()
+            elif args.cold_settings_reattach:
+                acceptance.run_cold_settings_reattach()
             elif args.existing_input:
                 acceptance.run_existing_input()
             elif args.general_permissions:

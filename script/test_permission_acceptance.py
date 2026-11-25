@@ -1,5 +1,8 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import patch
 
@@ -24,14 +27,23 @@ from permission_acceptance import (
     first_use_permission_counts,
     bluetooth_permission_target,
     bluetooth_completed_first_use_target,
+    bluetooth_allow_actor_for_args,
     bluetooth_prompt_matches,
     bluetooth_request_evidence_matches,
+    bluetooth_deny_action_matches,
+    bluetooth_denial_trace_evidence,
+    permission_guide_trace_event,
+    first_use_denial_presentation_contract,
     cancel_reentry_permission_counts,
     permission_rows_unchanged,
     non_target_permission_rows_unchanged,
     verified_cancel_result,
     ordinary_permission_guide_complete,
     ordinary_permission_guide_card_present,
+    cold_settings_reattach_preflight_ready,
+    ordinary_three_grants_ready,
+    cold_settings_reattach_settings_ready,
+    cold_settings_attachment_ready,
     general_input_action_target,
     ordinary_general_startup_ready,
     is_transient_ax_windows_error,
@@ -45,7 +57,13 @@ from permission_acceptance import (
     settings_page_opened,
     settings_page_window_ready,
     resume_input_drop_args,
+    finish_args,
+    finish_postgrant_relaunch_preflight,
     restart_prompt_focus_ready,
+    restart_prompt_focus_recovery_candidate,
+    restart_prompt_focus_action_matches,
+    restart_prompt_owner_matches,
+    orphan_restart_action_matches,
     resumed_settings_focus_ready,
 )
 
@@ -108,15 +126,16 @@ def ordinary_permission_nodes(*, input_pending=False, control_pending=False,
     return nodes
 
 
-def first_use_permission_nodes(*, input_pending=False, bluetooth=False,
-                               bluetooth_pending=False, summary=None):
+def first_use_permission_nodes(*, input_pending=False, control_pending=True, bluetooth=False,
+                               bluetooth_pending=False, bluetooth_denied=False, summary=None):
     name = "MiMac Dev"
     rows = [
         (INPUT_ROW_TITLE, 120, "pending" if input_pending else "granted"),
-        (CONTROL_ROW_TITLES[0], 180, "pending"),
+        (CONTROL_ROW_TITLES[0], 180, "pending" if control_pending else "granted"),
     ]
     if bluetooth:
-        rows.append((BLUETOOTH_ROW_TITLES[0], 240, "pending" if bluetooth_pending else "granted"))
+        rows.append((BLUETOOTH_ROW_TITLES[0], 240, "denied" if bluetooth_denied else
+                     "pending" if bluetooth_pending else "granted"))
     granted_count = sum(state == "granted" for _, _, state in rows)
     total = len(rows)
     summary = summary or ("尚未授权" if granted_count == 0 else f"已授权 {granted_count}/{total}")
@@ -130,6 +149,11 @@ def first_use_permission_nodes(*, input_pending=False, bluetooth=False,
         nodes.append(node("AXButton", description=title, bounds=ax_bounds(520, y, 240, 22)))
         if state == "granted":
             nodes.append(node("AXStaticText", value="已授权", bounds=ax_bounds(780, y, 90, 22)))
+        elif state == "denied":
+            nodes.extend([
+                node("AXStaticText", value="已拒绝", bounds=ax_bounds(780, y, 90, 22)),
+                node("AXButton", "授权…", bounds=ax_bounds(880, y, 100, 22)),
+            ])
         else:
             nodes.append(node("AXButton", "授权…", bounds=ax_bounds(880, y, 100, 22)))
     return nodes
@@ -269,6 +293,269 @@ class OrdinaryGeneralPermissionViewTests(unittest.TestCase):
         self.assertIsNotNone(ordinary_general_nodes(nodes, self.name))
         self.assertIsNotNone(ordinary_permission_surfaces(nodes, self.name))
         self.assertEqual(existing_input_target(nodes, self.name), CONTROL_ROW_TITLES[0])
+
+
+class ColdSettingsReattachTests(unittest.TestCase):
+    def setUp(self):
+        self.name = "MiMac Dev"
+        self.app_pid = 101
+        self.settings_pid = 202
+        self.front_pid = 901
+        self.bundle_id = "dev.mimac.verification.cold-attach"
+        self.bundle_path = "/Users/test/Library/Caches/MiMac/MiMac Verify.app"
+        self.front_bundle_id = "com.example.browser"
+        self.rows = ordinary_permission_counts(
+            ordinary_permission_nodes(
+                input_pending=False, control_pending=False, bluetooth=True,
+            ),
+            self.name,
+        )
+        self.cold_probe = {
+            "app": 0, "settings": 0, "settings_process_count": 0, "page": "",
+            "front": self.front_pid, "frontmost_bundle_id": self.front_bundle_id,
+            "password": False, "system_sheet": False, "restart": False,
+            "extra_access_warning": False,
+        }
+        self.app_probe = {
+            "app": self.app_pid, "settings": 0, "settings_process_count": 0, "page": "",
+            "front": self.app_pid, "frontmost_bundle_id": self.bundle_id,
+            "bundle_id": self.bundle_id, "bundle_path": self.bundle_path,
+            "password": False, "system_sheet": False, "restart": False,
+            "extra_access_warning": False,
+            "permission_card_visible": True, "permission_card_window_count": 1,
+        }
+        self.settings_probe = {
+            **self.app_probe, "settings": self.settings_pid, "front": self.settings_pid,
+            "page": CONTROL_PAGES[0], "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1, "settings_page_count": 1,
+        }
+
+    def test_preflight_requires_closed_qa_and_system_settings_and_a_known_foreground(self):
+        self.assertTrue(cold_settings_reattach_preflight_ready(self.cold_probe))
+        for invalid in (
+            dict(self.cold_probe, app=self.app_pid),
+            dict(self.cold_probe, settings=self.settings_pid, settings_process_count=1),
+            dict(self.cold_probe, front=0),
+            dict(self.cold_probe, frontmost_bundle_id=""),
+            dict(self.cold_probe, password=True),
+            dict(self.cold_probe, system_sheet=True),
+            dict(self.cold_probe, restart=True),
+            dict(self.cold_probe, extra_access_warning=True),
+        ):
+            with self.subTest(invalid=invalid):
+                self.assertFalse(cold_settings_reattach_preflight_ready(invalid))
+
+    def test_scope_requires_exactly_three_granted_ordinary_rows(self):
+        self.assertTrue(ordinary_three_grants_ready(self.rows))
+        self.assertFalse(ordinary_three_grants_ready(dict(self.rows, granted_row_count=2)))
+        self.assertFalse(ordinary_three_grants_ready(dict(
+            self.rows, rows={**self.rows["rows"], "bluetooth": "pending"},
+        )))
+        self.assertFalse(ordinary_three_grants_ready(dict(self.rows, row_count=2)))
+
+    def test_settings_readback_requires_exact_frontmost_system_page_and_no_modal(self):
+        self.assertTrue(cold_settings_reattach_settings_ready(
+            self.settings_probe, self.app_pid, CONTROL_PAGES,
+        ))
+        self.assertFalse(cold_settings_reattach_settings_ready(
+            dict(self.settings_probe, front=self.app_pid), self.app_pid, CONTROL_PAGES,
+        ))
+        self.assertFalse(cold_settings_reattach_settings_ready(
+            dict(self.settings_probe, settings_bundle_path="/tmp/Settings.app"),
+            self.app_pid, CONTROL_PAGES,
+        ))
+        self.assertFalse(cold_settings_reattach_settings_ready(
+            dict(self.settings_probe, system_sheet=True), self.app_pid, CONTROL_PAGES,
+        ))
+
+    def test_attachment_readback_requires_the_exact_pair_front_and_attached_geometry(self):
+        observation = {
+            "sample_completed_at": 12.0,
+            "state": {
+                "dev_pids": [self.app_pid], "settings_pid": self.settings_pid,
+                "frontmost_pid": self.settings_pid,
+                "settings_page_title_matches": [{"title": CONTROL_PAGES[0]}],
+                "visible_windows": [
+                    {"owner": "dev", "pid": self.app_pid, "title": self.name + " 系统权限"},
+                    {"owner": "settings", "pid": self.settings_pid, "title": CONTROL_PAGES[0]},
+                ],
+                "attachment": {
+                    "known": True, "attached": True, "horizontal_gap": 16.0, "top_delta": 0.0,
+                    "permission_card_bounds": [1000.0, 100.0, 500.0, 400.0],
+                    "settings_bounds": [260.0, 100.0, 724.0, 800.0],
+                },
+            },
+        }
+        kwargs = {
+            "app_pid": self.app_pid, "app_name": self.name,
+            "settings_pid": self.settings_pid, "page": CONTROL_PAGES[0],
+        }
+        self.assertTrue(cold_settings_attachment_ready(observation, **kwargs))
+        for state_change in (
+            {"dev_pids": [303]},
+            {"settings_pid": 404},
+            {"frontmost_pid": self.app_pid},
+            {"attachment": {"known": True, "attached": False}},
+        ):
+            changed = {**observation, "state": {**observation["state"], **state_change}}
+            self.assertFalse(cold_settings_attachment_ready(changed, **kwargs))
+
+    def test_cold_title_visit_records_geometry_and_never_calls_permission_actions(self):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.output = Path("/Users/test/Library/Caches/MiMac/cold-attach-output")
+        instance.driver = Path("/tmp/permission-driver")
+        instance.records = []
+        instance.cold_settings_reattach = True
+        nodes = ordinary_permission_nodes(
+            input_pending=False, control_pending=False, bluetooth=True,
+        )
+        instance.preflight_no_existing_sheet = lambda _scope: dict(self.cold_probe)
+        instance.open_ordinary_general_permission_card = lambda **_kwargs: (
+            dict(self.app_probe), self.app_pid, nodes,
+        )
+        probes = iter((dict(self.app_probe), dict(self.settings_probe), dict(self.settings_probe)))
+        instance.probe = lambda: next(probes)
+        pressed = []
+        instance.press = lambda pid, label: pressed.append((pid, label)) or {
+            "ax_press_started_at": 10.0, "ax_press_completed_at": 10.1,
+            "ax_press_duration_ms": 100.0,
+        }
+        instance.view = lambda _pid: nodes
+        card_window = {
+            "owner": "dev", "pid": self.app_pid, "title": self.name + " 系统权限",
+        }
+        settings_window = {
+            "owner": "settings", "pid": self.settings_pid, "title": CONTROL_PAGES[0],
+        }
+        before = {
+            "sample_completed_at": 9.0,
+            "state": {"dev_pids": [self.app_pid], "settings_pid": 0,
+                      "visible_windows": [card_window],
+                      "attachment": {"known": False, "attached": False}},
+        }
+        attached = {
+            "sample_completed_at": 10.2,
+            "state": {
+                "dev_pids": [self.app_pid], "settings_pid": self.settings_pid,
+                "frontmost_pid": self.settings_pid,
+                "settings_page_title_matches": [{"title": CONTROL_PAGES[0]}],
+                "visible_windows": [settings_window, card_window],
+                "attachment": {
+                    "known": True, "attached": True, "horizontal_gap": 16.0, "top_delta": 0.0,
+                    "permission_card_bounds": [1000.0, 100.0, 500.0, 400.0],
+                    "settings_bounds": [260.0, 100.0, 724.0, 800.0],
+                },
+            },
+        }
+        final = {
+            "sample_completed_at": 13.0,
+            "state": {"dev_pids": [], "settings_pid": 0, "frontmost_pid": self.front_pid,
+                      "visible_windows": [], "attachment": {"known": False, "attached": False}},
+        }
+        observations = iter((before, attached, final))
+        instance.latest_window_observation = lambda: next(observations)
+        instance.window_observations = lambda: [before, attached]
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        cleanup = {
+            "app_closed": True, "settings_closed": True, "foreground_restored": True,
+        }
+        with patch("permission_acceptance.capture", return_value=cleanup) as native:
+            result = instance.run_cold_settings_reattach()
+
+        self.assertEqual(result, cleanup)
+        self.assertEqual(pressed, [(self.app_pid, CONTROL_ROW_TITLES[0])])
+        self.assertEqual(native.call_args.args[1], "close-cold-attach")
+        stages = [stage for stage, _ in instance.records]
+        self.assertIn("cold_settings_reattach_observed", stages)
+        self.assertIn("COLD_SETTINGS_REATTACH_PASS", stages)
+        self.assertNotIn("native_drop", stages)
+        observed = next(values for stage, values in instance.records if stage == "cold_settings_reattach_observed")
+        self.assertEqual(observed["attachment_direction"], "right")
+        self.assertEqual(observed["horizontal_gap"], 16.0)
+        self.assertEqual(observed["top_delta"], 0.0)
+        self.assertEqual(observed["permission_rows_before"], observed["permission_rows_after"])
+
+    def test_unverified_settings_page_is_preserved_and_cleanup_is_qa_only(self):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.output = Path("/Users/test/Library/Caches/MiMac/cold-attach-output")
+        instance.driver = Path("/tmp/permission-driver")
+        instance.records = []
+        instance.cold_settings_reattach = True
+        nodes = ordinary_permission_nodes(
+            input_pending=False, control_pending=False, bluetooth=True,
+        )
+        unexpected_settings = {
+            **self.app_probe, "settings": self.settings_pid, "front": self.settings_pid,
+            "page": INPUT_PAGES[0], "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1, "settings_page_count": 1,
+        }
+        instance.preflight_no_existing_sheet = lambda _scope: dict(self.cold_probe)
+        instance.open_ordinary_general_permission_card = lambda **_kwargs: (
+            dict(self.app_probe), self.app_pid, nodes,
+        )
+        probes = iter((dict(unexpected_settings), dict(unexpected_settings)))
+        instance.probe = lambda: next(probes)
+        pressed = []
+        instance.press = lambda *args: pressed.append(args)
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        cleanup = {
+            "app_closed": True, "settings_closed": False,
+            "settings_preserved": True, "foreground_restored": False,
+        }
+        with patch("permission_acceptance.capture", return_value=cleanup) as native:
+            with self.assertRaisesRegex(RuntimeError, "Settings still cold"):
+                instance.run_cold_settings_reattach()
+
+        self.assertEqual(pressed, [])
+        self.assertEqual(native.call_count, 1)
+        args = native.call_args.args
+        self.assertEqual(args[1], "close-cold-attach")
+        self.assertEqual(args[3], str(self.app_pid))
+        self.assertEqual(args[4:6], ("0", ""))
+        stages = [stage for stage, _ in instance.records]
+        self.assertIn("cold_settings_reattach_flow_failed", stages)
+        cleanup_record = next(
+            values for stage, values in instance.records
+            if stage == "cold_settings_reattach_cleanup"
+        )
+        self.assertTrue(cleanup_record["settings_preserved"])
+        self.assertFalse(cleanup_record["foreground_restored"])
+
+    def test_cold_title_scope_stops_before_press_if_any_row_is_not_granted(self):
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.identifier = self.bundle_id
+        instance.bundle = Path(self.bundle_path)
+        instance.output = Path("/Users/test/Library/Caches/MiMac/cold-attach-output")
+        instance.driver = Path("/tmp/permission-driver")
+        instance.records = []
+        instance.cold_settings_reattach = True
+        pending_nodes = ordinary_permission_nodes(
+            input_pending=False, control_pending=True, bluetooth=True,
+        )
+        instance.preflight_no_existing_sheet = lambda _scope: dict(self.cold_probe)
+        instance.open_ordinary_general_permission_card = lambda **_kwargs: (
+            dict(self.app_probe), self.app_pid, pending_nodes,
+        )
+        instance.probe = lambda: dict(self.app_probe)
+        pressed = []
+        instance.press = lambda *args: pressed.append(args)
+        instance.record = lambda stage, values: instance.records.append((stage, values))
+        with patch("permission_acceptance.capture", return_value={
+            "app_closed": True, "settings_closed": True, "foreground_restored": True,
+        }):
+            with self.assertRaisesRegex(RuntimeError, "requires Input Monitoring, Device Control, and Bluetooth"):
+                instance.run_cold_settings_reattach()
+        self.assertEqual(pressed, [])
+        self.assertIn("COLD_SETTINGS_REATTACH_BLOCKED", [stage for stage, _ in instance.records])
 
     def test_three_row_overlapping_ax_statuses_use_root_window_ownership(self):
         fixture = Path(__file__).parent / "fixtures" / "ordinary-general-three-row-overlap-ax.json"
@@ -1290,7 +1577,7 @@ class ResumeInputDropTests(unittest.TestCase):
         ), (101, 202))
 
     def test_resumes_an_isolated_qa_display_name_without_falling_back_to_dev(self):
-        qa_name = "MiMac Permission QA"
+        qa_name = "MiMac Permission QA 1924"
         qa_entries = [dict(entry) for entry in self.entries]
         button = next(entry for entry in qa_entries if entry.get("stage") == "app_button")
         button["panel_title"] = qa_name + " 系统权限"
@@ -1301,7 +1588,7 @@ class ResumeInputDropTests(unittest.TestCase):
             resume_input_drop_args(qa_entries, self.identity, app_name="MiMac Dev")
 
     def test_rejects_wrong_title_and_same_display_name_from_another_bundle(self):
-        qa_name = "MiMac Permission QA"
+        qa_name = "MiMac Permission QA 1924"
         qa_entries = [dict(entry) for entry in self.entries]
         button = next(entry for entry in qa_entries if entry.get("stage") == "app_button")
         button["panel_title"] = "MiMac Dev 系统权限"
@@ -1491,6 +1778,71 @@ class RestartFocusRecoveryTests(unittest.TestCase):
         self.assertFalse(restart_prompt_focus_ready(self.state(202, app=303), 101, 202))
         self.assertFalse(restart_prompt_focus_ready(self.state(202, settings=404), 101, 202))
 
+    def test_one_time_recovery_requires_exact_app_settings_restart_and_modal_free_front(self):
+        bundle = "/Users/test/Library/Caches/MiMac/MiMac Permission QA.app"
+        candidate = {
+            **self.state(303), "bundle_id": "dev.mimac.verification.test", "bundle_path": bundle,
+            "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1, "settings_page_count": 1,
+            "frontmost_bundle_id": "com.google.Chrome",
+            "extra_access_warning": False,
+            "permission_card_visible": True, "permission_card_window_count": 1,
+        }
+        self.assertTrue(restart_prompt_focus_recovery_candidate(
+            candidate, 101, 202, "dev.mimac.verification.test", bundle,
+        ))
+        for change in (
+            {"app": 102}, {"bundle_id": "dev.mimac.verification.other"},
+            {"bundle_path": "/tmp/Other.app"}, {"settings": 404},
+            {"settings_bundle_path": "/tmp/System Settings.app"},
+            {"settings_page_count": 2}, {"frontmost_bundle_id": "com.apple.SecurityAgent"},
+            {"restart": False}, {"password": True}, {"system_sheet": True},
+            {"extra_access_warning": True}, {"permission_card_window_count": 2},
+        ):
+            self.assertFalse(restart_prompt_focus_recovery_candidate(
+                {**candidate, **change}, 101, 202, "dev.mimac.verification.test", bundle,
+            ))
+
+    def test_native_restart_focus_action_must_match_exact_before_and_after_evidence(self):
+        bundle = "/Users/test/Library/Caches/MiMac/MiMac Permission QA.app"
+        before = {
+            "app": 101, "settings": 202, "front": 303,
+            "frontmost_bundle_id": "com.google.Chrome", "page": INPUT_PAGES[0],
+            "app_bundle_id": "dev.mimac.verification.test", "app_bundle_path": bundle,
+            "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1, "settings_page_count": 1,
+            "permission_card_visible": True, "permission_card_window_count": 1,
+            "password": False, "system_sheet_count": 0,
+            "restart_action_visible": True, "extra_access_warning": False,
+        }
+        action = {
+            "performed": "recover-restart-prompt-focus", "app": 101, "settings": 202,
+            "expected_page": INPUT_PAGES[0], "expected_front_pid": 303,
+            "expected_front_bundle_id": "com.google.Chrome", "already_frontmost": False,
+            "activation_performed": True, "activation_accepted": True,
+            "settings_frontmost_after": True, "frontmost_after_pid": 202,
+            "restart_action_count_before": 1, "restart_action_count_after": 1,
+            "page_window_count_after": 1, "system_sheet_count_after": 0,
+            "password_prompt_before": False, "extra_access_warning_before": False,
+            "permission_change_requested": False, "native_drag_performed": False,
+            "before": before,
+        }
+        kwargs = {
+            "app_pid": 101, "settings_pid": 202, "page": INPUT_PAGES[0],
+            "front_pid": 303, "front_bundle_id": "com.google.Chrome",
+            "bundle_id": "dev.mimac.verification.test", "bundle_path": bundle,
+        }
+        self.assertTrue(restart_prompt_focus_action_matches(action, **kwargs))
+        for change in (
+            {"activation_accepted": False}, {"restart_action_count_after": 0},
+            {"system_sheet_count_after": 1}, {"permission_change_requested": True},
+            {"expected_front_pid": 404},
+            {"before": {**before, "app_bundle_path": "/tmp/Other.app"}},
+        ):
+            self.assertFalse(restart_prompt_focus_action_matches({**action, **change}, **kwargs))
+
     def test_waits_for_two_settings_samples_without_activating_settings(self):
         chrome = self.state(303)
         settings = self.state(202)
@@ -1515,7 +1867,7 @@ class RestartFocusRecoveryTests(unittest.TestCase):
                 instance.wait_for_restart_prompt_focus(chrome, 101, 202)
         stage, values = instance.records[-1]
         self.assertEqual(stage, "RESTART_FOCUS_INTERRUPTED")
-        self.assertEqual(values["stage"], "restart_prompt_before_click")
+        self.assertEqual(values["phase"], "restart_prompt_before_click")
         self.assertEqual(values["reason"], "settings_did_not_regain_frontmost_ownership")
         self.assertEqual(values["last_observation"]["frontmost_pid"], 303)
         self.assertFalse(values["restart_action_performed"])
@@ -1535,6 +1887,93 @@ class RestartFocusRecoveryTests(unittest.TestCase):
         ))
         self.assertEqual(instance.records[0][0], "restart_resumed_focus_verified")
 
+
+class AcceptanceRecordTests(unittest.TestCase):
+    def test_record_keeps_event_stage_and_timestamp_as_protocol_fields(self):
+        with TemporaryDirectory() as directory:
+            instance = object.__new__(Acceptance)
+            instance.output = Path(directory)
+            instance.record("RESTART_FOCUS_INTERRUPTED", {
+                "stage": "detail-collision", "phase": "restart_prompt_before_click",
+            })
+            event = json.loads((Path(directory) / "run.ndjson").read_text())
+        self.assertEqual(event["stage"], "RESTART_FOCUS_INTERRUPTED")
+        self.assertEqual(event["phase"], "restart_prompt_before_click")
+        self.assertIsInstance(event["timestamp"], (int, float))
+
+
+class OrphanRestartPromptTests(unittest.TestCase):
+    def setUp(self):
+        self.bundle_id = "dev.mimac.verification.permission-full-20261125-1924"
+        self.bundle_path = "/Users/test/Library/Caches/MiMac/MiMac Permission QA 1924.app"
+        self.app_name = "MiMac Permission QA 1924"
+        self.settings_pid = 202
+        self.previous_app_pid = 101
+        self.front_pid = 303
+        self.front_bundle = "com.netease.uuremote"
+        self.state = {
+            "app": 0, "bundle_id": self.bundle_id, "bundle_path": self.bundle_path,
+            "settings": self.settings_pid, "settings_bundle_id": "com.apple.systempreferences",
+            "settings_bundle_path": "/System/Applications/System Settings.app",
+            "settings_process_count": 1, "settings_page_count": 1,
+            "page": INPUT_PAGES[0], "restart": True, "front": self.front_pid,
+            "frontmost_bundle_id": self.front_bundle, "password": False,
+            "system_sheet": False, "extra_access_warning": False,
+            "restart_prompt_inspection": {
+                "app_display_name": self.app_name, "app_display_name_title_count": 1,
+                "restart_action_count": 1, "restart_sheet_count": 1,
+                "app_name_in_restart_sheet": True, "restart_prompt_owned_by_target": True,
+                "restart_sheet_name_match_count": 2,
+                "matched_text_templates": ["You can quit ‘<TARGET_APP>’ now."],
+            },
+        }
+
+    def owner_matches(self, state=None):
+        return restart_prompt_owner_matches(
+            self.state if state is None else state,
+            previous_app_pid=self.previous_app_pid, settings_pid=self.settings_pid,
+            app_name=self.app_name, bundle_id=self.bundle_id, bundle_path=self.bundle_path,
+        )
+
+    def test_owned_exact_sheet_allows_only_the_verified_orphan_resume(self):
+        self.assertTrue(self.owner_matches())
+
+    def test_sheet_must_name_verified_app_and_have_one_action(self):
+        for change in (
+            {"app_display_name": "MiMac Permission QA 1924 Other"},
+            {"restart_action_count": 2}, {"restart_sheet_count": 2},
+            {"app_name_in_restart_sheet": False}, {"restart_prompt_owned_by_target": False},
+        ):
+            with self.subTest(change=change):
+                altered = {**self.state, "restart_prompt_inspection": {
+                    **self.state["restart_prompt_inspection"], **change,
+                }}
+                self.assertFalse(self.owner_matches(altered))
+
+    def test_orphan_restart_action_requires_exact_identity_and_timing(self):
+        action = {
+            "performed": "restart-owned-orphan", "app": 0,
+            "previous_app_pid": self.previous_app_pid, "settings": self.settings_pid,
+            "bundle_id": self.bundle_id, "bundle_path": self.bundle_path,
+            "app_display_name": self.app_name,
+            "expected_front_pid": self.front_pid, "expected_front_bundle_id": self.front_bundle,
+            "settings_frontmost_before_action": True, "activation_performed": True,
+            "activation_accepted": True, "restart_prompt_owned_by_target": True,
+            "restart_action_count": 1, "restart_sheet_count": 1,
+            "app_name_in_restart_sheet": True, "password_prompt_before": False,
+            "password_prompt_after_activation": False,
+            "permission_change_requested": False, "native_drag_performed": False,
+            "activation_completed_at": 10.1, "restart_press_started_at": 10.2,
+            "restart_press_completed_at": 10.3,
+        }
+        kwargs = {
+            "previous_app_pid": self.previous_app_pid, "settings_pid": self.settings_pid,
+            "front_pid": self.front_pid, "front_bundle_id": self.front_bundle,
+            "bundle_id": self.bundle_id, "bundle_path": self.bundle_path,
+        }
+        self.assertTrue(orphan_restart_action_matches(action, **kwargs))
+        self.assertFalse(orphan_restart_action_matches({**action, "bundle_path": "/Other.app"}, **kwargs))
+        self.assertFalse(orphan_restart_action_matches({**action, "restart_press_completed_at": 10.0}, **kwargs))
 
 class CancelReentryTests(unittest.TestCase):
     def setUp(self):
@@ -1728,6 +2167,149 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
             ordinary_permission_nodes(), self.name, "ordinary-general-full",
         )["state"], "not_present")
 
+    def test_first_use_bluetooth_denial_is_read_back_only_as_an_exact_denied_state(self):
+        denied = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_denied=True,
+            summary="已授权 2/3",
+        )
+        target = bluetooth_permission_target(denied, self.name, "full-first-use")
+        self.assertEqual(target["state"], "denied")
+        self.assertEqual(target["counts"]["rows"], {
+            "input": "granted", "device_control": "granted", "bluetooth": "denied",
+        })
+        self.assertIsNone(first_use_permission_counts(denied, self.name))
+        self.assertEqual(first_use_permission_counts(
+            denied, self.name, allow_bluetooth_denied=True,
+        )["granted_row_count"], 2)
+        self.assertIsNone(bluetooth_permission_target(
+            first_use_permission_nodes(input_pending=True, bluetooth=True, bluetooth_denied=True,
+                                       summary="已授权 1/3"),
+            self.name, "full-first-use",
+        ))
+
+    def test_first_use_denial_contract_keeps_action_available_and_counts_only_grants(self):
+        nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        presentation = first_use_denial_presentation_contract(nodes, self.name)
+        self.assertEqual(presentation["bluetooth_display"], "授权…")
+        self.assertEqual(presentation["bluetooth_ax_presentation_state"], "pending_action_available")
+        self.assertEqual(presentation["summary"], "已授权 2/3")
+        self.assertEqual(presentation["permission_rows"]["rows"], {
+            "input": "granted", "device_control": "granted", "bluetooth": "pending",
+        })
+        self.assertFalse(presentation["denied_status_label_expected_on_this_surface"])
+        self.assertIsNone(first_use_denial_presentation_contract(
+            first_use_permission_nodes(
+                control_pending=False, bluetooth=True, bluetooth_pending=True,
+                summary="已授权 3/3",
+            ), self.name,
+        ))
+
+    def test_bluetooth_denial_trace_must_fall_inside_the_exact_native_press_interval(self):
+        action = self.native_request_evidence("ready")
+        action.update({
+            "performed": "AXPress Don’t Allow", "authorization_actor": "acceptance_runner",
+            "deny_button_count": 1, "deny_button_label": "Don’t Allow",
+            "ax_press_started_at": 1795608801.010153,
+            "ax_press_completed_at": 1795608801.071064,
+        })
+        trace = (
+            "permission_guide time=2026-11-25T12:13:21.052523Z pid=101 "
+            "event=permission_change service=Bluetooth result=changed status=denied previous=not_determined"
+        )
+        kwargs = {
+            "action": action, "pid": 101, "app_name": self.name,
+            "bundle_id": "dev.mimac.app.dev", "bundle_path": Path("/tmp/MiMac Dev.app"),
+            "inspected_at_epoch": 1795608801.08,
+            "verification_deadline_epoch": 1795608813.0,
+        }
+        evidence = bluetooth_denial_trace_evidence([trace], **kwargs)
+        self.assertEqual(evidence["status"], "denied")
+        self.assertEqual(evidence["readback_source"], "same_app_permission_guide_trace")
+        self.assertAlmostEqual(evidence["event_before_press_return_ms"], 18.541, places=2)
+        self.assertIsNone(bluetooth_denial_trace_evidence([
+            trace.replace("pid=101", "pid=102"),
+        ], **kwargs))
+        after_press_return = trace.replace("12:13:21.052523", "12:13:21.080000")
+        asynchronous_action = {**action, "ax_press_completed_at": 1795608801.071064}
+        asynchronous = bluetooth_denial_trace_evidence(
+            [after_press_return], **{**kwargs, "action": asynchronous_action},
+        )
+        self.assertGreater(asynchronous["event_after_press_return_ms"], 0)
+        self.assertIsNone(bluetooth_denial_trace_evidence(
+            [after_press_return], **{
+                **kwargs, "action": asynchronous_action,
+                "verification_deadline_epoch": 1795608801.072064,
+            },
+        ))
+        later_change = (
+            "permission_guide time=2026-11-25T12:13:22.000000Z pid=101 "
+            "event=permission_change service=Bluetooth result=changed status=granted previous=denied"
+        )
+        self.assertIsNone(bluetooth_denial_trace_evidence(
+            [after_press_return, later_change], **{
+                **kwargs, "action": asynchronous_action,
+                "inspected_at_epoch": 1795608802.0,
+            },
+        ))
+        self.assertIsNone(bluetooth_denial_trace_evidence([trace, trace], **kwargs))
+
+    def test_live_denial_wait_accepts_async_trace_after_press_return_without_ui_state_change(self):
+        pending_nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        instance = self.acceptance("runner", pending_nodes)
+        action = self.native_request_evidence("ready")
+        action.update({
+            "performed": "AXPress Don’t Allow", "authorization_actor": "acceptance_runner",
+            "deny_button_count": 1, "deny_button_label": "Don’t Allow",
+            "ax_press_started_at": time.time() - 0.30,
+            "ax_press_completed_at": time.time() - 0.20,
+        })
+        event_epoch = time.time() - 0.05
+        event_time = datetime.fromtimestamp(event_epoch, timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        trace = (
+            f"permission_guide time={event_time} pid=101 "
+            "event=permission_change service=Bluetooth result=changed status=denied previous=not_determined"
+        )
+        with TemporaryDirectory() as directory:
+            instance.config = Path(directory)
+            instance.identifier = "dev.mimac.app.dev"
+            (instance.config / "permission-guide-dev.mimac.app.dev.log").write_text(trace + "\n")
+            request = self.native_request_evidence("absent")
+            with patch("permission_acceptance.capture", return_value=request) as native:
+                result = instance.wait_for_bluetooth_state(
+                    101, "full-first-use", timeout=1, request_expected=False,
+                    initial=bluetooth_permission_target(pending_nodes, self.name, "full-first-use"),
+                    deny_action=action,
+                )
+        self.assertEqual(result["kind"], "denied")
+        self.assertEqual(result["target"]["state"], "pending")
+        self.assertGreater(result["capability_trace"]["event_after_press_return_ms"], 0)
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(native.call_args.args[1], "inspect-bluetooth-request")
+
+    def test_native_deny_action_requires_exact_trusted_request_and_one_explicit_deny_button(self):
+        action = self.native_request_evidence("ready")
+        action.update({
+            "performed": "AXPress Don't Allow", "authorization_actor": "acceptance_runner",
+            "deny_button_count": 1, "deny_button_label": "Don't Allow",
+        })
+        kwargs = {
+            "pid": 101, "app_name": self.name,
+            "bundle_id": "dev.mimac.app.dev", "bundle_path": Path("/tmp/MiMac Dev.app"),
+        }
+        self.assertTrue(bluetooth_deny_action_matches(action, **kwargs))
+        for change in (
+            {"target_app_pid": 102}, {"system_process_trusted": False},
+            {"deny_button_count": 2}, {"deny_button_label": "Cancel"},
+            {"performed": "AXPress Allow"}, {"authorization_actor": "user"},
+        ):
+            self.assertFalse(bluetooth_deny_action_matches({**action, **change}, **kwargs))
+
     def test_duplicate_bluetooth_row_is_rejected(self):
         nodes = ordinary_permission_nodes(bluetooth=True, bluetooth_pending=True)
         card_row = next(item for item in nodes if item.get("description") == BLUETOOTH_ROW_TITLES[0])
@@ -1747,6 +2329,10 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         self.assertFalse(bluetooth_prompt_matches(["Allow ‘MiMac Dev’ to use Bluetooth?"], self.name))
         self.assertFalse(bluetooth_prompt_matches(["Allow “MiMac Dev” to access Bluetooth"], self.name))
         self.assertFalse(bluetooth_prompt_matches(["允许“MiMac Dev”使用蓝牙？"], self.name))
+
+    def test_default_bluetooth_authorization_actor_remains_runner_allow(self):
+        self.assertEqual(bluetooth_allow_actor_for_args(object()), "runner")
+        self.assertEqual(bluetooth_allow_actor_for_args(type("Args", (), {"bluetooth_allow_actor": "user"})()), "user")
 
     def test_native_request_evidence_requires_exact_target_and_one_trusted_allow(self):
         evidence = self.native_request_evidence("ready")
@@ -1808,6 +2394,57 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["request"]["status"], "absent")
         self.assertEqual(native.call_count, 2)
         self.assertEqual(instance.records[-1][1]["poll_count"], 2)
+
+    def test_finish_can_resume_same_post_grant_session_without_repeating_a_drop(self):
+        identity = {"bundle": "/tmp/MiMac Permission QA.app", "bundle_id": "dev.mimac.verification.finish",
+                    "sha256": "a" * 64}
+        entries = [
+            {**identity, "stage": "identity", "timestamp": 1.0},
+            {"app": 100, "settings": 200, "stage": "system_restart", "timestamp": 2.0},
+            {"app": 101, "settings": 200, "front": 200, "settings_above_setup": True,
+             "stage": "resumed", "timestamp": 3.0},
+            {"app": 101, "settings": 200, "performed": "drag-control", "stage": "native_drop", "timestamp": 4.0},
+            {"app": 101, "status": "granted", "stage": "bluetooth_permission_readback", "timestamp": 5.0},
+            {"state": {"app": 101, "settings": 0, "front": 101}, "stage": "both_granted", "timestamp": 6.0},
+        ]
+        self.assertEqual(finish_args(entries, identity), (100, 101, 200))
+        duplicate_drop = entries + [
+            {"app": 101, "settings": 200, "performed": "drag-control", "stage": "native_drop", "timestamp": 7.0},
+        ]
+        self.assertRaises(RuntimeError, finish_args, duplicate_drop, identity)
+        wrong_state = list(entries)
+        wrong_state[-1] = {**wrong_state[-1], "state": {"app": 999, "settings": 0, "front": 999}}
+        self.assertRaises(RuntimeError, finish_args, wrong_state, identity)
+        pending_readback = list(entries)
+        pending_readback[4] = {**pending_readback[4], "status": "pending"}
+        self.assertRaises(RuntimeError, finish_args, pending_readback, identity)
+
+    def test_postgrant_relaunch_requires_exact_isolated_identity_and_incomplete_step_two(self):
+        state = {
+            "app": 0, "settings": 0,
+            "bundle_id": "dev.mimac.verification.finish",
+            "bundle_path": "/tmp/MiMac Permission QA.app",
+            "password": False, "system_sheet": False, "restart": False,
+            "extra_access_warning": False,
+        }
+        progress = {"started": True, "completed": False, "step": 2}
+        checkpoint = {"stage": "both_granted"}
+        kwargs = {
+            "bundle_id": state["bundle_id"], "bundle_path": state["bundle_path"],
+            "checkpoint": checkpoint,
+        }
+        self.assertTrue(finish_postgrant_relaunch_preflight(state, progress, **kwargs))
+        for changed_state, changed_progress, changed_checkpoint in (
+            ({**state, "settings": 200}, progress, checkpoint),
+            ({**state, "password": True}, progress, checkpoint),
+            ({**state, "bundle_path": "/tmp/Other.app"}, progress, checkpoint),
+            (state, {**progress, "step": 1}, checkpoint),
+            (state, {**progress, "completed": True}, checkpoint),
+            (state, progress, {"stage": "native_drop"}),
+        ):
+            self.assertFalse(finish_postgrant_relaunch_preflight(
+                changed_state, changed_progress, **{**kwargs, "checkpoint": changed_checkpoint},
+            ))
 
     def test_external_grant_in_ensure_records_no_runner_action(self):
         pending = ordinary_permission_nodes(
@@ -1968,6 +2605,91 @@ class BluetoothPermissionAcceptanceTests(unittest.TestCase):
         readback = next(values for stage, values in instance.records if stage == "bluetooth_permission_readback")
         self.assertEqual(readback["authorization_actor"], "acceptance_runner")
         self.assertEqual(readback["action"], "AXPress Allow")
+
+    def test_full_first_use_denial_uses_only_the_verified_deny_operation_and_reads_back_state(self):
+        pending_nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        denied_nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        pending = bluetooth_permission_target(pending_nodes, self.name, "full-first-use")
+        denied = bluetooth_permission_target(denied_nodes, self.name, "full-first-use")
+        instance = self.acceptance("runner", pending_nodes)
+        instance.bluetooth_deny = True
+        instance.press_permission_row = lambda *_args: {
+            "ax_press_started_at": 1.0, "ax_press_completed_at": 1.1,
+        }
+        request = self.native_request_evidence("ready")
+        action = dict(request)
+        action.update({
+            "performed": "AXPress Don't Allow", "authorization_actor": "acceptance_runner",
+            "deny_button_count": 1, "deny_button_label": "Don't Allow",
+        })
+        outcomes = iter((
+            {"kind": "request", "request": request, "target": pending},
+            {"kind": "denied", "request": self.native_request_evidence("absent"), "target": denied,
+             "permission_state_source": "same_app_permission_guide_trace",
+             "capability_trace": {"status": "denied"}},
+        ))
+        instance.wait_for_bluetooth_state = lambda *_args, **_kwargs: next(outcomes)
+        with patch("permission_acceptance.capture", side_effect=(self.native_request_evidence("absent"), action)) as native:
+            final = instance.ensure_bluetooth_permission(101, scope="full-first-use")
+        self.assertEqual(final["state"], "denied")
+        self.assertEqual([call.args[1] for call in native.call_args_list], [
+            "inspect-bluetooth-request", "deny-bluetooth",
+        ])
+        stages = [stage for stage, _ in instance.records]
+        self.assertIn("bluetooth_system_deny_action", stages)
+        self.assertIn("bluetooth_permission_readback", stages)
+        self.assertNotIn("bluetooth_system_allow_action", stages)
+        self.assertEqual(final["presentation_state"], "pending")
+        self.assertEqual(final["capability_state"], "denied")
+        readback = next(values for stage, values in instance.records if stage == "bluetooth_permission_readback")
+        self.assertEqual(readback["status"], "denied")
+        self.assertEqual(readback["permission_state_source"], "same_app_permission_guide_trace")
+        self.assertEqual(readback["permission_rows"]["rows"]["bluetooth"], "pending")
+
+    def test_finish_stops_after_denial_readback_without_completing_first_use(self):
+        pending_nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        denied_nodes = first_use_permission_nodes(
+            control_pending=False, bluetooth=True, bluetooth_pending=True,
+            summary="已授权 2/3",
+        )
+        ui_target = bluetooth_permission_target(denied_nodes, self.name, "full-first-use")
+        denied_target = {
+            **ui_target, "state": "denied", "presentation_state": "pending",
+            "capability_state": "denied", "capability_source": "same_app_permission_guide_trace",
+        }
+        instance = object.__new__(Acceptance)
+        instance.name = self.name
+        instance.identifier = "dev.mimac.verification.denial"
+        instance.bundle = Path("/tmp/MiMac Permission Denial QA.app")
+        instance.config = Path("/tmp/unused-qa-config")
+        instance.sha = "a" * 64
+        instance.fixed_dev = False
+        instance.bluetooth_deny = True
+        instance.view_if_windows_available = lambda _pid: pending_nodes
+        instance.ensure_bluetooth_permission = lambda *_args, **_kwargs: denied_target
+        records = []
+        instance.record = lambda stage, values: records.append((stage, values))
+        instance.close = lambda pid: records.append(("closed", {"app": pid}))
+        state = {"app": 101, "settings": 0, "front": 101, "page": "", "restart": False}
+        instance.wait_auth_or = lambda _stage, ready: ready(state)
+        instance.granted_after_restart = lambda *_args: self.fail("denial must terminate before full first-use completion")
+        instance.probe = lambda *_args: self.fail("denial completion must not continue the grant flow")
+        with patch("permission_acceptance.pid_exists", return_value=False):
+            instance.finish(100, 101, 0)
+        stages = [stage for stage, _ in records]
+        self.assertIn("BLUETOOTH_DENIAL_PASS", stages)
+        self.assertIn("closed", stages)
+        self.assertNotIn("both_granted", stages)
+        self.assertNotIn("first_use_verified", stages)
 
     def test_user_actor_waits_for_same_row_without_automating_allow(self):
         nodes = ordinary_permission_nodes(

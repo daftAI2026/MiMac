@@ -3,9 +3,11 @@ import ApplicationServices
 import Security
 
 let settingsID = "com.apple.systempreferences"
+let settingsPath = "/System/Applications/System Settings.app"
 let bluetoothRequestID = "com.apple.UserNotificationCenter"
 let bluetoothRequestPath = "/System/Library/CoreServices/UserNotificationCenter.app"
 let bluetoothAllowLabels = ["Allow"]
+let bluetoothDenyLabels = ["Don't Allow", "Don’t Allow", "不允许"]
 let inputPage = ["Input Monitoring", "输入监控"]
 let controlPage = ["Device Control and Data Access", "Accessibility", "设备控制和数据访问", "辅助功能"]
 let restartTitles = ["Quit & Reopen", "退出并重新打开"]
@@ -102,15 +104,71 @@ func rect(_ element: AXUIElement) -> CGRect? {
     return CGRect(origin: origin, size: size)
 }
 
+func parentChain(_ element: AXUIElement?) -> [AXUIElement] {
+    guard let element else { return [] }
+    var chain = [element]
+    var current = element
+    for _ in 0..<24 {
+        guard let parentValue = attribute(current, "AXParent"),
+              CFGetTypeID(parentValue) == AXUIElementGetTypeID() else { break }
+        let parent = parentValue as! AXUIElement
+        guard !chain.contains(where: { CFEqual($0, parent) }) else { break }
+        chain.append(parent)
+        current = parent
+    }
+    return chain
+}
+
+func restartPromptEvidence(_ pageElements: [AXUIElement], _ actions: [AXUIElement], name: String) -> [String: Any] {
+    let appTitleNodes = pageElements.filter { property($0, "AXIdentifier") == "\(name)_Title" }
+    let restartChain = parentChain(actions.first)
+    let restartSheets = uniqueAXElements(restartChain.filter { property($0, "AXRole") == "AXSheet" })
+    let matchesName = { (text: String) in
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == name { return true }
+        return ["\"\(name)\"", "“\(name)”", "‘\(name)’", "'\(name)'", "「\(name)」", "『\(name)』", "«\(name)»"]
+            .contains(where: { text.contains($0) })
+    }
+    let sheetElements = restartSheets.flatMap { elements([$0]) }
+    let matchingTexts = sheetElements.flatMap { element in
+        ["AXTitle", "AXValue", "AXDescription"].compactMap { key -> String? in
+            let text = property(element, key)
+            return matchesName(text) ? text : nil
+        }
+    }
+    let owned = appTitleNodes.count == 1 && actions.count == 1 && restartSheets.count == 1 &&
+        !matchingTexts.isEmpty
+    return [
+        "app_display_name": name,
+        "app_display_name_title_count": appTitleNodes.count,
+        "restart_action_count": actions.count,
+        "restart_sheet_count": restartSheets.count,
+        "app_name_in_restart_sheet": !matchingTexts.isEmpty,
+        "restart_sheet_name_match_count": matchingTexts.count,
+        "restart_prompt_owned_by_target": owned,
+        "matched_text_templates": matchingTexts.map { $0.replacingOccurrences(of: name, with: "<TARGET_APP>") },
+    ]
+}
+
 let args = CommandLine.arguments
 guard args.count >= 3, AXIsProcessTrusted() else { stop("AX is unavailable or the bundle path is missing") }
 let operation = args[1]
-let focusOperation = operation == "recover-settings-focus"
-let bluetoothRequestOperation = operation == "inspect-bluetooth-request" || operation == "allow-bluetooth"
+let restartInspectionOperation = operation == "inspect-restart-prompt"
+let restartFocusOperation = operation == "recover-restart-prompt-focus"
+let orphanRestartOperation = operation == "restart-owned-orphan"
+let coldAttachCleanupOperation = operation == "close-cold-attach"
+let focusOperation = operation == "recover-settings-focus" || restartFocusOperation
+let bluetoothRequestOperation = operation == "inspect-bluetooth-request" ||
+    operation == "allow-bluetooth" || operation == "deny-bluetooth"
 guard (operation == "cancel-auth" && args.count == 5) ||
-      (focusOperation && args.count == 6) ||
+      (operation == "recover-settings-focus" && args.count == 6) ||
+      (restartFocusOperation && args.count == 8) ||
+      (orphanRestartOperation && args.count == 7) ||
+      (coldAttachCleanupOperation && args.count == 8) ||
       (bluetoothRequestOperation && args.count == 4) ||
-      (operation != "cancel-auth" && !focusOperation && !bluetoothRequestOperation && args.count == 3) else {
+      (operation == "restart" && (args.count == 3 || args.count == 4)) ||
+      (operation != "cancel-auth" && !focusOperation && !coldAttachCleanupOperation &&
+       !bluetoothRequestOperation && args.count == 3) else {
     stop("unexpected arguments for permission operation")
 }
 let bundleURL = URL(fileURLWithPath: args[2]).resolvingSymlinksInPath()
@@ -158,7 +216,7 @@ func hasExtraAccessWarning(for appName: String) -> Bool {
     } ?? false
 }
 
-func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [String: Any] {
+func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool, performDeny: Bool = false) -> [String: Any] {
     let targetApps = NSRunningApplication.runningApplications(withBundleIdentifier: id)
     guard targetApps.count == 1,
           targetApps.allSatisfy({ $0.bundleURL?.resolvingSymlinksInPath().path == bundleURL.path }),
@@ -236,6 +294,32 @@ func inspectBluetoothRequest(expectedAppPID: Int32, performAllow: Bool) -> [Stri
     let evidence: [String: Any] = ["status": "ready"]
         .merging(targetEvidence) { _, new in new }
         .merging(requestEvidence) { _, new in new }
+    if performDeny {
+        let denyButtons = windowElements.filter { element in
+            property(element, "AXRole") == "AXButton" &&
+            attribute(element, "AXEnabled") as? Bool == true &&
+            [property(element, "AXTitle"), property(element, "AXDescription")]
+                .contains(where: { bluetoothDenyLabels.contains($0) })
+        }
+        guard denyButtons.count == 1, let denyButton = denyButtons.first else {
+            stop("the exact Bluetooth request does not expose one enabled explicit denial button")
+        }
+        let denyLabel = [property(denyButton, "AXTitle"), property(denyButton, "AXDescription")]
+            .first(where: { bluetoothDenyLabels.contains($0) }) ?? ""
+        let startedAt = Date().timeIntervalSince1970
+        guard AXUIElementPerformAction(denyButton, kAXPressAction as CFString) == .success else {
+            stop("AXPress on the exact Bluetooth Don't Allow button failed")
+        }
+        let completedAt = Date().timeIntervalSince1970
+        return [
+            "performed": "AXPress \(denyLabel)", "authorization_actor": "acceptance_runner",
+            "deny_button_label": denyLabel, "deny_button_count": denyButtons.count,
+            "ax_press_started_at": startedAt, "ax_press_completed_at": completedAt,
+            "ax_press_duration_ms": (completedAt - startedAt) * 1_000,
+        ]
+        .merging(targetEvidence) { _, new in new }
+        .merging(requestEvidence) { _, new in new }
+    }
     guard performAllow else { return evidence }
     let startedAt = Date().timeIntervalSince1970
     guard AXUIElementPerformAction(allowButton, kAXPressAction as CFString) == .success else {
@@ -389,7 +473,11 @@ if operation == "observe-ax-feedback" {
 // Settings probe, which walks the complete Settings accessibility tree.
 if bluetoothRequestOperation {
     guard let expectedAppPID = Int32(args[3]) else { stop("Bluetooth request inspection needs the exact app PID") }
-    let result = inspectBluetoothRequest(expectedAppPID: expectedAppPID, performAllow: operation == "allow-bluetooth")
+    let result = inspectBluetoothRequest(
+        expectedAppPID: expectedAppPID,
+        performAllow: operation == "allow-bluetooth",
+        performDeny: operation == "deny-bluetooth",
+    )
     emit(result)
     exit(0)
 }
@@ -432,11 +520,14 @@ if let pageIndex {
     otherSettingsWindows = settingsWindows
 }
 let otherSettingsTrees = credentialWindow ? [] : elementsByRoot(otherSettingsWindows)
-let restart = pageElements.filter {
+let restartActions = pageElements.filter {
     property($0, "AXIdentifier") == "action-button-1" &&
     property($0, "AXRole") == "AXButton" && restartTitles.contains(property($0, "AXTitle")) &&
     attribute($0, "AXEnabled") as? Bool == true
 }
+let restartPromptDetails = restartPromptEvidence(pageElements, restartActions, name: name)
+let restartPromptOwned = restartPromptDetails["restart_prompt_owned_by_target"] as? Bool == true
+let restart = restartPromptOwned ? restartActions : []
 let suppliedApp = pageElements.contains { property($0, "AXIdentifier") == "\(name)_Title" }
 let password = credentialWindow || pageElements.contains {
     property($0, "AXRole") == "AXSecureTextField" || property($0, "AXSubrole") == "AXSecureTextField"
@@ -463,10 +554,146 @@ let ordinaryOrder: [Int32] = scene.compactMap { row in
 }
 
 let extraAccessWarning: Bool
-if operation == "probe" || focusOperation {
+if operation == "probe" || focusOperation || restartInspectionOperation || operation == "restart" ||
+    orphanRestartOperation || coldAttachCleanupOperation {
     extraAccessWarning = hasExtraAccessWarning(for: name)
 } else {
     extraAccessWarning = false
+}
+
+if coldAttachCleanupOperation {
+    guard let expectedAppPID = Int32(args[3]), expectedAppPID > 0,
+          let expectedSettingsPID = Int32(args[4]), expectedSettingsPID >= 0,
+          let expectedFrontPID = Int32(args[6]), expectedFrontPID > 0,
+          !args[7].isEmpty,
+          appPID == expectedAppPID, apps.count == 1, candidates.count == 1,
+          bundleURL.path.hasPrefix(NSHomeDirectory() + "/Library/Caches/MiMac/"),
+          id.hasPrefix("dev.mimac.verification.") else {
+        stop("cold attachment cleanup requires the unique exact isolated QA process and recorded foreground")
+    }
+    let expectedPage = args[5]
+    guard expectedFrontPID != expectedAppPID, expectedFrontPID != expectedSettingsPID else {
+        stop("the original foreground identity conflicts with a target process")
+    }
+    guard !password, systemSheets.isEmpty, restartActions.isEmpty, !restartPromptOwned,
+          !extraAccessWarning, permissionCardAX.count <= 1 else {
+        stop("cold attachment cleanup found a credential, modal, restart, extra-access, or ambiguous-card state")
+    }
+
+    let settingsWasOpened: Bool
+    let preserveUnownedSettings: Bool
+    if expectedSettingsPID == 0 {
+        guard expectedPage.isEmpty else { stop("unowned Settings cleanup must not specify a page") }
+        settingsWasOpened = false
+        preserveUnownedSettings = !settingsApps.isEmpty
+        if !preserveUnownedSettings {
+            guard settingsPID == 0, (frontPID == appPID || frontPID == expectedFrontPID) else {
+                stop("an unrelated app took the foreground; cleanup will not override it")
+            }
+        }
+    } else {
+        guard settingsApps.count == 1, settingsPID == expectedSettingsPID,
+              settingsApp?.bundleIdentifier == settingsID,
+              settingsApp?.bundleURL?.resolvingSymlinksInPath().path == settingsPath,
+              settingsWindows.count == 1, pageIndices.count == 1, title == expectedPage,
+              controlPage.contains(expectedPage),
+              frontPID == expectedSettingsPID || frontPID == appPID else {
+            stop("cold attachment cleanup requires the exact unique Settings process and the page opened by this run")
+        }
+        let settingsScene = scene.filter {
+            $0[kCGWindowOwnerPID as String] as? Int32 == expectedSettingsPID &&
+            $0[kCGWindowName as String] as? String == expectedPage &&
+            ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0.05
+        }
+        guard settingsScene.count == 1 else {
+            stop("the cold attachment Settings page is not uniquely visible")
+        }
+        settingsWasOpened = true
+        preserveUnownedSettings = false
+    }
+
+    let previousFront: NSRunningApplication?
+    if preserveUnownedSettings {
+        // A Settings process visible before this run verified ownership is
+        // user-owned for cleanup purposes. Do not activate over it.
+        previousFront = nil
+    } else {
+        guard let matchedPreviousFront = NSRunningApplication.runningApplications(withBundleIdentifier: args[7])
+                .first(where: { $0.processIdentifier == expectedFrontPID }),
+              matchedPreviousFront.bundleIdentifier == args[7] else {
+            stop("the original foreground process no longer matches its recorded PID and Bundle ID")
+        }
+        previousFront = matchedPreviousFront
+    }
+
+    var settingsClosed: Bool
+    if settingsWasOpened {
+        let settingsTerminationAccepted = settingsApp?.terminate() ?? false
+        guard settingsTerminationAccepted else {
+            stop("the exact Settings process did not accept the cleanup quit")
+        }
+        let settingsDeadline = Date(timeIntervalSinceNow: 4)
+        while Date() < settingsDeadline {
+            let remaining = NSRunningApplication.runningApplications(withBundleIdentifier: settingsID)
+                .contains { $0.processIdentifier == expectedSettingsPID && !$0.isTerminated }
+            if !remaining { break }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        settingsClosed = !NSRunningApplication.runningApplications(withBundleIdentifier: settingsID)
+            .contains { $0.processIdentifier == expectedSettingsPID && !$0.isTerminated }
+        guard settingsClosed else {
+            stop("the exact cold attachment Settings process did not exit after cleanup")
+        }
+    } else {
+        settingsClosed = settingsApps.isEmpty
+    }
+
+    guard let qaApp = candidates.first, qaApp.terminate() else {
+        stop("the exact cold attachment QA process did not accept the cleanup quit")
+    }
+    let appDeadline = Date(timeIntervalSinceNow: 4)
+    while Date() < appDeadline {
+        let remaining = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+            .contains { $0.processIdentifier == expectedAppPID && !$0.isTerminated }
+        if !remaining { break }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+    let appClosed = !NSRunningApplication.runningApplications(withBundleIdentifier: id)
+        .contains { $0.processIdentifier == expectedAppPID && !$0.isTerminated }
+    guard appClosed else {
+        stop("the exact cold attachment QA process did not exit after cleanup")
+    }
+
+    if !preserveUnownedSettings {
+        guard let currentPreviousFront = previousFront,
+              let stillRunningFront = NSRunningApplication.runningApplications(withBundleIdentifier: args[7])
+                .first(where: { $0.processIdentifier == expectedFrontPID }),
+              stillRunningFront.bundleIdentifier == args[7],
+              currentPreviousFront.activate(options: []) else {
+            stop("the recorded foreground process could not be reactivated after cleanup")
+        }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+    }
+    let restoredFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let foregroundRestored = !preserveUnownedSettings && restoredFrontPID == expectedFrontPID
+    if !preserveUnownedSettings && !foregroundRestored {
+        stop("the recorded foreground process did not become frontmost after cleanup")
+    }
+    emit([
+        "performed": operation, "app": Int(expectedAppPID),
+        "settings": Int(expectedSettingsPID), "page": expectedPage,
+        "settings_closed": settingsClosed, "settings_preserved": preserveUnownedSettings,
+        "observed_settings_pids": settingsApps.map { Int($0.processIdentifier) },
+        "app_closed": appClosed,
+        "foreground_restore_pid": Int(expectedFrontPID),
+        "foreground_restore_bundle_id": args[7],
+        "foreground_restored": foregroundRestored,
+        "frontmost_pid_after": Int(restoredFrontPID),
+        "permission_change_requested": false, "native_permission_action_performed": false,
+        "native_drop_performed": false,
+    ])
+    if !preserveUnownedSettings && !foregroundRestored { exit(2) }
+    exit(0)
 }
 
 if operation == "cancel-auth" {
@@ -480,7 +707,7 @@ if operation == "cancel-auth" {
     guard let page, inputPage.contains(title) else {
         stop("the exact Input Monitoring page is not present in the expected Settings process")
     }
-    guard restart.isEmpty else {
+    guard restartActions.isEmpty else {
         stop("a restart action is present; the password-sheet Cancel flow is not isolated")
     }
     let pageSheets = sheets(in: [page])
@@ -530,18 +757,32 @@ if operation == "cancel-auth" {
     exit(0)
 }
 
-if operation == "probe" {
-    emit(["app": appPID, "settings": settingsPID, "front": frontPID, "page": title,
+if operation == "probe" || restartInspectionOperation {
+    var result: [String: Any] = ["app": appPID, "settings": settingsPID, "front": frontPID, "page": title,
           "bundle_id": id, "bundle_path": bundleURL.path,
           "settings_bundle_id": settingsApp?.bundleIdentifier ?? "",
           "settings_bundle_path": settingsApp?.bundleURL?.resolvingSymlinksInPath().path ?? "",
           "settings_process_count": settingsApps.count, "settings_page_count": pageIndices.count,
           "frontmost_bundle_id": front?.bundleIdentifier ?? "",
-          "restart": restart.count == 1 && suppliedApp, "password": password, "extra_access_warning": extraAccessWarning,
+          "restart": restartPromptOwned, "restart_action_count": restartActions.count,
+          "password": password, "extra_access_warning": extraAccessWarning,
           "permission_card_visible": permissionCardVisible, "permission_summary": permissionSummary,
           "permission_card_window_count": permissionCardAX.count,
           "system_sheet": !systemSheets.isEmpty, "system_sheet_titles": systemSheets.map { property($0, "AXTitle") },
-          "settings_above_setup": settingsPID > 0 && ordinaryOrder.starts(with: [settingsPID, appPID])])
+          "settings_above_setup": settingsPID > 0 && ordinaryOrder.starts(with: [settingsPID, appPID])]
+    if restartInspectionOperation {
+        var promptDetails = restartPromptDetails
+        promptDetails["settings_page_count"] = pageIndices.count
+        promptDetails["settings_process_count"] = settingsApps.count
+        promptDetails["settings_page_title"] = title
+        promptDetails["settings_bundle_id"] = settingsApp?.bundleIdentifier ?? ""
+        promptDetails["settings_bundle_path"] = settingsApp?.bundleURL?.resolvingSymlinksInPath().path ?? ""
+        promptDetails["password"] = password
+        promptDetails["system_sheet_count"] = systemSheets.count
+        promptDetails["frontmost_bundle_id"] = front?.bundleIdentifier ?? ""
+        result["restart_prompt_inspection"] = promptDetails
+    }
+    emit(result)
     exit(0)
 }
 if focusOperation {
@@ -549,6 +790,11 @@ if focusOperation {
           expectedAppPID > 0, expectedSettingsPID > 0,
           let expectedPage = (inputPage + controlPage).first(where: { $0 == args[5] }) else {
         stop("focus recovery needs exact positive app and Settings PIDs and a recognized page title")
+    }
+    let expectedFrontPID = restartFocusOperation ? Int32(args[6]) : nil
+    let expectedFrontBundleID = restartFocusOperation ? args[7] : ""
+    if restartFocusOperation && (expectedFrontPID == nil || expectedFrontPID! <= 0 || expectedFrontBundleID.isEmpty) {
+        stop("restart-prompt focus recovery needs the exact previously observed front PID and Bundle ID")
     }
     let before: [String: Any] = [
         "app": Int(appPID), "settings": Int(settingsPID), "front": Int(frontPID),
@@ -560,7 +806,7 @@ if focusOperation {
         "permission_card_visible": permissionCardVisible,
         "permission_card_window_count": permissionCardAX.count,
         "password": password, "system_sheet_count": systemSheets.count,
-        "restart_action_visible": restart.count == 1 && suppliedApp,
+        "restart_action_visible": restartPromptOwned,
         "extra_access_warning": extraAccessWarning,
     ]
     guard apps.count == 1, candidates.count == 1, appPID == expectedAppPID else {
@@ -569,14 +815,17 @@ if focusOperation {
         exit(2)
     }
     guard settingsApps.count == 1, settingsPID == expectedSettingsPID,
-          settingsApp?.bundleIdentifier == settingsID else {
+          settingsApp?.bundleIdentifier == settingsID,
+          settingsApp?.bundleURL?.resolvingSymlinksInPath().path == settingsPath else {
         emit(["error": "the exact unique System Settings process changed before focus recovery", "activation_performed": false,
               "expected_settings": Int(expectedSettingsPID), "before": before])
         exit(2)
     }
-    guard pageIndices.count == 1, page != nil, title == expectedPage,
-          !password, systemSheets.isEmpty, restart.isEmpty,
-          !extraAccessWarning, permissionCardVisible, permissionCardAX.count == 1 else {
+    let focusStateReady = pageIndices.count == 1 && page != nil && title == expectedPage &&
+        !password && systemSheets.isEmpty && !extraAccessWarning &&
+        permissionCardVisible && permissionCardAX.count == 1 &&
+        (restartFocusOperation ? restartPromptOwned : restartActions.isEmpty)
+    guard focusStateReady else {
         emit(["error": "the exact open permission page is blocked by changed page, password, sheet, restart, or permission-card state",
               "activation_performed": false, "expected_page": expectedPage, "before": before])
         exit(2)
@@ -590,6 +839,27 @@ if focusOperation {
         emit(["error": "the exact Settings page is not uniquely visible on screen", "activation_performed": false,
               "expected_page": expectedPage, "visible_page_window_count": settingsScene.count, "before": before])
         exit(2)
+    }
+    if restartFocusOperation {
+        guard frontPID == expectedFrontPID,
+              front?.bundleIdentifier == expectedFrontBundleID,
+              expectedFrontPID != expectedSettingsPID else {
+            emit(["error": "the observed front process changed before the one authorized Settings activation",
+                  "activation_performed": false, "expected_front_pid": expectedFrontPID as Any? ?? NSNull(),
+                  "expected_front_bundle_id": expectedFrontBundleID, "before": before])
+            exit(2)
+        }
+        let frontWindows = windows(expectedFrontPID!)
+        let frontModalCount = elements(frontWindows).filter { element in
+            ["AXSheet", "AXDialog", "AXSystemDialog"].contains(property(element, "AXRole")) ||
+            ["AXDialog", "AXSystemDialog"].contains(property(element, "AXSubrole"))
+        }.count
+        guard frontModalCount == 0, sheets(in: frontWindows).isEmpty else {
+            emit(["error": "the observed foreground process has a modal window; Settings focus was not changed",
+                  "activation_performed": false, "front_modal_count": frontModalCount,
+                  "before": before])
+            exit(2)
+        }
     }
     if frontPID == expectedSettingsPID {
         emit(["performed": operation, "app": Int(expectedAppPID), "settings": Int(expectedSettingsPID),
@@ -613,17 +883,136 @@ if focusOperation {
     RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
     let frontmostAfterPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
     let completedAt = Date().timeIntervalSince1970
+    let afterWindows = windows(expectedSettingsPID)
+    let afterPageWindows = afterWindows.filter {
+        property($0, "AXRole") == "AXWindow" && property($0, "AXTitle") == expectedPage
+    }
+    let afterPageElements = afterPageWindows.flatMap { elements([$0]) }
+    let afterRestartCount = afterPageElements.filter {
+        property($0, "AXIdentifier") == "action-button-1" &&
+        property($0, "AXRole") == "AXButton" && restartTitles.contains(property($0, "AXTitle")) &&
+        attribute($0, "AXEnabled") as? Bool == true
+    }.count
+    let afterSystemSheetCount = afterWindows.flatMap { attribute($0, "AXSheets") as? [AXUIElement] ?? [] }.count
     let action: [String: Any] = [
         "performed": operation, "app": Int(expectedAppPID), "settings": Int(expectedSettingsPID),
         "expected_page": expectedPage, "already_frontmost": false, "activation_performed": true,
+        "expected_front_pid": Int(expectedFrontPID ?? 0),
+        "expected_front_bundle_id": expectedFrontBundleID,
         "activation_accepted": activationAccepted, "activation_started_at": startedAt,
         "activation_completed_at": completedAt,
         "settings_frontmost_after": frontmostAfterPID == expectedSettingsPID,
         "frontmost_after_pid": Int(frontmostAfterPID),
+        "restart_action_count_before": restart.count,
+        "restart_action_count_after": afterRestartCount,
+        "page_window_count_after": afterPageWindows.count,
+        "system_sheet_count_after": afterSystemSheetCount,
+        "password_prompt_before": password,
+        "extra_access_warning_before": extraAccessWarning,
         "before": before,
         "permission_change_requested": false, "native_drag_performed": false,
     ]
     emit(action)
+    exit(0)
+}
+if orphanRestartOperation {
+    guard let previousAppPID = Int32(args[3]), previousAppPID > 0,
+          let expectedSettingsPID = Int32(args[4]), expectedSettingsPID > 0,
+          let expectedFrontPID = Int32(args[5]), expectedFrontPID > 0,
+          !args[6].isEmpty else {
+        stop("orphan restart needs the journaled old app PID, exact Settings PID, and observed foreground identity")
+    }
+    let expectedFrontBundleID = args[6]
+    guard apps.isEmpty, appPID == 0 else {
+        stop("the target bundle is running again; use its current PID and ordinary restart path")
+    }
+    guard settingsApps.count == 1, settingsPID == expectedSettingsPID,
+          settingsApp?.bundleIdentifier == settingsID,
+          settingsApp?.bundleURL?.resolvingSymlinksInPath().path == settingsPath,
+          pageIndices.count == 1, inputPage.contains(title),
+          restartPromptOwned, restartActions.count == 1,
+          restartPromptDetails["app_name_in_restart_sheet"] as? Bool == true,
+          (restartPromptDetails["restart_sheet_count"] as? Int) == 1,
+          (restartPromptDetails["restart_sheet_name_match_count"] as? Int ?? 0) >= 1,
+          !password, systemSheets.isEmpty, !extraAccessWarning else {
+        stop("the unique Settings page does not contain one password-free restart sheet naming this exact verification app")
+    }
+    guard frontPID == expectedFrontPID, front?.bundleIdentifier == expectedFrontBundleID,
+          (frontPID == expectedSettingsPID ? expectedFrontBundleID == settingsID :
+            !["com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent"].contains(expectedFrontBundleID)) else {
+        stop("the observed foreground identity changed or is a system authentication window")
+    }
+    if expectedFrontPID != expectedSettingsPID {
+        let frontWindows = windows(expectedFrontPID)
+        let frontModalCount = elements(frontWindows).filter { element in
+            ["AXSheet", "AXDialog", "AXSystemDialog"].contains(property(element, "AXRole")) ||
+            ["AXDialog", "AXSystemDialog"].contains(property(element, "AXSubrole"))
+        }.count
+        guard frontModalCount == 0, sheets(in: frontWindows).isEmpty else {
+            stop("the observed foreground app has a modal window; Settings focus was not changed")
+        }
+    }
+    let settingsScene = scene.filter {
+        $0[kCGWindowOwnerPID as String] as? Int32 == expectedSettingsPID &&
+        $0[kCGWindowName as String] as? String == title &&
+        ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0.05
+    }
+    guard settingsScene.count == 1, let runningSettings = settingsApp else {
+        stop("the exact Settings page is not uniquely visible")
+    }
+    let activationStartedAt = Date().timeIntervalSince1970
+    let activationAccepted = frontPID == expectedSettingsPID || runningSettings.activate(options: [])
+    guard activationAccepted else { stop("System Settings rejected the single activation required for its owned restart sheet") }
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
+    let activationCompletedAt = Date().timeIntervalSince1970
+    let activatedFront = NSWorkspace.shared.frontmostApplication
+    let activatedWindows = windows(expectedSettingsPID)
+    let activatedPages = activatedWindows.filter {
+        property($0, "AXRole") == "AXWindow" && property($0, "AXTitle") == title
+    }
+    let activatedElements = activatedPages.flatMap { elements([$0]) }
+    let activatedActions = activatedElements.filter {
+        property($0, "AXIdentifier") == "action-button-1" &&
+        property($0, "AXRole") == "AXButton" && restartTitles.contains(property($0, "AXTitle")) &&
+        attribute($0, "AXEnabled") as? Bool == true
+    }
+    let activatedEvidence = restartPromptEvidence(activatedElements, activatedActions, name: name)
+    let activatedTargetApps = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+    let activatedPassword = (activatedFront?.bundleIdentifier == "com.apple.SecurityAgent" ||
+        activatedFront?.bundleIdentifier == "com.apple.LocalAuthentication.UIAgent") ||
+        activatedElements.contains {
+            property($0, "AXRole") == "AXSecureTextField" || property($0, "AXSubrole") == "AXSecureTextField"
+        }
+    guard activatedFront?.processIdentifier == expectedSettingsPID,
+          activatedPages.count == 1, activatedActions.count == 1,
+          activatedEvidence["restart_prompt_owned_by_target"] as? Bool == true,
+          activatedTargetApps.isEmpty, !activatedPassword else {
+        stop("after Settings activation, the target, restart sheet, or authentication state changed; no restart action was sent")
+    }
+    let restartPressStartedAt = Date().timeIntervalSince1970
+    guard let activatedAction = activatedActions.first,
+          AXUIElementPerformAction(activatedAction, kAXPressAction as CFString) == .success else {
+        stop("AX rejected the exact owned Quit & Reopen action")
+    }
+    let restartPressCompletedAt = Date().timeIntervalSince1970
+    emit([
+        "performed": operation, "app": 0, "previous_app_pid": Int(previousAppPID),
+        "app_display_name": name,
+        "bundle_id": id, "bundle_path": bundleURL.path,
+        "settings": Int(expectedSettingsPID), "settings_frontmost_before_action": true,
+        "expected_front_pid": Int(expectedFrontPID), "expected_front_bundle_id": expectedFrontBundleID,
+        "activation_performed": true, "activation_accepted": activationAccepted,
+        "activation_started_at": activationStartedAt,
+        "activation_completed_at": activationCompletedAt,
+        "restart_prompt_owned_by_target": true,
+        "restart_action_count": activatedActions.count,
+        "restart_sheet_count": activatedEvidence["restart_sheet_count"] ?? 0,
+        "app_name_in_restart_sheet": activatedEvidence["app_name_in_restart_sheet"] ?? false,
+        "password_prompt_before": password, "password_prompt_after_activation": activatedPassword,
+        "restart_press_started_at": restartPressStartedAt,
+        "restart_press_completed_at": restartPressCompletedAt,
+        "permission_change_requested": false, "native_drag_performed": false,
+    ])
     exit(0)
 }
 guard let page, appPID > 0, settingsPID > 0, frontPID == settingsPID, !password else {
@@ -631,7 +1020,7 @@ guard let page, appPID > 0, settingsPID > 0, frontPID == settingsPID, !password 
 }
 if operation == "confirm-control" {
     guard isDev, controlPage.contains(title),
-          (attribute(page, "AXSheets") as? [AXUIElement] ?? []).isEmpty, restart.isEmpty else {
+          (attribute(page, "AXSheets") as? [AXUIElement] ?? []).isEmpty, restartActions.isEmpty else {
         stop("an unobstructed Dev device-control row is required")
     }
     guard suppliedApp else { emit(["pending": true]); exit(0) }
@@ -660,7 +1049,7 @@ if operation == "confirm-control" {
     exit(0)
 }
 if operation == "restart" {
-    guard suppliedApp, restart.count == 1 else { stop("restart confirmation is unavailable") }
+    guard restartPromptOwned, restartActions.count == 1 else { stop("restart confirmation is unavailable or does not name the verified app in its system sheet") }
     let settingsScene: [[String: Any]] = scene.compactMap { row in
         guard row[kCGWindowOwnerPID as String] as? Int32 == settingsPID,
               let box = frame(row) else { return nil }
@@ -686,7 +1075,7 @@ guard (inputDrop && inputPage.contains(title)) ||
       ((escapeRegression || wrongTargetRegression) && (inputPage + controlPage).contains(title)) else {
     stop("incorrect permission pane")
 }
-guard (attribute(page, "AXSheets") as? [AXUIElement] ?? []).isEmpty, restart.isEmpty,
+guard (attribute(page, "AXSheets") as? [AXUIElement] ?? []).isEmpty, restartActions.isEmpty,
       CGPreflightPostEventAccess() else { stop("the permission list cannot accept a native drag") }
 
 func visibleWindow(_ pid: Int32, _ title: String) -> CGRect? {
@@ -962,7 +1351,9 @@ for step in 1...24 {
 usleep(280_000)
 let releasedAt = Date().timeIntervalSince1970
 post(.leftMouseUp, destination)
+let releasePostedAt = Date().timeIntervalSince1970
 emit(["performed": operation, "app": appPID, "settings": settingsPID,
       "source_kind": "panel-center", "mouse_down_at": mouseDownAt,
       "first_move_at": firstMoveAt, "mouse_up_at": releasedAt,
+      "mouse_up_posted_at": releasePostedAt,
       "destination": [destination.x, destination.y]])
