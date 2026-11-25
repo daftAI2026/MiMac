@@ -178,6 +178,19 @@ func (systemNative) capture() (snapshot, error) {
 	return state, nil
 }
 
+func (systemNative) checkFocus(state snapshot) error {
+	api, err := loadNativeAPI()
+	if err != nil {
+		return err
+	}
+	return confirmSnapshot(api, state)
+}
+
+func (systemNative) sameField(a, b snapshot) bool {
+	api, err := loadNativeAPI()
+	return err == nil && a.processID == b.processID && api.cfEqual(a.element, b.element) != 0
+}
+
 func (systemNative) insert(state snapshot, text string) error {
 	api, err := loadNativeAPI()
 	if err != nil {

@@ -98,3 +98,28 @@ func TestFocusChangeAfterReplacementDoesNotOfferDuplicateText(t *testing.T) {
 		t.Fatalf("accepted replacement: writes=%d err=%v", len(n.insertCalls), err)
 	}
 }
+
+func TestInterruptedCompositionKeepsEditorAndRechecksSelection(t *testing.T) {
+	n := &fakeNative{}
+	initial, err := captureWith(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &DictationTarget{target: initial}
+	defer d.Close()
+	current, err := d.CaptureCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	if err := current.CheckFocus(); err != nil {
+		t.Fatal(err)
+	}
+	n.current.selection++
+	if err := current.CheckFocus(); !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("selection changed: %v", err)
+	}
+	if len(n.insertCalls) != 0 {
+		t.Fatal("read-only focus validation inserted text")
+	}
+}

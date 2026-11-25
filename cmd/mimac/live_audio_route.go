@@ -84,6 +84,7 @@ type compatAudioRouteDependencies struct {
 	captureIdentity  func(int32, string) (compatProcessIdentity, error)
 	openDeviceOwner  func(uint64, string) (compatATVVOwner, error)
 	openSink         xiaomiAudioSinkFactory
+	editorRecovery   *doubaoEditorRecovery
 
 	idleTimeout time.Duration
 	idlePoll    time.Duration
@@ -158,10 +159,12 @@ func openLiveXiaomiRoute(
 	targetBundleID string,
 	targetAppPath string,
 	targetExecutablePath string,
+	recovery *doubaoEditorRecovery,
 	locator voicetools.Locator,
 ) (liveAudioRoute, error) {
 	deps := withCompatApplicationInspector(defaultDoubaoAudioRouteDependencies(), targetBundleID,
 		targetAppPath, targetExecutablePath)
+	deps.editorRecovery = recovery
 	return openLiveXiaomiRouteWithDependencies(ctx, generation, libraryPath, targetBundleID, targetExecutablePath, locator, deps)
 }
 
@@ -280,6 +283,7 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		idleTimeout:     deps.idleTimeout,
 		idlePoll:        deps.idlePoll,
 		closeGate:       make(chan struct{}, 1),
+		editorRecovery:  deps.editorRecovery,
 	}
 
 	var owner compatATVVOwner
@@ -312,6 +316,11 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 						if err := identity.Check(); err != nil {
 							return err
 						}
+						if deps.editorRecovery != nil {
+							if err := deps.editorRecovery.prepareReplacement(ctx, lease); err != nil {
+								return fmt.Errorf("mimac-compat route: reconnect editor: %w", err)
+							}
+						}
 						if err := deps.prepareControl(ctx, locator, process.PID); err != nil {
 							return fmt.Errorf("mimac-compat route: prepare control service: %w", err)
 						}
@@ -319,13 +328,18 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 					},
 				}
 			}
-			return &compatAudioReceiverSink{
+			receiver := &compatAudioReceiverSink{
 				xiaomiPreparedSink: sink,
 				inspector:          inspector,
 				identity:           identity,
 				pid:                process.PID,
 				deviceUID:          compatAudioDeviceUID,
-			}, openErr
+			}
+			if lease.editorRecovery != nil {
+				receiver.onFault = lease.recordEditorOnExit
+				receiver.onDrained = func() { lease.editorRecovery.releaseRoute(lease) }
+			}
+			return receiver, openErr
 		},
 	)
 	if err != nil {
@@ -445,6 +459,7 @@ type compatLiveAudioRoute struct {
 	idleTimeout time.Duration
 	idlePoll    time.Duration
 
+	editorRecovery     *doubaoEditorRecovery
 	closeGate          chan struct{}
 	mu                 sync.Mutex
 	closing            bool
@@ -539,6 +554,9 @@ func (r *compatLiveAudioRoute) BeforeStart(ctx context.Context) error {
 	}
 	if err := r.verifyCapturedTargetIdle(ctx); err != nil {
 		return fmt.Errorf("mimac-compat route: verify target after microphone request: %w", err)
+	}
+	if r.editorRecovery != nil {
+		r.editorRecovery.begin(r)
 	}
 	return nil
 }
@@ -648,6 +666,9 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 		r.mu.Unlock()
 	}
 
+	if r.editorRecovery != nil {
+		r.editorRecovery.releaseRoute(r)
+	}
 	r.mu.Lock()
 	selectionAttempted, leaseDone, retired := r.selectionAttempted, r.leaseDone, r.retired
 	r.mu.Unlock()

@@ -17,6 +17,7 @@ var api struct {
 	once         sync.Once
 	err          error
 	copyCurrent  func() uintptr
+	copyLayout   func() uintptr
 	property     func(uintptr, uintptr) uintptr
 	createList   func(uintptr, uint8) uintptr
 	selectSource func(uintptr) int32
@@ -45,6 +46,7 @@ func loadAPI() error {
 			name    string
 		}{
 			{carbon, &api.copyCurrent, "TISCopyCurrentKeyboardInputSource"},
+			{carbon, &api.copyLayout, "TISCopyCurrentASCIICapableKeyboardLayoutInputSource"},
 			{carbon, &api.property, "TISGetInputSourceProperty"},
 			{carbon, &api.createList, "TISCreateInputSourceList"},
 			{carbon, &api.selectSource, "TISSelectInputSource"},
@@ -93,7 +95,18 @@ func CurrentID() (string, error) {
 	if err := loadAPI(); err != nil {
 		return "", err
 	}
-	source := api.copyCurrent()
+	return copiedSourceID(api.copyCurrent())
+}
+
+// ASCIILayoutID returns the user's current enabled ASCII-capable keyboard layout.
+func ASCIILayoutID() (string, error) {
+	if err := loadAPI(); err != nil {
+		return "", err
+	}
+	return copiedSourceID(api.copyLayout())
+}
+
+func copiedSourceID(source uintptr) (string, error) {
 	if source == 0 {
 		return "", errors.New("inputsource: no selected source")
 	}

@@ -51,6 +51,27 @@ func (d *DictationTarget) attach(pid int32, target *Target) {
 	_ = target.Close()
 }
 
+// CaptureCurrentSelection remembers where an interrupted input method left its
+// composition. The original field must still be focused, but the input method
+// may have moved its selection since key-down.
+func (d *DictationTarget) CaptureCurrentSelection() (*Target, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.used || d.target == nil {
+		return nil, ErrNoInsertionTarget
+	}
+	t := d.target
+	current, err := captureWith(t.native)
+	if err != nil {
+		return nil, err
+	}
+	if !t.native.sameField(t.snapshot, current.snapshot) {
+		_ = current.Close()
+		return nil, ErrTargetChanged
+	}
+	return current, nil
+}
+
 func (d *DictationTarget) Insert(text string) error {
 	if text == "" {
 		return nil

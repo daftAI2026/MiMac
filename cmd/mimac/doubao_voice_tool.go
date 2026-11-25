@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-func doubaoAudioRouteFactory(ctx context.Context, config audioRouteConfig) (liveAudioRoute, error) {
+func (recovery *doubaoEditorRecovery) audioRouteFactory(ctx context.Context, config audioRouteConfig) (liveAudioRoute, error) {
 	return openLiveXiaomiRoute(
 		ctx,
 		config.Generation,
@@ -13,6 +13,7 @@ func doubaoAudioRouteFactory(ctx context.Context, config audioRouteConfig) (live
 		compatDoubaoBundleID,
 		config.AppPath,
 		filepath.Join(config.AppPath, "Contents", "MacOS", compatDoubaoExecutableName),
+		recovery,
 		config.Locator,
 	)
 }

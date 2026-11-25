@@ -44,3 +44,9 @@ flowchart LR
     create -->|临时结果| captions["当前会话的点阵字幕"]
     create -->|成功完成| finalText["走共享文字投递；有原目标时尝试写入一次"]
     create -->|取消| discard["取消识别流并作废迟到结果"]
+
+    captureEditor["豆包按下时记住原编辑器"] --> receiverExit{"正在收音的进程已退出？"}
+    receiverExit -->|是| retainEditor["仅保留同一编辑器的当前选区"]
+    retainEditor --> replacement{"新进程独占且空闲，原输入源、编辑器和选区仍匹配？"}
+    replacement -->|是| reconnectEditor["重新选择输入源，随后查控制服务"]
+    replacement -->|否| preflight

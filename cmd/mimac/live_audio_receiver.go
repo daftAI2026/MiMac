@@ -26,6 +26,8 @@ type compatAudioReceiverSink struct {
 	identity  compatProcessIdentity
 	pid       int32
 	deviceUID string
+	onFault   func(error)
+	onDrained func()
 
 	mu        sync.Mutex
 	ready     bool
@@ -91,6 +93,8 @@ func (s *compatAudioReceiverSink) checkReceiver(force bool) error {
 	s.fault = s.observeReceiver()
 	if s.fault == nil {
 		s.checkedAt = s.clock()
+	} else if s.onFault != nil {
+		s.onFault(s.fault)
 	}
 	return s.fault
 }
@@ -176,5 +180,11 @@ func (s *compatAudioReceiverSink) Drain(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.checkReceiver(true)
+	if err := s.checkReceiver(true); err != nil {
+		return err
+	}
+	if s.onDrained != nil {
+		s.onDrained()
+	}
+	return nil
 }

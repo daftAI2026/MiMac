@@ -26,6 +26,15 @@ func (n *fakeNative) capture() (snapshot, error) {
 	return n.current, nil
 }
 
+func (n *fakeNative) checkFocus(expected snapshot) error {
+	if n.current != expected {
+		return ErrTargetChanged
+	}
+	return nil
+}
+func (n *fakeNative) sameField(a, b snapshot) bool {
+	return a.processID == b.processID && a.element == b.element
+}
 func (n *fakeNative) insert(expected snapshot, text string) error {
 	if n.current != expected {
 		return ErrTargetChanged

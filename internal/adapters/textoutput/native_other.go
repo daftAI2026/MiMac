@@ -11,6 +11,8 @@ func requestAccessibilityAccess() bool   { return false }
 func requestPostEventAccess() bool       { return false }
 func frontmostProcessID() (int32, error) { return 0, ErrUnsupported }
 
-func (unsupportedNative) capture() (snapshot, error)    { return snapshot{}, ErrUnsupported }
-func (unsupportedNative) insert(snapshot, string) error { return ErrUnsupported }
-func (unsupportedNative) close(snapshot) error          { return nil }
+func (unsupportedNative) checkFocus(snapshot) error         { return ErrUnsupported }
+func (unsupportedNative) sameField(snapshot, snapshot) bool { return false }
+func (unsupportedNative) capture() (snapshot, error)        { return snapshot{}, ErrUnsupported }
+func (unsupportedNative) insert(snapshot, string) error     { return ErrUnsupported }
+func (unsupportedNative) close(snapshot) error              { return nil }

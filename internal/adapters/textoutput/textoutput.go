@@ -48,6 +48,8 @@ type snapshot struct {
 // collapse the replacement selection afterward, but must never retry the text.
 type native interface {
 	capture() (snapshot, error)
+	checkFocus(snapshot) error
+	sameField(snapshot, snapshot) bool
 	insert(snapshot, string) error
 	close(snapshot) error
 }
@@ -97,6 +99,19 @@ func captureWith(n native) (*Target, error) {
 		return nil, ErrInvalidTarget
 	}
 	return &Target{native: n, snapshot: captured}, nil
+}
+
+// CheckFocus revalidates the original editor and selection without changing either.
+func (t *Target) CheckFocus() error {
+	if t == nil {
+		return ErrClosed
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return ErrClosed
+	}
+	return t.native.checkFocus(t.snapshot)
 }
 
 // Insert sends one final, non-empty UTF-8 transcript to the captured element.

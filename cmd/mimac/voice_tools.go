@@ -29,6 +29,7 @@ type voiceTool struct {
 	discover              func(context.Context, voicetools.Locator) voicetools.Snapshot
 	locateApplication     func(context.Context, voicetools.Locator) (voicetools.Bundle, voicetools.State, error)
 	audioRouteFactory     audioRouteFactory
+	clearEditorRecovery   func()
 	directText            bool
 	voicePromptBundleID   string
 	voicePromptOnPrepare  bool
@@ -232,10 +233,11 @@ func (s *shell) ensureSelectedVoiceInputSource() error {
 }
 
 func builtInVoiceTools() []*voiceTool {
+	recovery := newDoubaoEditorRecovery()
 	return []*voiceTool{
 		{id: appleSpeechToolID, name: "Apple 语音识别", kind: voiceRecognition, liveText: voiceToolLiveTextSupported, discover: discoverAppleSpeech, prepareAssets: prepareAppleSpeechAssets, audioRouteFactory: appleSpeechAudioRouteFactory, directText: true, systemArtwork: "apple.logo", releaseReady: true},
 		{id: hexStreamToolID, name: "Hex", installURL: hexapi.InstallURL, kind: voiceRecognition, displayKind: voiceInputMethod, liveText: voiceToolLiveTextNeedsModel, discover: hexapi.Discover, locateApplication: hexapi.LocateApplication, audioRouteFactory: hexAudioRouteFactory, directText: true, fallbackIconPNG: hexapi.IconPNG, releaseReady: true},
-		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: doubaoAudioRouteFactory, voicePromptBundleID: compatDoubaoBundleID, voicePromptSuppressor: newDoubaoVoicePromptSuppressor, fallbackIconPNG: doubao.IconPNG, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
+		{id: "voice-doubao", name: "豆包输入法", installURL: "https://shurufa.doubao.com/pc", kind: voiceInputMethod, discover: doubao.Discover, locateApplication: doubao.LocateApplication, audioRouteFactory: recovery.audioRouteFactory, clearEditorRecovery: recovery.clear, voicePromptBundleID: compatDoubaoBundleID, voicePromptSuppressor: newDoubaoVoicePromptSuppressor, fallbackIconPNG: doubao.IconPNG, requiredInputSource: doubao.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-typeless", name: "Typeless", kind: voiceInputMethod, discover: typeless.Discover, locateApplication: typeless.LocateApplication, fallbackIconPNG: typeless.IconPNG},
 		{id: "voice-wetype", name: "微信输入法", installURL: "https://z.weixin.qq.com/", kind: voiceInputMethod, discover: wetype.Discover, locateApplication: wetype.LocateApplication, audioRouteFactory: wetypeAudioRouteFactory, voicePromptBundleID: compatWeTypeBundleID, voicePromptSuppressor: newWeTypeVoicePromptSuppressor, voicePromptOnPrepare: true, fallbackIconPNG: wetype.IconPNG, requiredInputSource: wetype.RequiredInputSourceID, releaseReady: true},
 		{id: "voice-shandian", name: "闪电说", kind: voiceInputMethod, discover: shandian.Discover, locateApplication: shandian.LocateApplication},
@@ -350,6 +352,9 @@ func (t *voiceTool) completeAttempt(sequence uint64, result voicetools.Snapshot,
 }
 
 func (t *voiceTool) stop() {
+	if t.clearEditorRecovery != nil {
+		t.clearEditorRecovery()
+	}
 	if t.prepareAssets != nil && t.busy && t.cancel != nil {
 		// A context cancellation requests cleanup; it does not prove the native
 		// install worker has terminated. Retain busy/cancel until its callback.

@@ -8,7 +8,8 @@ import (
 	"mimac.local/mimac/internal/voicetools"
 )
 
-const requiredInputSourceID = "com.bytedance.inputmethod.doubaoime.pinyin"
+// InputSourceID identifies the enabled input mode that owns the verified voice shortcuts.
+const InputSourceID = "com.bytedance.inputmethod.doubaoime.pinyin"
 
 type shortcutContract struct {
 	id, name, prefix string
@@ -44,7 +45,7 @@ var verifiedShortcutContracts = []shortcutContract{
 func RequiredInputSourceID(actionID string) (string, bool) {
 	for _, contract := range verifiedShortcutContracts {
 		if contract.id == actionID {
-			return requiredInputSourceID, true
+			return InputSourceID, true
 		}
 	}
 	return "", false

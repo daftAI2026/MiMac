@@ -47,7 +47,7 @@ func TestNormalizeVerifiedShortcutContracts(t *testing.T) {
 			if !strings.Contains(got.Candidates[0].Raw, test.prefix+"KeyCode") || !strings.Contains(got.Candidates[0].Raw, test.prefix+"ModifierFlags") || !strings.Contains(got.Candidates[0].Raw, test.prefix+"KeyDisplay") {
 				t.Fatalf("candidate raw did not preserve its three allowlisted fields: %s", got.Candidates[0].Raw)
 			}
-			if sourceID, ok := RequiredInputSourceID(test.id); !ok || sourceID != requiredInputSourceID {
+			if sourceID, ok := RequiredInputSourceID(test.id); !ok || sourceID != InputSourceID {
 				t.Fatalf("input-source requirement = %q, %t", sourceID, ok)
 			}
 		})
