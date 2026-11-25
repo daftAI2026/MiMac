@@ -1,13 +1,28 @@
 flowchart TD
-    press["按下遥控器语音键"] --> audio["Apple 或 Hex 开始本轮识别"]
-    press --> app["记录当前应用；后台读取焦点和选区"]
-    app --> target["可选的写入目标，绑定在本次会话"]
-    audio --> preview["临时结果按会话编号更新点阵字幕"]
-    audio --> final["松开并排空音频后取得最终文字"]
-    final --> check{"本次会话有可用写入目标？"}
-    target --> check
-    check -->|有| validate["复核进程、焦点和选区，向原位置写入一次"]
-    check -->|无| recover["暂存这一句；用户可在菜单中复制"]
-    validate -->|原位置已改变| recover
-    validate -->|提交结果不确定| stop["报告结果，不自动重试"]
-    press -->|取消| clear["撤销本次会话，丢弃迟到结果"]
+    press["按下听写，记录原前台 PID"] --> audio["立即开始音频与识别；不等待 AX"]
+    audio --> preview["按会话编号更新临时字幕"]
+    audio --> final["松键后排空本轮音频并取得最终文字"]
+    press --> captureReturn["Apple/Hex 开始可准备编辑器的目标捕获"]
+    captureReturn --> worker["后台、可取消的 AX 目标捕获"]
+    worker --> security["核对辅助功能权限与 Secure Event Input"]
+    security --> focus["读取原 PID 的可编辑焦点与选区"]
+    focus -->|可读| frozen["冻结进程、AX 元素与选区"]
+    focus -->|焦点未暴露| eligible{"原 PID/AXFocusedWindow 未变；非安全输入；AXManualAccessibility 可写？"}
+    eligible -->|否| noTarget["无文本目标；保留识别和音频"]
+    eligible -->|是| enable["只对该 App root 设置一次 AXManualAccessibility"]
+    enable --> poll["在同一 PID/原窗口内轮询焦点读取，最多 2 秒"]
+    poll -->|可读且可编辑| frozen
+    poll -->|超时、取消、Secure Input 或焦点变化| noTarget
+    frozen --> deliver["最终句投递到本轮目标"]
+    noTarget --> deliver
+    final --> deliver
+    deliver --> result{"目标捕获且仍与原 PID、焦点和选区匹配？"}
+    result -->|否| pending["内存暂存这一句；用户可从托盘菜单显式复制"]
+    result -->|是| insert["选定的单一原生传输只尝试一次"]
+    insert -->|成功| cleanup["关闭 target 并释放 AX 引用"]
+    insert -->|提交前目标变化| pending
+    insert -->|提交状态不确定| uncertain["报告结果，不自动重试"]
+    worker -->|听写取消或会话关闭| cancel["取消后台捕获；关闭迟到的 target"]
+    observe["Doubao ObserveDictationSelection"] --> observeWorker["后台绑定原 PID；prepareEditor=false"]
+    observeWorker --> readOnly["只读 Capture；不启用 AX"]
+    recovery["通用 Capture / CaptureCurrentSelection"] --> readOnly

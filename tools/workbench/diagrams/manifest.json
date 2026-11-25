@@ -145,7 +145,7 @@
   {
     "id": "apple-text-target",
     "title": "听写、字幕与最终文字投递",
-    "summary": "Apple 与 Hex 按下即开始识别，同时在后台尝试获取原应用的写入目标。临时结果只供当前会话呈现；最终文字最多向原目标提交一次。没有可用目标时，用户可从菜单复制这一句。自动使用剪贴板和持久听写历史留待后续设计。",
+    "summary": "音频采集与识别不等待 AX 目标；临时字幕按会话编号更新。Apple/Hex 听写起始捕获绑定按下时 PID；Apple 仅在该请求、原窗口仍前台且 Secure Event Input 关闭时按需启用可写的 AXManualAccessibility，并有界读取焦点。Doubao 恢复使用独立 ObserveDictationSelection，通用 Capture 与恢复读取均保持只读。捕获支持取消并释放迟到目标。最终句写入前复核原 PID、焦点与选区；没有目标或目标已变时在内存保留一句，供用户从托盘菜单显式复制；状态不确定的提交不重试。",
     "sourcePaths": [
       "cmd/mimac/apple_audio.go",
       "cmd/mimac/audio_sessions.go",
@@ -153,7 +153,13 @@
       "internal/adapters/textoutput/native_darwin.go",
       "internal/adapters/applespeech/applespeech.go",
       "internal/adapters/applespeech/native/AppleSpeechBridge.swift",
-      "internal/adapters/textoutput/dictation.go"
+      "internal/adapters/textoutput/dictation.go",
+      "internal/adapters/textoutput/dictation_test.go",
+      "internal/adapters/textoutput/textoutput_test.go",
+      "internal/adapters/textoutput/native_manual_ax_test.go",
+      "internal/adapters/textoutput/native_matrix_test.go",
+      "internal/adapters/textoutput/testdata/TextMatrix.swift",
+      "cmd/mimac/doubao_editor_recovery.go"
     ]
   },
   {

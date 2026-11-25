@@ -1,6 +1,7 @@
 package textoutput
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -15,9 +16,16 @@ var errReplacementAccepted = errors.New("textoutput: replacement already accepte
 // DictationTarget holds a best-effort snapshot for automatic text delivery.
 // Slow or unavailable editors must not delay receiving the first audio frame.
 type DictationTarget struct {
-	mu     sync.Mutex
-	target *Target
-	used   bool
+	mu            sync.Mutex
+	target        *Target
+	used          bool
+	captureCancel context.CancelFunc
+}
+
+// DictationSelectionObserver exposes only read-only editor recovery methods.
+type DictationSelectionObserver interface {
+	CaptureCurrentSelection() (*Target, error)
+	Close() error
 }
 
 var editorProbe sync.Mutex
@@ -25,30 +33,63 @@ var editorProbe sync.Mutex
 // BeginDictation records the foreground app at key-down. AX inspection runs
 // off the input thread. Never queue a lookup to be made against a later focus.
 func BeginDictation() *DictationTarget {
-	d := &DictationTarget{}
 	pid, err := frontmostProcessID()
-	if err == nil && pid > 0 && editorProbe.TryLock() {
-		go func() {
-			defer editorProbe.Unlock()
-			target, _ := Capture()
-			d.attach(pid, target)
-		}()
+	if err != nil || pid <= 0 {
+		return &DictationTarget{}
 	}
+	return beginDictationForProcess(defaultNative(), pid, true)
+}
+
+// ObserveDictationSelection records the current editor location for recovery
+// without asking the native adapter to enable renderer accessibility.
+func ObserveDictationSelection() DictationSelectionObserver {
+	pid, err := frontmostProcessID()
+	if err != nil || pid <= 0 {
+		return &DictationTarget{}
+	}
+	return observeDictationSelectionForProcess(defaultNative(), pid)
+}
+
+func observeDictationSelectionForProcess(n native, pid int32) DictationSelectionObserver {
+	return beginDictationForProcess(n, pid, false)
+}
+
+func beginDictationForProcess(n native, pid int32, prepareEditor bool) *DictationTarget {
+	d := &DictationTarget{}
+	if pid <= 0 || n == nil || !editorProbe.TryLock() {
+		return d
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.captureCancel = cancel
+	d.mu.Unlock()
+	go func() {
+		defer editorProbe.Unlock()
+		target, _ := captureRequestWithContext(ctx, n, captureRequest{pid: pid, prepareEditor: prepareEditor})
+		d.attach(pid, target)
+	}()
 	return d
 }
 
 func (d *DictationTarget) attach(pid int32, target *Target) {
-	if target == nil {
-		return
-	}
 	d.mu.Lock()
-	if !d.used && target.snapshot.processID == pid {
+	cancel := d.captureCancel
+	d.captureCancel = nil
+	if target != nil && !d.used && target.snapshot.processID == pid {
 		d.target = target
 		d.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return
 	}
 	d.mu.Unlock()
-	_ = target.Close()
+	if cancel != nil {
+		cancel()
+	}
+	if target != nil {
+		_ = target.Close()
+	}
 }
 
 // CaptureCurrentSelection remembers where an interrupted input method left its
@@ -83,6 +124,10 @@ func (d *DictationTarget) Insert(text string) error {
 	}
 	d.used = true
 	if d.target == nil {
+		if d.captureCancel != nil {
+			d.captureCancel()
+			d.captureCancel = nil
+		}
 		if err := validateText(text); err != nil {
 			return err
 		}
@@ -103,6 +148,10 @@ func (d *DictationTarget) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.used = true
+	if d.captureCancel != nil {
+		d.captureCancel()
+		d.captureCancel = nil
+	}
 	err := d.target.Close()
 	d.target = nil
 	return err

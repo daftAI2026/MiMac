@@ -1,21 +1,29 @@
 package textoutput
 
 import (
+	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeNative struct {
-	current     snapshot
-	secure      bool
-	noneditable bool
-	insertErr   error
-	insertCalls []string
-	closeCalls  int
+	current         snapshot
+	secure          bool
+	noneditable     bool
+	captureRequests []captureRequest
+	insertErr       error
+	insertCalls     []string
+	closeCalls      int
 }
 
-func (n *fakeNative) capture() (snapshot, error) {
+func (n *fakeNative) capture(ctx context.Context, request captureRequest) (snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return snapshot{}, err
+	}
+	n.captureRequests = append(n.captureRequests, request)
 	if n.secure {
 		return snapshot{}, ErrSecureInput
 	}
@@ -67,6 +75,133 @@ func TestCaptureFreezesAndSubmitsOnce(t *testing.T) {
 	if len(n.insertCalls) != 1 {
 		t.Fatalf("second Insert reached native interface: %#v", n.insertCalls)
 	}
+}
+
+func TestCaptureRequestBindsPIDAndPassesPrepareIntent(t *testing.T) {
+	n := &fakeNative{}
+	target, err := captureRequestWithContext(context.Background(), n, captureRequest{pid: 101, prepareEditor: true})
+	if err != nil || target == nil {
+		t.Fatalf("prepare request = (%v, %v), want captured target", target, err)
+	}
+	if n.captureRequests[0] != (captureRequest{pid: 101, prepareEditor: true}) {
+		t.Fatalf("native capture request = %+v, want bound prepare request", n.captureRequests[0])
+	}
+	_ = target.Close()
+
+	n = &fakeNative{}
+	if target, err := captureRequestWithContext(context.Background(), n, captureRequest{pid: 202}); target != nil || !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("wrong-PID request = (%v, %v), want (nil, ErrTargetChanged)", target, err)
+	}
+	if n.closeCalls != 1 {
+		t.Fatalf("mismatched captured target close calls = %d, want 1", n.closeCalls)
+	}
+}
+
+type requestRecordingNative struct {
+	fakeNative
+	requests chan captureRequest
+}
+
+func (n *requestRecordingNative) capture(ctx context.Context, request captureRequest) (snapshot, error) {
+	captured, err := n.fakeNative.capture(ctx, request)
+	if err == nil {
+		n.requests <- request
+	}
+	return captured, err
+}
+
+func TestDictationAndObservationCaptureIntentsStaySeparate(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		prepareEditor bool
+	}{
+		{name: "Apple and Hex BeginDictation", prepareEditor: true},
+		{name: "Doubao ObserveDictationSelection"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n := &requestRecordingNative{requests: make(chan captureRequest, 1)}
+			var captureOwner interface{ Close() error }
+			if test.prepareEditor {
+				captureOwner = beginDictationForProcess(n, 101, true)
+			} else {
+				captureOwner = observeDictationSelectionForProcess(n, 101)
+			}
+			select {
+			case request := <-n.requests:
+				if request != (captureRequest{pid: 101, prepareEditor: test.prepareEditor}) {
+					t.Fatalf("native request = %+v, want PID 101 prepareEditor=%t", request, test.prepareEditor)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("dictation capture worker did not reach native adapter")
+			}
+			_ = captureOwner.Close()
+			waitForEditorProbeRelease(t)
+		})
+	}
+}
+
+func TestGenericCaptureUsesReadOnlyRequest(t *testing.T) {
+	n := &fakeNative{}
+	target, err := captureWith(n)
+	if err != nil || target == nil {
+		t.Fatalf("generic Capture = (%v, %v), want captured target", target, err)
+	}
+	if len(n.captureRequests) != 1 || n.captureRequests[0] != (captureRequest{}) {
+		t.Fatalf("generic Capture request = %#v, want read-only zero request", n.captureRequests)
+	}
+	_ = target.Close()
+}
+
+type cancelCaptureFakeNative struct {
+	fakeNative
+	started    chan struct{}
+	canceled   chan struct{}
+	startOnce  sync.Once
+	cancelOnce sync.Once
+}
+
+func (n *cancelCaptureFakeNative) capture(ctx context.Context, request captureRequest) (snapshot, error) {
+	n.startOnce.Do(func() { close(n.started) })
+	<-ctx.Done()
+	n.cancelOnce.Do(func() { close(n.canceled) })
+	return snapshot{}, ctx.Err()
+}
+
+func TestDictationCloseCancelsPendingBoundedCapture(t *testing.T) {
+	n := &cancelCaptureFakeNative{started: make(chan struct{}), canceled: make(chan struct{})}
+	d := beginDictationForProcess(n, 101, true)
+	select {
+	case <-n.started:
+	case <-time.After(time.Second):
+		t.Fatal("capture worker did not start")
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-n.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel the pending capture worker")
+	}
+	if err := d.Insert("must not be written after cancellation"); !errors.Is(err, ErrAlreadySubmitted) {
+		t.Fatalf("Insert after Close = %v, want ErrAlreadySubmitted", err)
+	}
+	waitForEditorProbeRelease(t)
+	if len(n.insertCalls) != 0 {
+		t.Fatalf("canceled capture reached native Insert: %#v", n.insertCalls)
+	}
+}
+
+func waitForEditorProbeRelease(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for !editorProbe.TryLock() {
+		if time.Now().After(deadline) {
+			t.Fatal("capture worker did not release its probe lease")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	editorProbe.Unlock()
 }
 
 func TestInsertRejectsChangedTargetAndConsumesAttempt(t *testing.T) {

@@ -111,6 +111,9 @@ func TestInterruptedCompositionKeepsEditorAndRechecksSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(n.captureRequests) != 2 || n.captureRequests[1] != (captureRequest{}) {
+		t.Fatalf("CaptureCurrentSelection request = %#v, want read-only zero request", n.captureRequests)
+	}
 	defer current.Close()
 	if err := current.CheckFocus(); err != nil {
 		t.Fatal(err)

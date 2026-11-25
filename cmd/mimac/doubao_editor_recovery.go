@@ -24,7 +24,7 @@ type interruptedEditor interface {
 type doubaoEditorRecovery struct {
 	mu          sync.Mutex
 	owner       *compatLiveAudioRoute
-	origin      *textoutput.DictationTarget
+	origin      textoutput.DictationSelectionObserver
 	interrupted interruptedEditor
 	dispatch    func(func())
 	refresh     func() error
@@ -103,7 +103,7 @@ func (d *doubaoEditorRecovery) begin(r *compatLiveAudioRoute) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.releaseOrigin()
-	d.owner, d.origin = r, textoutput.BeginDictation()
+	d.owner, d.origin = r, textoutput.ObserveDictationSelection()
 }
 
 func (d *doubaoEditorRecovery) releaseOrigin() {

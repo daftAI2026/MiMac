@@ -3,11 +3,13 @@
 package textoutput
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"unsafe"
 
@@ -108,7 +110,10 @@ func requestAccessibilityAccess() bool {
 	return api.isProcessTrustedWithOptions(options) != 0
 }
 
-func (systemNative) capture() (snapshot, error) {
+func (systemNative) capture(ctx context.Context, request captureRequest) (snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return snapshot{}, err
+	}
 	api, err := loadNativeAPI()
 	if err != nil {
 		return snapshot{}, err
@@ -124,7 +129,17 @@ func (systemNative) capture() (snapshot, error) {
 	if err != nil {
 		return snapshot{}, err
 	}
+	if request.pid > 0 && frontPID != request.pid {
+		return snapshot{}, ErrTargetChanged
+	}
 	element, elementPID, err := focusedElement(api, frontPID)
+	if errors.Is(err, ErrNoFocusedElement) && request.pid > 0 && request.prepareEditor {
+		// Electron keeps renderer accessibility off until an assistive
+		// technology requests it. Only try its documented per-process switch
+		// from the Apple/Hex dictation start and only for that exact process/window.
+		// Failure is best-effort: recognition does not depend on an AX text target.
+		element, elementPID, err = enableManualAccessibilityForFrontmostWindow(ctx, api, request.pid)
+	}
 	if err != nil {
 		return snapshot{}, err
 	}
@@ -176,6 +191,152 @@ func (systemNative) capture() (snapshot, error) {
 	releaseSelection = false
 	releaseMarker = false
 	return state, nil
+}
+
+const (
+	manualAccessibilityFocusWaitLimit = 2 * time.Second
+	manualAccessibilityRetryInterval  = 50 * time.Millisecond
+)
+
+// enableManualAccessibilityForFrontmostWindow sets the documented Electron
+// attribute only when it is explicitly settable for the same foreground app
+// and focused window. It never prompts or reads editor text.
+func enableManualAccessibilityForFrontmostWindow(ctx context.Context, api *nativeAPI, pid int32) (uintptr, int32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	if api == nil || pid <= 0 {
+		return 0, 0, ErrNoFocusedElement
+	}
+	frontPID, err := frontmostProcessID()
+	if err != nil {
+		return 0, 0, err
+	}
+	if frontPID != pid {
+		return 0, 0, ErrTargetChanged
+	}
+	if secureEventInputEnabled(api) {
+		return 0, 0, ErrSecureInput
+	}
+	root := api.createApplication(pid)
+	if root == 0 {
+		return 0, 0, ErrNoFocusedElement
+	}
+	defer api.cfRelease(root)
+	window, err := api.optionalAttribute(root, "AXFocusedWindow")
+	if err != nil || window == 0 {
+		return 0, 0, ErrNoFocusedElement
+	}
+	defer api.cfRelease(window)
+	var windowPID int32
+	if code := api.getPID(window, &windowPID); code != axErrorSuccess || windowPID != pid {
+		return 0, 0, ErrTargetChanged
+	}
+	attribute, err := api.makeString("AXManualAccessibility")
+	if err != nil {
+		return 0, 0, ErrNoFocusedElement
+	}
+	defer api.cfRelease(attribute)
+	var settable uint8
+	settableCode := api.isAttributeSettable(root, attribute, &settable)
+	if !manualAccessibilityEligible(pid, frontPID, windowPID, false, settableCode, settable) {
+		return 0, 0, ErrNoFocusedElement
+	}
+	alreadyEnabled := false
+	current, currentErr := api.optionalAttribute(root, "AXManualAccessibility")
+	if currentErr == nil && current != 0 {
+		alreadyEnabled = api.cfGetTypeID(current) == api.cfBooleanGetTypeID() && api.cfBooleanGetValue(current) != 0
+		api.cfRelease(current)
+	}
+	validateOriginalWindow := func() error {
+		if secureEventInputEnabled(api) {
+			return ErrSecureInput
+		}
+		currentPID, pidErr := frontmostProcessID()
+		if pidErr != nil {
+			return pidErr
+		}
+		if currentPID != pid {
+			return ErrTargetChanged
+		}
+		currentWindow, currentWindowErr := api.optionalAttribute(root, "AXFocusedWindow")
+		if currentWindowErr != nil || currentWindow == 0 {
+			if currentWindow != 0 {
+				api.cfRelease(currentWindow)
+			}
+			return ErrTargetChanged
+		}
+		matches := manualAccessibilityWindowMatches(window, currentWindow, api.cfEqual)
+		api.cfRelease(currentWindow)
+		if !matches {
+			return ErrTargetChanged
+		}
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	if err := validateOriginalWindow(); err != nil {
+		return 0, 0, err
+	}
+	if !alreadyEnabled {
+		if code := api.setAttributeValue(root, attribute, api.cfBooleanTrue); code != axErrorSuccess {
+			return 0, 0, ErrNoFocusedElement
+		}
+	}
+
+	// Electron may publish its renderer tree asynchronously. Retry reads only
+	// for this PID and original AXFocusedWindow; audio stays on its own worker.
+	return waitForManualAccessibilityElement(
+		ctx,
+		validateOriginalWindow,
+		func() (uintptr, int32, error) { return focusedElement(api, pid) },
+	)
+}
+
+func waitForManualAccessibilityElement(
+	ctx context.Context,
+	validate func() error,
+	focused func() (uintptr, int32, error),
+) (uintptr, int32, error) {
+	deadline := time.Now().Add(manualAccessibilityFocusWaitLimit)
+	timer := time.NewTimer(manualAccessibilityFocusWaitLimit)
+	defer timer.Stop()
+	ticker := time.NewTicker(manualAccessibilityRetryInterval)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, err
+		}
+		if !time.Now().Before(deadline) {
+			return 0, 0, ErrNoFocusedElement
+		}
+		if err := validate(); err != nil {
+			return 0, 0, err
+		}
+		element, pid, err := focused()
+		if err == nil {
+			return element, pid, nil
+		}
+		if !errors.Is(err, ErrNoFocusedElement) {
+			return 0, 0, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, 0, ctx.Err()
+		case <-timer.C:
+			return 0, 0, ErrNoFocusedElement
+		case <-ticker.C:
+		}
+	}
+}
+
+func manualAccessibilityEligible(targetPID, frontPID, windowPID int32, secure bool, settableCode int32, settable uint8) bool {
+	return targetPID > 0 && frontPID == targetPID && windowPID == targetPID && !secure && settableCode == axErrorSuccess && settable != 0
+}
+
+func manualAccessibilityWindowMatches(before, after uintptr, equal func(uintptr, uintptr) uint8) bool {
+	return before != 0 && after != 0 && equal != nil && equal(before, after) != 0
 }
 
 func (systemNative) checkFocus(state snapshot) error {

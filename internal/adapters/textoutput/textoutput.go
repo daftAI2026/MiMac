@@ -3,6 +3,7 @@
 package textoutput
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,12 +43,19 @@ type snapshot struct {
 	unicodeText bool    // marker exists, but no AXTextOperation; use one whole text event
 }
 
+// captureRequest carries the intent for one target lookup. Only an explicitly
+// bound dictation start may ask a platform adapter to prepare an editor.
+type captureRequest struct {
+	pid           int32
+	prepareEditor bool
+}
+
 // native keeps operating-system calls isolated from the one-shot lifecycle.
 // insert must revalidate process, focused element, and selection immediately
 // before making exactly one text replacement attempt. A native adapter may
 // collapse the replacement selection afterward, but must never retry the text.
 type native interface {
-	capture() (snapshot, error)
+	capture(context.Context, captureRequest) (snapshot, error)
 	checkFocus(snapshot) error
 	sameField(snapshot, snapshot) bool
 	insert(snapshot, string) error
@@ -87,12 +95,27 @@ func RequestAccess() bool { return requestAccessibilityAccess() }
 func RequestPostEventAccess() bool { return requestPostEventAccess() }
 
 func captureWith(n native) (*Target, error) {
+	return captureRequestWithContext(context.Background(), n, captureRequest{})
+}
+
+func captureRequestWithContext(ctx context.Context, n native, request captureRequest) (*Target, error) {
 	if n == nil {
 		return nil, ErrUnsupported
 	}
-	captured, err := n.capture()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	captured, err := n.capture(ctx, request)
 	if err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = n.close(captured)
+		return nil, err
+	}
+	if request.pid > 0 && captured.processID != request.pid {
+		_ = n.close(captured)
+		return nil, ErrTargetChanged
 	}
 	if captured.processID <= 0 || captured.element == 0 || captured.selection == 0 {
 		_ = n.close(captured)
