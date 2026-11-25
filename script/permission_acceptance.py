@@ -191,7 +191,7 @@ class Acceptance:
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
         elif self.resume_input_drop:
             entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
-            self.resume_input_args = resume_input_drop_args(entries, identity)
+            self.resume_input_args = resume_input_drop_args(entries, identity, app_name=self.name)
             self.compile_fixture("PermissionAcceptance.swift", self.driver)
             self.compile_fixture("LiveAcceptanceAX.swift", self.ax)
         elif self.drag_regressions_only or self.general_permissions or self.cancel_reentry or self.focus_check or self.bluetooth_only:
@@ -1669,7 +1669,7 @@ class Acceptance:
 
     def finish_input_drop(self, pid, settings_pid):
         entries = [json.loads(line) for line in (self.output / "run.ndjson").read_text().splitlines()]
-        recorded_pid, recorded_settings_pid = resume_input_drop_args(entries, self.identity)
+        recorded_pid, recorded_settings_pid = resume_input_drop_args(entries, self.identity, app_name=self.name)
         if (pid, settings_pid) != (recorded_pid, recorded_settings_pid):
             raise RuntimeError("the supplied PIDs do not match the recorded input drop")
         self.record("input_drop_resume_started", {
@@ -1868,7 +1868,7 @@ def finish_args(entries, identity):
     return restart["app"], resumed["app"], resumed["settings"]
 
 
-def resume_input_drop_args(entries, identity):
+def resume_input_drop_args(entries, identity, *, app_name):
     if not entries or entries[0].get("stage") != "identity" or any(
         entries[0].get(key) != value for key, value in identity.items()
     ):
@@ -1898,7 +1898,7 @@ def resume_input_drop_args(entries, identity):
             continue
         matching_button = any(
             button.get("stage") == "app_button" and button.get("app") == initial_pid and
-            button.get("panel_title") == "MiMac Dev 系统权限" and button.get("row_title") == INPUT_ROW_TITLE and
+            button.get("panel_title") == app_name + " 系统权限" and button.get("row_title") == INPUT_ROW_TITLE and
             button.get("action") == PERMISSION_ACTION_LABEL and button.get("scope") == "permissions_panel_and_row" and
             button.get("ax_press_started_at") == entry.get("press_started_at") and
             button.get("ax_press_completed_at") == entry.get("press_completed_at")

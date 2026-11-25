@@ -1258,6 +1258,7 @@ class NativeDragRegressionTests(unittest.TestCase):
 
 class ResumeInputDropTests(unittest.TestCase):
     def setUp(self):
+        self.app_name = "MiMac Dev"
         self.identity = {
             "bundle": "/Users/test/Library/Caches/MiMac/MiMac Verify.app",
             "bundle_id": "dev.mimac.verification.test",
@@ -1275,23 +1276,53 @@ class ResumeInputDropTests(unittest.TestCase):
             {"stage": "NEEDS_PASSWORD", "permission": "input-monitoring"},
         ]
 
-    def test_resumes_from_the_recorded_drop(self):
-        self.assertEqual(resume_input_drop_args(self.entries, self.identity), (101, 202))
+    def test_resumes_dev_from_the_recorded_drop_using_its_verified_display_name(self):
+        self.assertEqual(resume_input_drop_args(
+            self.entries, self.identity, app_name=self.app_name,
+        ), (101, 202))
 
     def test_accepts_legacy_row_action_when_exact_ax_press_pair_proves_pid_and_target(self):
         legacy = [dict(entry) for entry in self.entries]
         row_action = next(entry for entry in legacy if entry.get("stage") == "permission_row_action")
         row_action.pop("app")
-        self.assertEqual(resume_input_drop_args(legacy, self.identity), (101, 202))
+        self.assertEqual(resume_input_drop_args(
+            legacy, self.identity, app_name=self.app_name,
+        ), (101, 202))
+
+    def test_resumes_an_isolated_qa_display_name_without_falling_back_to_dev(self):
+        qa_name = "MiMac Permission QA"
+        qa_entries = [dict(entry) for entry in self.entries]
+        button = next(entry for entry in qa_entries if entry.get("stage") == "app_button")
+        button["panel_title"] = qa_name + " 系统权限"
+        self.assertEqual(resume_input_drop_args(
+            qa_entries, self.identity, app_name=qa_name,
+        ), (101, 202))
+        with self.assertRaisesRegex(RuntimeError, "verified input-monitoring setup stages"):
+            resume_input_drop_args(qa_entries, self.identity, app_name="MiMac Dev")
+
+    def test_rejects_wrong_title_and_same_display_name_from_another_bundle(self):
+        qa_name = "MiMac Permission QA"
+        qa_entries = [dict(entry) for entry in self.entries]
+        button = next(entry for entry in qa_entries if entry.get("stage") == "app_button")
+        button["panel_title"] = "MiMac Dev 系统权限"
+        with self.assertRaisesRegex(RuntimeError, "verified input-monitoring setup stages"):
+            resume_input_drop_args(qa_entries, self.identity, app_name=qa_name)
+
+        same_name_other_bundle = {**self.identity, "bundle_id": "dev.mimac.verification.other"}
+        with self.assertRaisesRegex(RuntimeError, "different frozen bundle"):
+            resume_input_drop_args(self.entries, same_name_other_bundle, app_name=self.app_name)
 
     def test_rejects_missing_drop_or_mismatched_identity(self):
-        self.assertRaises(RuntimeError, resume_input_drop_args, self.entries[:-2], self.identity)
+        self.assertRaises(RuntimeError, resume_input_drop_args, self.entries[:-2], self.identity,
+                          app_name=self.app_name)
         wrong = {**self.identity, "sha256": "b" * 64}
-        self.assertRaises(RuntimeError, resume_input_drop_args, self.entries, wrong)
+        self.assertRaises(RuntimeError, resume_input_drop_args, self.entries, wrong,
+                          app_name=self.app_name)
 
     def test_rejects_a_run_that_has_reached_device_control(self):
         progressed = self.entries + [{"stage": "permission_row_action", "permission": "device-control"}]
-        self.assertRaises(RuntimeError, resume_input_drop_args, progressed, self.identity)
+        self.assertRaises(RuntimeError, resume_input_drop_args, progressed, self.identity,
+                          app_name=self.app_name)
 
 
 class AuthWaitTests(unittest.TestCase):
