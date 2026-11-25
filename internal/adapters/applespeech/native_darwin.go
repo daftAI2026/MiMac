@@ -3,6 +3,7 @@
 package applespeech
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 type speechAPI struct {
 	isAvailable      func() int32
+	supportedLocales func(*byte, int32, *int32) int32
 	create           func(*byte, int32, int32, *int32, *byte, int32) uintptr
 	createPartials   func(*byte, int32, int32, int32, *int32, *byte, int32) uintptr
 	waitReady        func(uintptr, int32) int32
@@ -92,6 +94,9 @@ func loadSpeechAPI(path string) (*speechAPI, error) {
 	if symbol, err := purego.Dlsym(library, "MiMacAppleSpeechCreateWithPartials"); err == nil {
 		purego.RegisterFunc(&api.createPartials, symbol)
 	}
+	if symbol, err := purego.Dlsym(library, "MiMacAppleSpeechCopySupportedLocales"); err == nil {
+		purego.RegisterFunc(&api.supportedLocales, symbol)
+	}
 	if symbol, err := purego.Dlsym(library, "MiMacAppleSpeechWaitPartial"); err == nil {
 		purego.RegisterFunc(&api.waitPartial, symbol)
 	}
@@ -102,6 +107,41 @@ func loadSpeechAPI(path string) (*speechAPI, error) {
 }
 
 type darwinBridge struct{ api *speechAPI }
+
+func (b darwinBridge) supportedLocales() ([]Locale, error) {
+	if b.api == nil || b.api.supportedLocales == nil {
+		return nil, ErrLocalesUnavailable
+	}
+	const bufferSize = 128 * 1024
+	buffer := make([]byte, bufferSize)
+	var length int32
+	status := b.api.supportedLocales(&buffer[0], int32(len(buffer)), &length)
+	if status != 0 {
+		return nil, fmt.Errorf("%w: native locale query returned %d", ErrLocalesUnavailable, status)
+	}
+	if length <= 0 || int(length) > len(buffer) {
+		return nil, fmt.Errorf("%w: invalid native response length %d", ErrLocalesUnavailable, length)
+	}
+	var locales []Locale
+	if err := json.Unmarshal(buffer[:length], &locales); err != nil {
+		return nil, fmt.Errorf("%w: decode native locale list: %v", ErrLocalesUnavailable, err)
+	}
+	if len(locales) == 0 {
+		return nil, ErrLocalesUnavailable
+	}
+	seen := make(map[string]struct{}, len(locales))
+	for _, locale := range locales {
+		if locale.Identifier == "" || strings.TrimSpace(locale.Identifier) != locale.Identifier || strings.ContainsRune(locale.Identifier, 0) ||
+			locale.DisplayName == "" || strings.TrimSpace(locale.DisplayName) != locale.DisplayName {
+			return nil, fmt.Errorf("%w: invalid locale row", ErrLocalesUnavailable)
+		}
+		if _, exists := seen[locale.Identifier]; exists {
+			return nil, fmt.Errorf("%w: duplicate locale %q", ErrLocalesUnavailable, locale.Identifier)
+		}
+		seen[locale.Identifier] = struct{}{}
+	}
+	return locales, nil
+}
 
 func (b darwinBridge) isAvailable() (bool, error) {
 	state := b.api.isAvailable()

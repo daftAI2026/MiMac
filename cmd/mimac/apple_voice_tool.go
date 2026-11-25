@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,10 +17,15 @@ const appleSpeechToolID = "voice-apple-speech"
 const appleSpeechCleanupPendingSource = "apple-speech:cleanup-pending"
 
 func appleSpeechAudioRouteFactory(_ context.Context, config audioRouteConfig) (liveAudioRoute, error) {
+	locale, err := selectedAppleSpeechRouteLocale()
+	if err != nil {
+		return nil, fmt.Errorf("read Apple Speech language preference: %w", err)
+	}
 	return openAppleAudioRoute(
 		config.Generation,
 		filepath.Join(config.ResourcesPath, "libMiMacATVV.dylib"),
 		filepath.Join(config.ResourcesPath, "libMiMacSpeech.dylib"),
+		locale,
 		config.OnPartial,
 		config.PartialsEnabled,
 	)
@@ -41,7 +47,15 @@ func prepareAppleSpeechAssets(ctx context.Context, _ voicetools.Locator) voiceto
 }
 
 func inspectAppleSpeech(ctx context.Context, install bool) voicetools.Snapshot {
-	result := voicetools.Snapshot{State: voicetools.ReadError, Source: "apple-speech:zh-CN"}
+	locale, err := currentAppleSpeechLocale()
+	if err != nil {
+		return voicetools.Snapshot{State: voicetools.ReadError, Source: "apple-speech:preferences-error"}
+	}
+	return inspectAppleSpeechLocale(ctx, locale, install)
+}
+
+func inspectAppleSpeechLocale(ctx context.Context, locale string, install bool) voicetools.Snapshot {
+	result := voicetools.Snapshot{State: voicetools.ReadError, Source: "apple-speech:" + locale}
 	if !appleModelProbe.TryLock() {
 		return result
 	}
@@ -65,13 +79,17 @@ func inspectAppleSpeech(ctx context.Context, install bool) voicetools.Snapshot {
 	}
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: filepath.Join(resources, "libMiMacSpeech.dylib"), Locale: "zh-CN", SampleRate: 16000, InstallAssets: install})
+	_ = refreshAppleSpeechLocaleInventory(ctx)
+	sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: filepath.Join(resources, "libMiMacSpeech.dylib"), Locale: locale, SampleRate: 16000, InstallAssets: install})
 	if sink != nil {
 		closeErr := sink.Close()
 		if closeErr != nil {
 			appleModelProbe.pending = sink
 		}
 		err = errors.Join(err, closeErr)
+	}
+	if install {
+		_ = refreshAppleSpeechLocaleInventory(ctx)
 	}
 	if errors.Is(err, applespeech.ErrCleanupPending) {
 		result.Source = appleSpeechCleanupPendingSource

@@ -91,14 +91,18 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 				if tool.prepareAssets != nil {
 					label = "重新检查"
 					if tool.snapshot.State == voicetools.ConfigMissing {
-						label = "下载中文模型"
+						if tool.id == appleSpeechToolID {
+							label = "下载并安装此语言模型"
+						} else {
+							label = "下载中文模型"
+						}
 					}
 					if tool.busy && tool.preparingAssets {
 						if tool.cancelRequested {
 							label = "正在取消"
 							disabled = true
 						} else {
-							label = "取消准备"
+							label = "取消模型准备"
 							disabled = false
 						}
 					}
@@ -128,14 +132,11 @@ func (s *shell) voiceToolChoice(c *ui.Context, a appearance, tool *voiceTool, se
 }
 
 func (s *shell) voiceToolDetails(c *ui.Context, a appearance, tool *voiceTool) {
-	if tool.busy || tool.snapshot.State != voicetools.Ready {
+	if tool.id == appleSpeechToolID {
+		s.appleSpeechSettings(c, a, tool)
 		return
 	}
-	if tool.id == appleSpeechToolID {
-		ui.Column(c).FillWidth().MinWidth(0).Children(func() {
-			sectionLine(c, a)
-			settingsValueRow(c, &a.theme, a.fonts.body, "识别语言", "简体中文")
-		})
+	if tool.busy || tool.snapshot.State != voicetools.Ready {
 		return
 	}
 	if tool.id == hexStreamToolID {

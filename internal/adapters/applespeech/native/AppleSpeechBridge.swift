@@ -3,6 +3,7 @@
 import AVFoundation
 import CoreMedia
 import Darwin
+import Dispatch
 import Foundation
 import Speech
 
@@ -787,6 +788,79 @@ private func writeCString(_ text: String, buffer: UnsafeMutablePointer<CChar>?, 
 public func MiMacAppleSpeechIsAvailable() -> Int32 {
     guard #available(macOS 26.0, *) else { return 0 }
     return SpeechTranscriber.isAvailable ? 1 : 0
+}
+
+private struct SpeechLocaleRecord: Encodable {
+    let identifier: String
+    let displayName: String
+    let installed: Bool
+}
+
+private final class SupportedLocaleDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Data?
+
+    func store(_ data: Data?) {
+        lock.lock()
+        value = data
+        lock.unlock()
+    }
+
+    func load() -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+private func canonicalSpeechLocaleIdentifier(_ locale: Locale) -> String {
+    locale.identifier.replacingOccurrences(of: "_", with: "-")
+}
+
+@available(macOS 26.0, *)
+private func supportedSpeechLocaleData() async -> Data? {
+    let installedLocales = await SpeechTranscriber.installedLocales
+    let supportedLocales = await SpeechTranscriber.supportedLocales
+    let installed = Set(installedLocales.map(canonicalSpeechLocaleIdentifier))
+    let locales = supportedLocales.map { locale in
+        let identifier = canonicalSpeechLocaleIdentifier(locale)
+        let localizedName = Locale.current.localizedString(forIdentifier: identifier)
+        return SpeechLocaleRecord(
+            identifier: identifier,
+            displayName: (localizedName?.isEmpty == false ? localizedName! : identifier),
+            installed: installed.contains(identifier)
+        )
+    }.sorted { $0.identifier.localizedStandardCompare($1.identifier) == .orderedAscending }
+    return try? JSONEncoder().encode(locales)
+}
+
+// This query is intentionally read-only. It reports the locales already
+// supported by the system and which have installed assets; it never reserves
+// a locale or requests installation.
+@_cdecl("MiMacAppleSpeechCopySupportedLocales")
+public func MiMacAppleSpeechCopySupportedLocales(
+    _ output: UnsafeMutablePointer<UInt8>?,
+    _ capacity: Int32,
+    _ lengthOut: UnsafeMutablePointer<Int32>?
+) -> Int32 {
+    guard let lengthOut else { return 1 }
+    lengthOut.pointee = 0
+    guard #available(macOS 26.0, *) else { return 2 }
+    guard let output, capacity > 0 else { return 3 }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = SupportedLocaleDataBox()
+    Task.detached(priority: .utility) {
+        box.store(await supportedSpeechLocaleData())
+        semaphore.signal()
+    }
+    guard semaphore.wait(timeout: .now() + 10) == .success, let data = box.load(), data.count <= Int(Int32.max) else { return 4 }
+    lengthOut.pointee = Int32(data.count)
+    guard data.count <= Int(capacity) else { return 5 }
+    for index in data.indices {
+        output[index] = data[index]
+    }
+    return 0
 }
 
 @_cdecl("MiMacAppleSpeechCreate")

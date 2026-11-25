@@ -45,7 +45,17 @@ var (
 	ErrInvalidNativeState = errors.New("applespeech: invalid native session state")
 	ErrFinalTextOverflow  = errors.New("applespeech: final text exceeds 64 KiB")
 	ErrPartialUnavailable = errors.New("applespeech: native bridge does not support streaming results")
+	ErrLocalesUnavailable = errors.New("applespeech: supported locale list is unavailable")
 )
+
+// Locale describes one locale supported by the current system SpeechTranscriber.
+// Installed is a read-only snapshot; selecting an uninstalled locale does not
+// install it. Installation remains an explicit Open option.
+type Locale struct {
+	Identifier  string `json:"identifier"`
+	DisplayName string `json:"displayName"`
+	Installed   bool   `json:"installed"`
+}
 
 // Config selects the native bridge and a supported Apple Speech locale.
 // LibraryPath must identify the narrow Swift C-ABI dylib built by the host.
@@ -78,6 +88,10 @@ type nativeBridge interface {
 
 type partialNativeBridge interface {
 	createWithPartials(locale string, sampleRate int, installAssets bool) (nativeOwner, error)
+}
+
+type localeNativeBridge interface {
+	supportedLocales() ([]Locale, error)
 }
 
 // nativeOwner remains allocated until Release succeeds after WaitTerminated.
@@ -117,6 +131,41 @@ func IsAvailable(libraryPath string) (bool, error) {
 		return false, err
 	}
 	return bridge.isAvailable()
+}
+
+// SupportedLocales returns the system's currently supported SpeechTranscriber
+// locales and installed-model flags. It does not allocate an analyzer or make
+// an asset installation request.
+func SupportedLocales(libraryPath string) ([]Locale, error) {
+	if err := validateLibraryPath(libraryPath); err != nil {
+		return nil, err
+	}
+	bridge, err := loadNativeBridge(libraryPath)
+	if err != nil {
+		return nil, err
+	}
+	if bridge == nil {
+		return nil, ErrUnsupported
+	}
+	available, err := bridge.isAvailable()
+	if err != nil {
+		return nil, err
+	}
+	if !available {
+		return nil, ErrUnsupported
+	}
+	lister, ok := bridge.(localeNativeBridge)
+	if !ok {
+		return nil, ErrLocalesUnavailable
+	}
+	locales, err := lister.supportedLocales()
+	if err != nil {
+		return nil, err
+	}
+	if len(locales) == 0 {
+		return nil, ErrLocalesUnavailable
+	}
+	return locales, nil
 }
 
 // Open creates a session and waits until Apple Speech has prepared it. Model

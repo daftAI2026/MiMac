@@ -25,6 +25,12 @@ flowchart LR
     verify --> preflight
     revoke["改选 / 停用 / 退出 / 新读取替代"] --> dropped
     background["登录启动 / 自动恢复 / 仅启用插件"] --> unchanged
+    selected --> language["Apple 工具的后台任务读取本机可用语言和已安装模型"]
+    language --> languageBusy{"语音会话或清理仍在进行？"}
+    languageBusy -->|是| preserve["保留本轮语言，结束后再切换"]
+    languageBusy -->|否，明确选择新语言| chooseLanguage["保存所选语言，下一次 Apple 会话使用该语言"]
+    chooseLanguage --> readiness["检查已安装模型"]
+    readiness -->|缺少模型，用户选择下载| assets
     assets["Apple 缺模型：显式下载"] --> owner["复用发现任务；持有 sequence 与 cancel"]
     owner --> preparing["正在准备；可取消"]
     preparing -->|取消或停用| cancelling["请求取消；保留任务直到回调"]

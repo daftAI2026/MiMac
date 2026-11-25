@@ -43,13 +43,13 @@ type appleRoutePartialConfig struct {
 	openWithPartials func(context.Context, bool) (localRecognizer, error)
 }
 
-func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary string, onPartial func(bridge.SessionToken, string, string) bool, partialsEnabled func() bool) (liveAudioRoute, error) {
+func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary, locale string, onPartial func(bridge.SessionToken, string, string) bool, partialsEnabled func() bool) (liveAudioRoute, error) {
 	owner, err := atvv.OpenDeviceOwner(generation, deviceLibrary)
 	if owner == nil {
 		return nil, err
 	}
 	openSpeech := func(ctx context.Context, enablePartials bool) (localRecognizer, error) {
-		sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: speechLibrary, Locale: "zh-CN", SampleRate: 16000, EnablePartials: enablePartials})
+		sink, err := applespeech.Open(ctx, applespeech.Config{LibraryPath: speechLibrary, Locale: locale, SampleRate: 16000, EnablePartials: enablePartials})
 		if sink == nil {
 			return nil, err
 		}

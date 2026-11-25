@@ -126,12 +126,12 @@ func TestAppleAssetStaleCompletionCannotOverwriteCurrentAttempt(t *testing.T) {
 
 func TestAppleAssetStatusDistinguishesCancellationAndPendingCleanup(t *testing.T) {
 	tool := &voiceTool{id: appleSpeechToolID, active: true, busy: true, preparingAssets: true, cancelRequested: true}
-	if got := voiceToolStatus(tool); got != "正在取消；等待系统模型操作结束" {
+	if got := voiceToolStatus(tool); got != "正在取消；等待 Apple 模型操作结束" {
 		t.Fatalf("cancel status = %q", got)
 	}
 	tool.busy, tool.cancelRequested = false, false
 	tool.snapshot.Source = appleSpeechCleanupPendingSource
-	if got := voiceToolStatus(tool); got != "等待系统模型操作结束，请重新检查" {
+	if got := voiceToolStatus(tool); got != "等待 Apple 模型操作结束，请重新检查" {
 		t.Fatalf("pending cleanup status = %q", got)
 	}
 	tool.snapshot.Source = ""

@@ -631,31 +631,11 @@ func (s *shell) selectVoiceTool(tool *voiceTool) error {
 
 func voiceToolStatus(tool *voiceTool) string {
 	if tool.id == appleSpeechToolID {
-		if !tool.active {
-			return "未启用"
+		locale, err := currentAppleSpeechLocale()
+		if err != nil {
+			return "Apple 语音语言设置读取失败"
 		}
-		if tool.busy {
-			if tool.cancelRequested {
-				return "正在取消；等待系统模型操作结束"
-			}
-			return "正在准备"
-		}
-		if tool.snapshot.Source == appleSpeechCleanupPendingSource {
-			return "等待系统模型操作结束，请重新检查"
-		}
-		if tool.lastAttemptCancelled {
-			return "准备已取消"
-		}
-		switch tool.snapshot.State {
-		case voicetools.Ready:
-			return "已就绪"
-		case voicetools.ConfigMissing:
-			return "请下载中文模型"
-		case voicetools.Unsupported:
-			return "此 Mac 暂不支持"
-		default:
-			return "准备失败，请重试"
-		}
+		return appleSpeechStatusForLocale(tool, locale)
 	}
 	if tool.id == hexStreamToolID {
 		if !tool.active {
