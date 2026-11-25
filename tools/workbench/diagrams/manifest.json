@@ -145,7 +145,7 @@
   {
     "id": "apple-text-target",
     "title": "听写、字幕与最终文字投递",
-    "summary": "音频采集与识别不等待 AX 目标；临时字幕按会话编号更新。Apple/Hex 听写起始捕获绑定按下时 PID；Apple 仅在该请求、原窗口仍前台且 Secure Event Input 关闭时按需启用可写的 AXManualAccessibility，并有界读取焦点。Doubao 恢复使用独立 ObserveDictationSelection，通用 Capture 与恢复读取均保持只读。捕获支持取消并释放迟到目标。最终句写入前复核原 PID、焦点与选区；没有目标或目标已变时在内存保留一句，供用户从托盘菜单显式复制；状态不确定的提交不重试。",
+    "summary": "音频采集与识别不等待 AX 目标；临时字幕按会话编号更新。Apple/Hex 听写起始捕获绑定按下时 PID；Apple 仅在该请求、原窗口仍前台且 Secure Event Input 关闭时按需启用可写的 AXManualAccessibility，并有界读取焦点。Doubao 接收故障时只读保存原编辑器位置；仅在旧进程经原 route Close 确认退役、新实例唯一且空闲、原焦点仍匹配且用户仍选 Doubao 时重连输入上下文。身份未确认时不改编辑器或输入源。通用 Capture 与恢复读取均保持只读。最终句写入前复核原 PID、焦点与选区；没有目标或目标已变时在内存保留一句，供用户从托盘菜单显式复制；状态不确定的提交不重试。",
     "sourcePaths": [
       "cmd/mimac/apple_audio.go",
       "cmd/mimac/audio_sessions.go",
@@ -159,16 +159,20 @@
       "internal/adapters/textoutput/native_manual_ax_test.go",
       "internal/adapters/textoutput/native_matrix_test.go",
       "internal/adapters/textoutput/testdata/TextMatrix.swift",
-      "cmd/mimac/doubao_editor_recovery.go"
+      "cmd/mimac/doubao_editor_recovery.go",
+      "cmd/mimac/live_audio_route.go",
+      "cmd/mimac/live_audio_receiver.go"
     ]
   },
   {
     "id": "voice-tool-selection",
     "title": "语音工具启用与选择",
-    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 在后台读取本机支持的语言和已安装模型。选择的语言保存到当前应用配置，每段识别沿用开始时的语言。缺少模型时由用户发起下载。模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。 选择 Hex 时，宿主使用本机 /streams 服务接收遥控器 PCM，最终文字交给本轮可选的输出目标。 Hex 安装检测、服务状态和流式模型能力分别验证。 豆包收音进程异常退出时保留同一编辑器的选区。新进程空闲且原输入源、焦点和选区仍匹配时，在查询控制服务前重新连接输入上下文。",
+    "summary": "允许启用多个工具，但 Current 唯一；发现结果按 sequence 作废旧请求。显式选择/重选只能在旧会话和路由释放后，选择适配器声明且已启用的输入源并回读；每个 action 仍实读当前输入源。 Apple 在后台读取本机支持的语言和已安装模型。选择的语言保存到当前应用配置，每段识别沿用开始时的语言。缺少模型时由用户发起下载。模型准备复用发现任务；取消后保留任务至回调，原生清理未结束则保存 owner，重新检查先清理再重开。独立同包 UI 已验取消、清理提示与重试到 Ready；不表示可强制中止系统下载。 选择 Hex 时，宿主使用本机 /streams 服务接收遥控器 PCM，最终文字交给本轮可选的输出目标。 Hex 安装检测、服务状态和流式模型能力分别验证。 豆包接收故障时先只读保存同一编辑器位置；旧进程经 Close 明确退役后，仅在新实例唯一且空闲、原焦点和用户输入源仍匹配时重连输入上下文。",
     "sourcePaths": [
       "cmd/mimac/voice_tools.go",
       "cmd/mimac/doubao_editor_recovery.go",
+      "cmd/mimac/live_audio_route.go",
+      "cmd/mimac/live_audio_receiver.go",
       "cmd/mimac/voice_binding.go",
       "cmd/mimac/voice_tool_preferences.go",
       "cmd/mimac/settings_voice.go",

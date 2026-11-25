@@ -30,16 +30,17 @@ const (
 )
 
 var (
-	errCompatRouteContext       = errors.New("mimac-compat route: context is required")
-	errCompatRouteGeneration    = errors.New("mimac-compat route: nonzero device generation is required")
-	errCompatRouteTarget        = errors.New("mimac-compat route: only a verified input method target is supported")
-	errCompatRouteTargetBusy    = errors.New("mimac-compat route: target input is busy")
-	errCompatRouteTargetMissing = errors.New("mimac-compat route: captured target process is no longer the unique Core Audio client")
-	errCompatRouteTargetNil     = errors.New("mimac-compat route: captured target identity is unavailable")
-	errCompatRouteDeviceUID     = errors.New("mimac-compat route: verified MiMac endpoint is unavailable")
-	errCompatRouteOwnerNil      = errors.New("mimac-compat route: Xiaomi device owner is unavailable")
-	errCompatRouteUnavailable   = errors.New("mimac-compat route: Xiaomi route is unavailable")
-	errCompatRouteOperationBusy = errors.New("mimac-compat route: start or close operation is already in progress")
+	errCompatRouteContext           = errors.New("mimac-compat route: context is required")
+	errCompatRouteGeneration        = errors.New("mimac-compat route: nonzero device generation is required")
+	errCompatRouteTarget            = errors.New("mimac-compat route: only a verified input method target is supported")
+	errCompatRouteTargetBusy        = errors.New("mimac-compat route: target input is busy")
+	errCompatRouteTargetMissing     = errors.New("mimac-compat route: captured target process is no longer the unique Core Audio client")
+	errCompatRouteTargetNil         = errors.New("mimac-compat route: captured target identity is unavailable")
+	errCompatRouteDeviceUID         = errors.New("mimac-compat route: verified MiMac endpoint is unavailable")
+	errCompatRouteOwnerNil          = errors.New("mimac-compat route: Xiaomi device owner is unavailable")
+	errCompatRouteUnavailable       = errors.New("mimac-compat route: Xiaomi route is unavailable")
+	errCompatRouteOperationBusy     = errors.New("mimac-compat route: start or close operation is already in progress")
+	errCompatRouteRetirementPending = errors.New("mimac-compat route: process identity read failed while its audio client remains listed")
 )
 
 type compatAudioInspector interface {
@@ -285,6 +286,9 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 		closeGate:       make(chan struct{}, 1),
 		editorRecovery:  deps.editorRecovery,
 	}
+	if deps.editorRecovery != nil {
+		lease.editorRetirementReceipt = &editorRetirementReceipt{}
+	}
 
 	var owner compatATVVOwner
 	newSource := func(sourceCtx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
@@ -459,15 +463,16 @@ type compatLiveAudioRoute struct {
 	idleTimeout time.Duration
 	idlePoll    time.Duration
 
-	editorRecovery     *doubaoEditorRecovery
-	closeGate          chan struct{}
-	mu                 sync.Mutex
-	closing            bool
-	closed             bool
-	routeDone          bool
-	leaseDone          bool
-	retired            bool
-	selectionAttempted bool
+	editorRecovery          *doubaoEditorRecovery
+	editorRetirementReceipt *editorRetirementReceipt
+	closeGate               chan struct{}
+	mu                      sync.Mutex
+	closing                 bool
+	closed                  bool
+	routeDone               bool
+	leaseDone               bool
+	retired                 bool
+	selectionAttempted      bool
 	// Only a successful preparation can be retired by observing an external
 	// choice. An uncertain post must keep its original recovery obligation.
 	preparedSelectionConfirmed bool
@@ -681,6 +686,7 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 			r.mu.Lock()
 			r.retired, r.leaseDone = true, true
 			r.mu.Unlock()
+			r.confirmEditorProcessRetired()
 		} else {
 			alive, err := r.capturedTargetAlive()
 			if err != nil {
@@ -690,6 +696,7 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 				r.mu.Lock()
 				r.retired, r.leaseDone = true, true
 				r.mu.Unlock()
+				r.confirmEditorProcessRetired()
 			}
 			if err := r.verifyRestoreTargetIdle(ctx); err != nil {
 				if !r.isLeaseDone() {
@@ -715,6 +722,7 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 						r.mu.Lock()
 						r.retired, r.leaseDone = true, true
 						r.mu.Unlock()
+						r.confirmEditorProcessRetired()
 					} else {
 						return fmt.Errorf("mimac-compat route: verify original target before restoring selection: %w", err)
 					}
@@ -740,6 +748,9 @@ func (r *compatLiveAudioRoute) Close(ctx context.Context) error {
 	r.mu.Lock()
 	r.closed = true
 	r.mu.Unlock()
+	if r.editorRecovery != nil {
+		r.editorRecovery.finishRoute(r.editorRetirementReceipt)
+	}
 	return nil
 }
 
@@ -761,7 +772,13 @@ func (r *compatLiveAudioRoute) waitForCapturedTargetIdle(ctx context.Context) (b
 		}
 		alive, err := r.capturedTargetAlive()
 		if err != nil {
-			return false, err
+			if !errors.Is(err, errCompatRouteRetirementPending) {
+				return false, err
+			}
+			if err := waitForCompatRouteRetirementPoll(waitCtx, r.idlePoll); err != nil {
+				return false, errors.Join(audiosession.ErrCleanupPending, err)
+			}
+			continue
 		}
 		if !alive {
 			return true, nil
@@ -791,13 +808,20 @@ func (r *compatLiveAudioRoute) waitForCapturedTargetIdle(ctx context.Context) (b
 			}
 			return false, nil
 		}
-		timer := time.NewTimer(r.idlePoll)
-		select {
-		case <-waitCtx.Done():
-			timer.Stop()
-			return false, errors.Join(audiosession.ErrCleanupPending, waitCtx.Err())
-		case <-timer.C:
+		if err := waitForCompatRouteRetirementPoll(waitCtx, r.idlePoll); err != nil {
+			return false, errors.Join(audiosession.ErrCleanupPending, err)
 		}
+	}
+}
+
+func waitForCompatRouteRetirementPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -821,10 +845,16 @@ func (r *compatLiveAudioRoute) capturedTargetAlive() (bool, error) {
 	}
 	for _, process := range processes {
 		if process.PID == r.pid {
-			return false, fmt.Errorf("mimac-compat route: captured PID is still a Core Audio client but identity is unreadable: %w", err)
+			return false, fmt.Errorf("%w: %w", errCompatRouteRetirementPending, err)
 		}
 	}
 	return false, nil
+}
+
+func (r *compatLiveAudioRoute) confirmEditorProcessRetired() {
+	if r != nil && r.editorRetirementReceipt != nil {
+		r.editorRetirementReceipt.confirmed.Store(true)
+	}
 }
 
 func (r *compatLiveAudioRoute) verifyRestoreTargetIdle(ctx context.Context) error {

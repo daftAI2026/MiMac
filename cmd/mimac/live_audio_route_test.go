@@ -21,15 +21,16 @@ import (
 type compatRouteTestInspector struct {
 	mu sync.Mutex
 
-	device       audioroute.DeviceCapabilities
-	processes    []audioroute.ProcessInput
-	input        audioroute.ProcessInput
-	bundleIDs    []string
-	deviceUID    string
-	waitPID      int32
-	waitUID      string
-	waitCalls    int
-	processCalls int
+	device         audioroute.DeviceCapabilities
+	processes      []audioroute.ProcessInput
+	bundleSequence [][]audioroute.ProcessInput
+	input          audioroute.ProcessInput
+	bundleIDs      []string
+	deviceUID      string
+	waitPID        int32
+	waitUID        string
+	waitCalls      int
+	processCalls   int
 }
 
 func newCompatRouteTestInspector() *compatRouteTestInspector {
@@ -51,6 +52,11 @@ func (i *compatRouteTestInspector) InputsForBundle(bundleID string) ([]audiorout
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.bundleIDs = append(i.bundleIDs, bundleID)
+	if len(i.bundleSequence) != 0 {
+		processes := i.bundleSequence[0]
+		i.bundleSequence = i.bundleSequence[1:]
+		return append([]audioroute.ProcessInput(nil), processes...), nil
+	}
 	return append([]audioroute.ProcessInput(nil), i.processes...), nil
 }
 
@@ -84,6 +90,15 @@ func (i *compatRouteTestInspector) setProcesses(processes []audioroute.ProcessIn
 	i.mu.Unlock()
 }
 
+func (i *compatRouteTestInspector) setBundleSequence(sequence ...[]audioroute.ProcessInput) {
+	i.mu.Lock()
+	i.bundleSequence = make([][]audioroute.ProcessInput, len(sequence))
+	for index, processes := range sequence {
+		i.bundleSequence[index] = append([]audioroute.ProcessInput(nil), processes...)
+	}
+	i.mu.Unlock()
+}
+
 func (i *compatRouteTestInspector) snapshot() (deviceUID string, waitPID int32, waitUID string, waitCalls, processCalls int) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -91,19 +106,31 @@ func (i *compatRouteTestInspector) snapshot() (deviceUID string, waitPID int32, 
 }
 
 type compatRouteTestIdentity struct {
-	mu  sync.Mutex
-	err error
+	mu          sync.Mutex
+	err         error
+	checkErrors []error
 }
 
 func (i *compatRouteTestIdentity) Check() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if len(i.checkErrors) != 0 {
+		err := i.checkErrors[0]
+		i.checkErrors = i.checkErrors[1:]
+		return err
+	}
 	return i.err
 }
 
 func (i *compatRouteTestIdentity) setError(err error) {
 	i.mu.Lock()
 	i.err = err
+	i.mu.Unlock()
+}
+
+func (i *compatRouteTestIdentity) setCheckErrors(errs []error) {
+	i.mu.Lock()
+	i.checkErrors = append([]error(nil), errs...)
 	i.mu.Unlock()
 }
 

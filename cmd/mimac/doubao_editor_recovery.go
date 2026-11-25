@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo"
 
@@ -19,15 +20,35 @@ type interruptedEditor interface {
 	Close() error
 }
 
+type recoverySelectionObserver interface {
+	CaptureCurrentSelection() (interruptedEditor, error)
+	Close() error
+}
+
+type textoutputRecoveryObserver struct {
+	observer textoutput.DictationSelectionObserver
+}
+
+func (o textoutputRecoveryObserver) CaptureCurrentSelection() (interruptedEditor, error) {
+	return o.observer.CaptureCurrentSelection()
+}
+
+func (o textoutputRecoveryObserver) Close() error { return o.observer.Close() }
+
+// A route publishes this tiny receipt only after its existing close checks
+// establish that the captured input-method process has retired.
+type editorRetirementReceipt struct{ confirmed atomic.Bool }
+
 // An input method can die while its client still owns marked text. Core owns
 // the audio/key recovery. Only the Doubao adapter renews the editor connection.
 type doubaoEditorRecovery struct {
-	mu          sync.Mutex
-	owner       *compatLiveAudioRoute
-	origin      textoutput.DictationSelectionObserver
-	interrupted interruptedEditor
-	dispatch    func(func())
-	refresh     func() error
+	mu                 sync.Mutex
+	owner              *compatLiveAudioRoute
+	origin             recoverySelectionObserver
+	interrupted        interruptedEditor
+	interruptedReceipt *editorRetirementReceipt
+	dispatch           func(func())
+	refresh            func() error
 }
 
 func newDoubaoEditorRecovery() *doubaoEditorRecovery {
@@ -40,18 +61,38 @@ func (r *compatLiveAudioRoute) recordEditorOnExit(fault error) {
 	if !errors.Is(fault, processidentity.ErrReadFailed) && !errors.Is(fault, processidentity.ErrIdentityChanged) && !errors.Is(fault, errCompatRouteTargetMissing) {
 		return
 	}
-	if alive, err := r.capturedTargetAlive(); err != nil || alive {
+	d := r.editorRecovery
+	if d == nil {
 		return
 	}
-	d := r.editorRecovery
+	d.mu.Lock()
+	if d.owner != r || d.origin == nil || r.editorRetirementReceipt == nil {
+		d.mu.Unlock()
+		return
+	}
+	origin, receipt := d.origin, r.editorRetirementReceipt
+	d.mu.Unlock()
+
+	// Save the same editor's current selection while its text field remains
+	// available. A receiver identity error can be a transient read failure, so
+	// this snapshot is not eligible for reconnect until route Close proves that
+	// the captured input-method process retired.
+	current, err := origin.CaptureCurrentSelection()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.owner != r || d.origin == nil {
+		if current != nil {
+			_ = current.Close()
+		}
 		return
 	}
 	d.releaseInterrupted()
-	if current, err := d.origin.CaptureCurrentSelection(); err == nil {
+	if err == nil && current != nil {
 		d.interrupted = current
+		d.interruptedReceipt = receipt
+	} else if current != nil {
+		_ = current.Close()
 	}
 	d.releaseOrigin()
 }
@@ -62,15 +103,16 @@ func (r *compatLiveAudioRoute) recordEditorOnExit(fault error) {
 func (d *doubaoEditorRecovery) prepareReplacement(ctx context.Context, route *compatLiveAudioRoute) error {
 	d.mu.Lock()
 	target := d.interrupted
+	receipt := d.interruptedReceipt
 	d.mu.Unlock()
-	if target == nil {
+	if target == nil || receipt == nil || !receipt.confirmed.Load() {
 		return nil
 	}
 	done := make(chan error, 1)
 	d.dispatch(func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		if d.interrupted != target {
+		if d.interrupted != target || d.interruptedReceipt != receipt || !receipt.confirmed.Load() {
 			done <- nil
 			return
 		}
@@ -103,7 +145,9 @@ func (d *doubaoEditorRecovery) begin(r *compatLiveAudioRoute) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.releaseOrigin()
-	d.owner, d.origin = r, textoutput.ObserveDictationSelection()
+	d.releaseInterrupted()
+	d.owner = r
+	d.origin = textoutputRecoveryObserver{observer: textoutput.ObserveDictationSelection()}
 }
 
 func (d *doubaoEditorRecovery) releaseOrigin() {
@@ -126,6 +170,25 @@ func (d *doubaoEditorRecovery) releaseInterrupted() {
 		_ = d.interrupted.Close()
 		d.interrupted = nil
 	}
+	d.interruptedReceipt = nil
+}
+
+// finishRoute drops an unconfirmed snapshot after a successful close. A
+// confirmed receipt remains available for the next route's focus/input-source
+// checks; recovery retains neither the old route nor its audio resources.
+func (d *doubaoEditorRecovery) finishRoute(receipt *editorRetirementReceipt) {
+	if d == nil || receipt == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.interrupted == nil || d.interruptedReceipt != receipt {
+		return
+	}
+	if receipt.confirmed.Load() {
+		return
+	}
+	d.releaseInterrupted()
 }
 
 func (d *doubaoEditorRecovery) clear() {

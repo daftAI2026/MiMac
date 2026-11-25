@@ -26,3 +26,16 @@ flowchart TD
     observe["Doubao ObserveDictationSelection"] --> observeWorker["后台绑定原 PID；prepareEditor=false"]
     observeWorker --> readOnly["只读 Capture；不启用 AX"]
     recovery["通用 Capture / CaptureCurrentSelection"] --> readOnly
+    readOnly --> fault["接收器身份故障时，只读更新同一 AX 字段与选区"]
+    fault --> pendingRecovery["保存编辑位置与本 route 的轻量退役回执"]
+    fault --> routeClose["原 route Close：复核强进程身份与 Core Audio 名单；晚退时有界重查"]
+    routeClose -->|明确确认旧进程退役| retired["确认退役回执"]
+    pendingRecovery --> replacement["准备新豆包会话：同时取得原选区与退役回执，复核新实例唯一且空闲"]
+    retired --> replacement
+    replacement --> recoveryFocus{"同一字段焦点仍有效？"}
+    recoveryFocus -->|否| preserveFocus["焦点已变；保持现场并释放恢复目标"]
+    recoveryFocus -->|是| inputSource{"用户仍选 Doubao？"}
+    inputSource -->|是| reconnect["重连输入上下文，再查询控制服务"]
+    inputSource -->|否| preserveSource["输入源已变；保持用户选择并释放恢复目标"]
+    routeClose -->|身份仍不确定| cleanupPending["清理待处理；不改编辑器或输入源"]
+    routeClose -->|进程仍存活且清理完成| dropSnapshot["释放保存的选区"]
