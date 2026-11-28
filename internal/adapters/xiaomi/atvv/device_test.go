@@ -623,3 +623,86 @@ func TestCanceledReservationQuarantinesOnlyItsUnfinishedStream(t *testing.T) {
 		t.Fatalf("unnecessary reconnect or stop: %v, %d", stops, closes)
 	}
 }
+
+// Two physical presses may both start on the transport before the output
+// consumer has closed the first lease. Exercise all three control boundaries.
+func TestPreparedSourceSeparatesBackToBackWireStreams(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		firstClosed    bool
+		secondReleased bool
+	}{
+		{"old sink draining", false, false},
+		{"old lease detached", true, false},
+		{"second released before any consumer", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := &fakeDeviceTransport{}
+			owner := newFakeDeviceOwner(t, 3, tr)
+			t.Cleanup(func() { _ = owner.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			emitTestCapabilities(t, tr)
+			prepare := func(seq uint64) *SessionSource {
+				t.Helper()
+				src, err := owner.PrepareSource(ctx, StreamKey{Generation: 3, Session: seq})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return src
+			}
+			emit := func(kind NativeEventKind, data ...byte) {
+				t.Helper()
+				if err := tr.emit(NativeEvent{Kind: kind, Bytes: data}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			compare := func(source *SessionSource, want int16) {
+				t.Helper()
+				buf := make([]int16, 8)
+				n, err := source.Read(ctx, buf)
+				if err != nil || n != 2 || buf[0] != want {
+					t.Fatalf("samples=%v n=%d err=%v", buf[:n], n, err)
+				}
+			}
+			first := prepare(1)
+			emit(NativeEventControlValue, 0x04, 0x03, 0x02, 0x02)
+			emit(NativeEventAudioValue, 0x70)
+			emit(NativeEventControlValue, 0x00)
+			if tt.firstClosed {
+				compare(first, 11)
+				if err := first.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			emit(NativeEventControlValue, 0x04, 0x03, 0x02, 0x03)
+			emit(NativeEventAudioValue, 0xf0)
+			if tt.secondReleased {
+				emit(NativeEventControlValue, 0x00)
+			}
+			if !tt.firstClosed {
+				compare(first, 11)
+				if err := first.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			next := prepare(2)
+			if tt.secondReleased {
+				emit(NativeEventControlValue, 0x04, 0x03, 0x02, 0x04)
+				emit(NativeEventAudioValue, 0x70)
+			}
+			emit(NativeEventControlValue, 0x00)
+			if tt.secondReleased {
+				compare(next, 11)
+			} else {
+				compare(next, -11)
+			}
+			if err := next.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if stops, closes := tr.snapshot(); len(stops) != 0 || closes != 0 {
+				t.Fatalf("unexpected device stop / reopen: %v %d", stops, closes)
+			}
+		})
+	}
+}

@@ -145,7 +145,11 @@ func NewSource(key StreamKey, transport StreamTransport) (*Source, error) {
 	if key.Generation == 0 || key.Session == 0 || transport == nil {
 		return nil, ErrInvalidSessionKey
 	}
-	return &Source{key: key, transport: transport, wake: make(chan struct{})}, nil
+	return newStreamSource(key, transport, sourceUnarmed), nil
+}
+
+func newStreamSource(key StreamKey, transport StreamTransport, state sourceState) *Source {
+	return &Source{key: key, transport: transport, wake: make(chan struct{}), state: state}
 }
 
 // Arm validates the device's v1 CAPS payload. Calling Arm is the transport's
