@@ -122,7 +122,7 @@ func (v *mygoVoiceCaptionView) draw(c *ui.Context) {
 				if rtl {
 					if strings.TrimSpace(v.tentative) != "" {
 						tentative := strings.TrimSpace(v.tentative)
-						words := ui.Text(c, tentative).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).
+						words := ui.Text(c, tentative).SingleLine().TruncateStart().Shrink(1).MinWidth(0).
 							TextColor(theme.TextMuted).FontSize(13)
 						if strings.TrimSpace(v.stable) != "" && hasLeadingSpace(v.tentative) {
 							words = words.Margin(0, 4, 0, 0)
@@ -140,7 +140,7 @@ func (v *mygoVoiceCaptionView) draw(c *ui.Context) {
 						TextColor(theme.Text).FontSize(13).Role(ui.RoleStatus)
 				}
 				if strings.TrimSpace(v.tentative) != "" {
-					ui.Text(c, v.tentative).SingleLine().PreserveSpaces().Ellipsis("…").Shrink(1).MinWidth(0).
+					ui.Text(c, v.tentative).SingleLine().PreserveSpaces().TruncateStart().Shrink(1).MinWidth(0).
 						TextColor(theme.TextMuted).FontSize(13).Role(ui.RoleStatus)
 				}
 			})
@@ -169,7 +169,7 @@ func hasLeadingSpace(text string) bool {
 }
 
 func (v *mygoVoiceCaptionView) Hide() error {
-	if v == nil || v.closed {
+	if v == nil || v.closed || !v.visible {
 		return nil
 	}
 	v.visible = false

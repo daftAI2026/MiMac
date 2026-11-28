@@ -546,6 +546,117 @@ func TestLiveTextPreferencePublishesOnlyForTheCurrentDotSession(t *testing.T) {
 	}
 }
 
+type capturedMarkedTextWatch struct {
+	ctx   context.Context
+	draft func(string)
+}
+
+func TestNativeMarkedTextWatchIsScopedToDoubaoAndWeTypeDotSessions(t *testing.T) {
+	for _, toolID := range []string{"voice-doubao", "voice-wetype"} {
+		t.Run(toolID, func(t *testing.T) {
+			s, _, _, _ := newSessionHostTest(t)
+			s.tools = builtInVoiceTools()
+			s.currentVoiceTool = toolID
+			s.preferencesState.value = defaultHostPreferences()
+			s.preferencesState.value.VoicePresentation = voicePresentationDotBar
+			s.preferencesState.value.ShowLiveText = true
+			watches := make([]capturedMarkedTextWatch, 0, 1)
+			s.voiceOverlay.watchMarked = func(ctx context.Context, onDraft func(string)) {
+				watches = append(watches, capturedMarkedTextWatch{ctx: ctx, draft: onDraft})
+			}
+			s.applyVoicePresentationSelection()
+			press := beginHostVoice(t, s)
+			token := s.coordinator.core.Snapshot().Session.Token
+			s.liveAudio.toolID = s.currentVoiceTool
+			s.liveAudio.generation = token.Device().Generation()
+			if frame := s.voiceOverlayFrameAt(time.Now()); !frame.Visible || frame.Token != token || len(watches) != 1 {
+				t.Fatalf("marked-text watch did not start for active %s session: frame=%+v watches=%d", toolID, frame, len(watches))
+			}
+			watches[0].draft("合成预编辑")
+			if frame := s.voiceOverlayFrameAt(time.Now()); frame.InterimStable != "" || frame.InterimTentative != "合成预编辑" || frame.InterimClear {
+				t.Fatalf("marked text did not reach the caption frame: %+v", frame)
+			}
+			watches[0].draft("")
+			if frame := s.voiceOverlayFrameAt(time.Now()); !frame.InterimClear || frame.InterimStable != "" {
+				t.Fatalf("empty marked range did not clear the caption: %+v", frame)
+			}
+
+			if err := s.coordinator.step(bridge.VoiceEnded(press)); err != nil {
+				t.Fatal(err)
+			}
+			frame := s.voiceOverlayFrameAt(time.Now())
+			if !frame.InterimClear || len(watches) != 1 {
+				t.Fatalf("physical key release did not clear the caption: %+v watches=%d", frame, len(watches))
+			}
+			select {
+			case <-watches[0].ctx.Done():
+			default:
+				t.Fatal("physical key release did not cancel the native marked-text watcher")
+			}
+			watches[0].draft("stale after keyup")
+			if got := s.voiceOverlay.interim.Snapshot(token); got != (voiceInterimDraft{}) {
+				t.Fatalf("retired watcher republished text after keyup: %+v", got)
+			}
+		})
+	}
+}
+
+func TestNativeMarkedTextWatchStopsOnPreferenceOrToolChange(t *testing.T) {
+	s, _, _, _ := newSessionHostTest(t)
+	s.tools = builtInVoiceTools()
+	s.currentVoiceTool = "voice-doubao"
+	s.preferencesState.value = defaultHostPreferences()
+	s.preferencesState.value.VoicePresentation = voicePresentationDotBar
+	s.preferencesState.value.ShowLiveText = true
+	s.preferencesState.path = filepath.Join(t.TempDir(), "preferences.json")
+	watches := make([]capturedMarkedTextWatch, 0, 1)
+	s.voiceOverlay.watchMarked = func(ctx context.Context, onDraft func(string)) {
+		watches = append(watches, capturedMarkedTextWatch{ctx: ctx, draft: onDraft})
+	}
+	s.applyVoicePresentationSelection()
+	beginHostVoice(t, s)
+	token := s.coordinator.core.Snapshot().Session.Token
+	s.liveAudio.toolID = s.currentVoiceTool
+	s.liveAudio.generation = token.Device().Generation()
+	s.voiceOverlayFrameAt(time.Now())
+	if len(watches) != 1 {
+		t.Fatalf("watch count before changes = %d, want 1", len(watches))
+	}
+
+	s.currentVoiceTool = appleSpeechToolID
+	s.voiceOverlayFrameAt(time.Now())
+	select {
+	case <-watches[0].ctx.Done():
+	default:
+		t.Fatal("tool change retained the old provider watcher")
+	}
+	if got := s.voiceOverlay.interim.Snapshot(token); got != (voiceInterimDraft{}) {
+		t.Fatalf("tool change retained prior marked text: %+v", got)
+	}
+	watches[0].draft("stale after tool change")
+	if got := s.voiceOverlay.interim.Snapshot(token); got != (voiceInterimDraft{}) {
+		t.Fatalf("stale callback after tool change was accepted: %+v", got)
+	}
+
+	s.currentVoiceTool = "voice-doubao"
+	s.voiceOverlayFrameAt(time.Now())
+	if len(watches) != 2 {
+		t.Fatalf("watch count after returning to Doubao = %d, want 2", len(watches))
+	}
+	if err := s.applyLiveTextPreference(false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-watches[1].ctx.Done():
+	default:
+		t.Fatal("turning off dot captions retained the native watcher")
+	}
+	watches[1].draft("stale after preference off")
+	if got := s.voiceOverlay.interim.Snapshot(token); got != (voiceInterimDraft{}) {
+		t.Fatalf("preference-off callback republished text: %+v", got)
+	}
+}
+
 func TestVoiceOverlayRenderErrorHidesWithoutEndingCapture(t *testing.T) {
 	s, tasks, _, _ := newSessionHostTest(t)
 	s.preferencesState.value = defaultHostPreferences()

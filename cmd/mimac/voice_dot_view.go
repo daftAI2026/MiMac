@@ -232,8 +232,11 @@ func (v *voiceDotView) draw(c *ui.Context) {
 }
 
 func (v *voiceDotView) Hide() error {
-	// The last scheduled paint reads the empty session, fades, then unmaps
-	// the panel. Repeated idle notifications do not wake a hidden renderer.
+	// The dot may finish its neutral exit on the next paint, but text is never
+	// retained after the active voice owner disappears.
+	if v.captionDraft != (voiceInterimDraft{}) || v.captionToken != (bridge.SessionToken{}) {
+		v.clearCaption()
+	}
 	return nil
 }
 
@@ -286,6 +289,10 @@ func (v *voiceDotView) syncCaption(frame voiceOverlayFrame, now time.Time) bool 
 		return false
 	}
 	if !frame.ShowLiveText {
+		v.clearCaption()
+		return false
+	}
+	if frame.InterimClear {
 		v.clearCaption()
 		return false
 	}

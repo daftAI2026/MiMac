@@ -56,10 +56,16 @@ flowchart TD
     resetAnimated --> material
     target["未来：可靠目标思考反馈；当前未知保持false"] -.-> thinkEdge
 
-    dots --> captionPref{"已开启字幕，且当前工具提供中间文字？"}
-    captionPref -->|是| caption["屏幕内侧的非激活字幕窗：顶部点阵下方、底部点阵上方"]
-    incoming["Apple 或支持临时结果的 Hex 模型：当前会话的文字"] --> caption
-    caption --> releaseCaption["松开或结束时收起；临时文字只用于显示"]
+    dots --> captionPref{"点阵字幕已开启，且存在有效 Core 会话？"}
+    captionPref -->|Apple / Hex| providerPartial["复用 provider 当前会话的临时文字"]
+    captionPref -->|豆包 / 微信| markedWatch["WatchMarkedText：绑定前台 PID，只读 AXTextInputMarkedRange"]
+    markedWatch -->|新预编辑文字| imeDraft["当前会话的临时字幕"]
+    markedWatch -->|焦点离开或标记区清空| clearCaption["立即清空字幕"]
+    providerPartial --> caption["屏幕内侧的非激活字幕窗：顶部点阵下方、底部点阵上方"]
+    imeDraft --> caption
+    clearCaption --> caption
+    caption --> releaseCaption["物理松键 / Draining、取消或会话结束时收起"]
+    releaseCaption --> imeOwnsText["输入法继续负责预编辑修改与最终提交；字幕不写回目标"]
     controls --> grouping["通用设置的语音提示区选择样式；点阵可选择位置"]
     material --> localReady["本次会话的本地提示已显示"]
     dots --> localReady

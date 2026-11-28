@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/dotscope"
 	"mimac.local/mimac/internal/testutil/dotfixture"
 )
@@ -160,6 +161,31 @@ func TestVoiceCaptionCancellationAndPreferenceOffClearImmediately(t *testing.T) 
 	v.syncCaption(voiceOverlayFrame{ShowLiveText: false}, time.Now())
 	if caption.hides != 2 || v.captionDraft != (voiceInterimDraft{}) {
 		t.Fatal("turning the independent caption preference off retained text")
+	}
+}
+
+func TestVoiceCaptionExplicitMarkedRangeClearHidesImmediately(t *testing.T) {
+	caption := &fakeVoiceCaption{}
+	token := voiceInterimTestToken(t, 1)
+	v := &voiceDotView{
+		caption: caption, captionDraft: voiceInterimDraft{Stable: "当前预编辑"}, captionToken: token,
+	}
+	frame := voiceOverlayFrame{Visible: true, ShowLiveText: true, Token: token, InterimClear: true}
+	if v.syncCaption(frame, time.Now()) || caption.hides != 1 || v.captionDraft != (voiceInterimDraft{}) {
+		t.Fatal("explicit marked-range clear retained or faded the previous draft")
+	}
+}
+
+func TestVoiceDotHideDropsCaptionWhenCoreSessionEnds(t *testing.T) {
+	caption := &fakeVoiceCaption{}
+	token := voiceInterimTestToken(t, 1)
+	v := &voiceDotView{
+		caption: caption, captionDraft: voiceInterimDraft{Tentative: "当前临时文字"}, captionToken: token,
+	}
+	if err := v.Hide(); err != nil || caption.hides != 1 || v.captionDraft != (voiceInterimDraft{}) ||
+		v.captionToken != (bridge.SessionToken{}) {
+		t.Fatalf("hiding the voice panel retained caption state: err=%v hides=%d draft=%+v token=%+v",
+			err, caption.hides, v.captionDraft, v.captionToken)
 	}
 }
 

@@ -68,6 +68,15 @@ func TestVoiceInterimFeedBoundsLatestTextToTheActiveSession(t *testing.T) {
 	if got := feed.Snapshot(first); got.Stable != "  first second" || got.Tentative != "  tentative line  " {
 		t.Fatalf("interim = %+v, want preserved whitespace on one line", got)
 	}
+	if !feed.Publish(first, "", "") {
+		t.Fatal("active empty publication was rejected")
+	}
+	if got := feed.Snapshot(first); got != (voiceInterimDraft{Clear: true}) {
+		t.Fatalf("empty publication did not explicitly clear the current draft: %+v", got)
+	}
+	if !feed.Publish(first, "restored draft", "") || feed.Snapshot(first).Clear {
+		t.Fatal("new marked text did not replace the explicit clear")
+	}
 
 	long := strings.Repeat("你好", maxVoiceInterimBytes)
 	if !feed.Publish(first, long, "") {
@@ -120,7 +129,7 @@ func TestVoiceInterimFeedDisableDropsAndRejectsDrafts(t *testing.T) {
 	feed.Publish(token, "draft", "")
 	feed.SetEnabled(false)
 	if got := feed.Snapshot(token); got != (voiceInterimDraft{}) || feed.WantsPartials(token) || feed.PartialsEnabled() {
-		t.Fatalf("disabled feed retained %q", got)
+		t.Fatalf("disabled feed retained %+v", got)
 	}
 	feed.Begin(token)
 	if feed.Publish(token, "after disable", "") || feed.Snapshot(token) != (voiceInterimDraft{}) {

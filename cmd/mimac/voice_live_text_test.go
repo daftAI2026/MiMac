@@ -33,9 +33,14 @@ func TestVoiceToolLiveTextSettingUsesProviderCapabilities(t *testing.T) {
 		t.Fatalf("Hex model condition = supported %v, status %q", supported, status)
 	}
 
-	doubao := byID["voice-doubao"]
-	if supported, status := voiceToolLiveTextSetting(doubao); supported || status != "豆包输入法未向 MiMac 提供实时文字" {
-		t.Fatalf("unsupported provider status = supported %v, status %q", supported, status)
+	for _, toolID := range []string{"voice-doubao", "voice-wetype"} {
+		tool := byID[toolID]
+		if tool == nil || !voiceToolUsesNativeMarkedText(tool) {
+			t.Fatalf("%s is not registered for native marked-range captions", toolID)
+		}
+		if supported, status := voiceToolLiveTextSetting(tool); !supported || !strings.Contains(status, "支持的输入框") || !strings.Contains(status, "输入法提交") {
+			t.Fatalf("native marked-range status for %s = supported %v, %q", toolID, supported, status)
+		}
 	}
 	if supported, status := voiceToolLiveTextSetting(nil); supported || !strings.Contains(status, "支持实时字幕") {
 		t.Fatalf("empty selection status = supported %v, status %q", supported, status)
@@ -44,7 +49,7 @@ func TestVoiceToolLiveTextSettingUsesProviderCapabilities(t *testing.T) {
 	// Provider-specific presentation must not rewrite the independent preference.
 	preferences := defaultHostPreferences()
 	preferences.ShowLiveText = true
-	for _, tool := range []*voiceTool{byID[appleSpeechToolID], byID[hexStreamToolID], doubao} {
+	for _, tool := range []*voiceTool{byID[appleSpeechToolID], byID[hexStreamToolID], byID["voice-doubao"], byID["voice-wetype"]} {
 		voiceToolLiveTextSetting(tool)
 		if !preferences.ShowLiveText {
 			t.Fatalf("provider %q cleared the persisted subtitle preference", tool.id)
@@ -106,8 +111,8 @@ func TestLiveTextPreferenceSurvivesUnsupportedToolSelection(t *testing.T) {
 	if err := s.applyLiveTextPreference(true); err != nil {
 		t.Fatal(err)
 	}
-	if supported, status := voiceToolLiveTextSetting(s.selectedVoiceTool()); supported || status != "豆包输入法未向 MiMac 提供实时文字" {
-		t.Fatalf("unsupported tool presentation = %v, %q", supported, status)
+	if supported, status := voiceToolLiveTextSetting(s.selectedVoiceTool()); !supported || !strings.Contains(status, "支持的输入框") {
+		t.Fatalf("Doubao marked-range presentation = %v, %q", supported, status)
 	}
 
 	for _, toolID := range []string{appleSpeechToolID, hexStreamToolID} {

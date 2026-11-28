@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"math"
 	"time"
 
+	"mimac.local/mimac/internal/adapters/textoutput"
 	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/siriglass"
 	"mimac.local/mimac/internal/pluginrt"
@@ -26,6 +28,7 @@ type voiceOverlayFrame struct {
 	ShowLiveText     bool
 	InterimStable    string
 	InterimTentative string
+	InterimClear     bool
 }
 
 type voiceOverlayView interface {
@@ -35,14 +38,23 @@ type voiceOverlayView interface {
 }
 
 type voiceOverlayState struct {
-	open         func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
-	view         voiceOverlayView
-	err          error // Optional display failure, never an audio/core failure.
-	meter        voiceSpectrumState
-	mode         voicePresentationMode
-	interim      voiceInterimFeed
-	interimToken bridge.SessionToken // Main-thread owner for Begin/End; provider calls use the feed mutex.
-	voicePrompt  voicePromptPresentation
+	open          func(func() voiceOverlayFrame, func(error)) (voiceOverlayView, error)
+	view          voiceOverlayView
+	err           error // Optional display failure, never an audio/core failure.
+	meter         voiceSpectrumState
+	mode          voicePresentationMode
+	interim       voiceInterimFeed
+	interimToken  bridge.SessionToken // Main-thread owner for Begin/End; provider calls use the feed mutex.
+	interimToolID string              // Selected tool identity bound to this session's caption draft.
+	markedText    *voiceMarkedTextWatch
+	watchMarked   func(context.Context, func(string)) // Test seam; production uses textoutput.WatchMarkedText.
+	voicePrompt   voicePromptPresentation
+}
+
+type voiceMarkedTextWatch struct {
+	token  bridge.SessionToken
+	toolID string
+	cancel context.CancelFunc
 }
 
 const voicePresentationPlugin = "voice-presentation"
@@ -121,23 +133,65 @@ func (s *shell) configureVoiceInterim() {
 		s.preferencesState.value.ShowLiveText && s.preferencesState.value.VoicePresentation == voicePresentationDotBar
 	state.interim.SetEnabled(enabled)
 	if !enabled {
-		state.interimToken = bridge.SessionToken{}
+		s.endVoiceInterim()
 	}
 }
 
-func (s *shell) beginVoiceInterim(token bridge.SessionToken) {
+func (s *shell) beginVoiceInterim(token bridge.SessionToken, toolID string) {
 	state := &s.voiceOverlay
-	if state.interimToken != token {
+	if state.interimToken != token || state.interimToolID != toolID {
+		s.stopVoiceMarkedTextWatch()
 		state.interim.End(state.interimToken)
 		state.interim.Begin(token)
 		state.interimToken = token
+		state.interimToolID = toolID
 	}
 }
 
 func (s *shell) endVoiceInterim() {
 	state := &s.voiceOverlay
+	s.stopVoiceMarkedTextWatch()
 	state.interim.End(state.interimToken)
 	state.interimToken = bridge.SessionToken{}
+	state.interimToolID = ""
+}
+
+func (s *shell) syncVoiceMarkedTextWatch(token bridge.SessionToken, tool *voiceTool) {
+	state := &s.voiceOverlay
+	if !voiceToolUsesNativeMarkedText(tool) || tool.id != s.liveAudio.toolID || token.Device().Generation() != s.liveAudio.generation {
+		if state.markedText != nil {
+			s.stopVoiceMarkedTextWatch()
+			state.interim.Publish(token, "", "")
+		}
+		return
+	}
+	if current := state.markedText; current != nil && current.token == token && current.toolID == tool.id {
+		return
+	}
+	s.stopVoiceMarkedTextWatch()
+	ctx, cancel := context.WithCancel(context.Background())
+	state.markedText = &voiceMarkedTextWatch{token: token, toolID: tool.id, cancel: cancel}
+	observe := state.watchMarked
+	if observe == nil {
+		observe = textoutput.WatchMarkedText
+	}
+	observe(ctx, func(draft string) {
+		// This observer owns display only. The IME can revise every word and
+		// retains sole ownership of the final edit.
+		state.interim.publish(ctx, token, "", draft)
+	})
+}
+
+func (s *shell) stopVoiceMarkedTextWatch() {
+	state := &s.voiceOverlay
+	watch := state.markedText
+	state.markedText = nil
+	if watch == nil {
+		return
+	}
+	if watch.cancel != nil {
+		watch.cancel()
+	}
 }
 
 func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
@@ -148,24 +202,36 @@ func (s *shell) voiceOverlayFrameAt(now time.Time) voiceOverlayFrame {
 		s.powerInputBlocked() || s.remoteState.stopPending || s.liveAudio.retiring || s.coordinator == nil ||
 		s.audioSession == nil || s.audioSession.runtime == nil {
 		s.endVoiceInterim()
+		frame.InterimClear = true
 		return frame
 	}
 	snapshot := s.coordinator.core.Snapshot()
 	if !snapshot.HasSession {
 		s.endVoiceInterim()
+		frame.InterimClear = true
 		return frame
 	}
 	phase := presentVoiceSession(snapshot)
 	if phase.phase == "" {
 		s.endVoiceInterim()
+		frame.InterimClear = true
 		return frame
 	}
-	if frame.ShowLiveText {
-		s.beginVoiceInterim(snapshot.Session.Token)
+	routeMatches := s.liveAudio.toolID == "" || (s.currentVoiceTool == s.liveAudio.toolID && snapshot.Generation == s.liveAudio.generation)
+	if frame.ShowLiveText && routeMatches && snapshot.Session.Phase != bridge.PhaseDraining {
+		toolID := ""
+		tool := s.selectedVoiceTool()
+		if tool != nil {
+			toolID = tool.id
+		}
+		s.beginVoiceInterim(snapshot.Session.Token, toolID)
+		s.syncVoiceMarkedTextWatch(snapshot.Session.Token, tool)
 		draft := s.voiceOverlay.interim.Snapshot(snapshot.Session.Token)
 		frame.InterimStable, frame.InterimTentative = draft.Stable, draft.Tentative
+		frame.InterimClear = draft.Clear
 	} else {
 		s.endVoiceInterim()
+		frame.InterimClear = true
 	}
 	frame.Visible, frame.Token, frame.Label = true, snapshot.Session.Token, phase.label
 	frame.Phase = snapshot.Session.Phase

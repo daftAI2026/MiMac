@@ -101,14 +101,16 @@
   {
     "id": "voice-session-state",
     "title": "核心语音会话状态机",
-    "summary": "Core 以完整 SessionToken 管理 admission、Preparing、Capturing、Draining 与本地取消，按 token 匹配回调并释放迟到资源。Core 回到 idle 或 SourceDrained 不代表目标已识别、提交或撤回排队结果。",
+    "summary": "Core 以完整 SessionToken 管理 admission、Preparing、Capturing、Draining 与本地取消，按 token 匹配回调并释放迟到资源。Core 回到 idle 或 SourceDrained 不代表目标已识别、提交或撤回排队结果。 点阵字幕观察按同一完整 SessionToken 绑定；松键进入 Draining、取消或替换会话时撤销观察并清空字幕。",
     "sourcePaths": [
       "internal/bridge/core.go",
       "internal/bridge/action.go",
       "cmd/mimac/coordinator.go",
       "cmd/mimac/voice_binding.go",
       "internal/audiosession/runtime.go",
-      "internal/audiosession/pcm_reader.go"
+      "internal/audiosession/pcm_reader.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_interim.go"
     ]
   },
   {
@@ -145,7 +147,7 @@
   {
     "id": "apple-text-target",
     "title": "听写、字幕与最终文字投递",
-    "summary": "音频采集与识别不等待 AX 目标；临时字幕按会话编号更新。Apple/Hex 听写起始捕获绑定按下时 PID；Apple 仅在该请求、原窗口仍前台且 Secure Event Input 关闭时按需启用可写的 AXManualAccessibility，并有界读取焦点。Doubao 接收故障时只读保存原编辑器位置；仅在旧进程经原 route Close 确认退役、新实例唯一且空闲、原焦点仍匹配且用户仍选 Doubao 时重连输入上下文。身份未确认时不改编辑器或输入源。通用 Capture 与恢复读取均保持只读。最终句写入前复核原 PID、焦点与选区；没有目标或目标已变时在内存保留一句，供用户从托盘菜单显式复制；状态不确定的提交不重试。",
+    "summary": "音频采集与识别不等待 AX 目标；临时字幕按会话编号更新。Apple/Hex 听写起始捕获绑定按下时 PID；Apple 仅在该请求、原窗口仍前台且 Secure Event Input 关闭时按需启用可写的 AXManualAccessibility，并有界读取焦点。Doubao 接收故障时只读保存原编辑器位置；仅在旧进程经原 route Close 确认退役、新实例唯一且空闲、原焦点仍匹配且用户仍选 Doubao 时重连输入上下文。身份未确认时不改编辑器或输入源。通用 Capture 与恢复读取均保持只读。最终句写入前复核原 PID、焦点与选区；没有目标或目标已变时在内存保留一句，供用户从托盘菜单显式复制；状态不确定的提交不重试。 豆包与微信点阵字幕仅只读读取当前前台输入框的原生标记区；字幕清除和观察取消不改变输入法自己的预编辑或最终提交。",
     "sourcePaths": [
       "cmd/mimac/apple_audio.go",
       "cmd/mimac/audio_sessions.go",
@@ -161,7 +163,12 @@
       "internal/adapters/textoutput/testdata/TextMatrix.swift",
       "cmd/mimac/doubao_editor_recovery.go",
       "cmd/mimac/live_audio_route.go",
-      "cmd/mimac/live_audio_receiver.go"
+      "cmd/mimac/live_audio_receiver.go",
+      "cmd/mimac/voice_overlay.go",
+      "cmd/mimac/voice_interim.go",
+      "cmd/mimac/voice_live_text.go",
+      "internal/adapters/textoutput/marked_darwin.go",
+      "internal/adapters/textoutput/native_other.go"
     ]
   },
   {
@@ -240,7 +247,7 @@
   {
     "id": "voice-presentation-boundary",
     "title": "语音状态与呈现边界",
-    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵可选屏幕顶部（默认）或底部；底部保持点阵在 Dock 上方的安全间距。字幕随点阵位置自动放在屏幕内侧。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。空结果、取消和暂存待复制的文本沿中性退场路径。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。 Apple 和支持中间结果的 Hex 模型向点阵提供实时字幕；语音球在工作区底部居中，准备、收音和收尾取自 Core 当前会话。实验室的独占显示属于全局偏好，由各工具按能力处理。豆包和微信在触发听写前准备本地面板，本句本地提示显示后即可查找录音窗。豆包按窗口创建通知及限时复查识别本次唯一录音条，首次确认即移出，收尾后归位。微信在触发听写前准备隐藏的本地面板，仅在前台一致、初始无窗、当前只有本次新录音窗时暂时隐藏输入法。释放依据该窗退出微信的窗口列表。用户切换工具或关闭实验时归还显示控制。字幕仅使用匹配会话的临时识别文字，由无键盘焦点的单行窗口呈现。 豆包迟建浮窗在同次按压内由窗口通知唤醒，等待期间停用定时采样，结束后撤销发现。",
+    "summary": "通用设置可选MiMac语音球、点阵语音条或跟随语音工具，沿用现有持久偏好和插件运行时，插件页共用该设置入口。点阵可选屏幕顶部（默认）或底部；底部保持点阵在 Dock 上方的安全间距。字幕随点阵位置自动放在屏幕内侧。点阵将当前会话去直流的 RMS 和作业回执交给 Rust，在 MyGo 面板绘制；无需原生语音球或频谱分析，显式交付或错误才驱动终态。空结果、取消和暂存待复制的文本沿中性退场路径。跟随工具会关闭MiMac面板和频谱分析，工具自行决定是否显示提示。共用Runtime在Core gate后的PCM消费路径提供按token匹配的有界只读观测，源PCM不变。Core的准备、收音、结束快照只投影录音和所有权；目标思考未知保持false。浮动显示指定island，状态变化走既有JSON入口，频带保持固定SoA帧接口；token替换与隐藏清观察基线。原生显示按公开API下限、真实符号、布局与witness判定兼容，失败只关闭呈现。思考边与录音/控制权退出分别观察：island且非减少动态效果时，退出人格与X/Y共享0.3/0.8弹簧；其他场景直接复位。显式输入的组件与实窗验证不代替真实目标状态和真人随声验收。 Apple 和支持中间结果的 Hex 模型向点阵提供实时字幕；语音球在工作区底部居中，准备、收音和收尾取自 Core 当前会话。实验室的独占显示属于全局偏好，由各工具按能力处理。豆包和微信在触发听写前准备本地面板，本句本地提示显示后即可查找录音窗。豆包按窗口创建通知及限时复查识别本次唯一录音条，首次确认即移出，收尾后归位。微信在触发听写前准备隐藏的本地面板，仅在前台一致、初始无窗、当前只有本次新录音窗时暂时隐藏输入法。释放依据该窗退出微信的窗口列表。用户切换工具或关闭实验时归还显示控制。字幕仅使用匹配会话的临时识别文字，由无键盘焦点的单行窗口呈现。 豆包迟建浮窗在同次按压内由窗口通知唤醒，等待期间停用定时采样，结束后撤销发现。 点阵字幕复用现有单行 renderer：Apple/Hex 使用会话临时结果；豆包/微信仅在点阵字幕开启且 Core 会话有效时，绑定当前前台 PID 只读 AXTextInputMarkedRange。失焦、标记区清空、物理松键进入 Draining、取消或换会话时撤销观察并立即清空；输入法继续拥有预编辑和最终提交。",
     "sourcePaths": [
       "cmd/mimac/voice_presentation.go",
       "cmd/mimac/voice_overlay.go",
@@ -288,7 +295,10 @@
       "internal/adapters/windowlease/application_visibility.go",
       "internal/adapters/windowlease/native_visibility_darwin.go",
       "internal/adapters/windowlease/windowlease.go",
-      "internal/adapters/windowlease/native_darwin.go"
+      "internal/adapters/windowlease/native_darwin.go",
+      "cmd/mimac/voice_live_text.go",
+      "internal/adapters/textoutput/marked_darwin.go",
+      "internal/adapters/textoutput/native_other.go"
     ]
   },
   {

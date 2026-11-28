@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"unicode"
@@ -22,6 +23,7 @@ type voiceInterimFeed struct {
 type voiceInterimDraft struct {
 	Stable    string
 	Tentative string
+	Clear     bool
 }
 
 const (
@@ -84,6 +86,12 @@ func (f *voiceInterimFeed) WantsPartials(token bridge.SessionToken) bool {
 // Stable and tentative words are kept separate for visual emphasis. It never
 // queues text and never touches an editor or a final transcript.
 func (f *voiceInterimFeed) Publish(token bridge.SessionToken, stable, tentative string) bool {
+	return f.publish(context.Background(), token, stable, tentative)
+}
+
+// Check cancellation while holding the same lock that guards retirement. A
+// late editor read cannot repopulate a newly enabled view of the same token.
+func (f *voiceInterimFeed) publish(ctx context.Context, token bridge.SessionToken, stable, tentative string) bool {
 	if !f.WantsPartials(token) {
 		return false
 	}
@@ -93,11 +101,8 @@ func (f *voiceInterimFeed) Publish(token bridge.SessionToken, stable, tentative 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.enabled || f.token != token {
+	if !f.enabled || f.token != token || ctx.Err() != nil {
 		return false
-	}
-	if draft.Stable == "" && draft.Tentative == "" {
-		return true
 	}
 	f.draft = draft
 	return true
@@ -137,11 +142,11 @@ func (f *voiceInterimFeed) Clear() {
 // whitespace within each part, then caps retained bytes and scan work. If
 // stable text must be shortened, its head gives way so recent words remain.
 func boundVoiceInterim(stable, tentative string) (voiceInterimDraft, bool) {
-	stable, valid := normalizeVoiceInterimPart(stable, true)
+	stable, valid := normalizeVoiceInterimPart(stable)
 	if !valid {
 		return voiceInterimDraft{}, false
 	}
-	tentative, valid = normalizeVoiceInterimPart(tentative, false)
+	tentative, valid = normalizeVoiceInterimPart(tentative)
 	if !valid {
 		return voiceInterimDraft{}, false
 	}
@@ -152,44 +157,28 @@ func boundVoiceInterim(stable, tentative string) (voiceInterimDraft, bool) {
 		tentative = ""
 	}
 	if stable == "" && tentative == "" {
-		return voiceInterimDraft{}, true
+		return voiceInterimDraft{Clear: true}, true
 	}
 	if len(stable)+len(tentative) <= maxVoiceInterimBytes {
 		return voiceInterimDraft{Stable: stable, Tentative: tentative}, true
 	}
 
-	// Keep some room for a live tentative word, then give the remaining bytes
-	// to stable text. If stable is short, the tentative part can use the rest.
-	tentativeBudget := min(len(tentative), maxVoiceInterimBytes/4)
-	stableBudget := maxVoiceInterimBytes - tentativeBudget
-	if len(stable) < stableBudget {
-		tentativeBudget = min(len(tentative), maxVoiceInterimBytes-len(stable))
-		stableBudget = len(stable)
-	}
-	stable = truncateVoiceInterimStart(stable, stableBudget)
-	tentative = truncateVoiceInterimEnd(tentative, tentativeBudget)
+	// The newest words are at the end of the tentative span.
+	tentative = truncateVoiceInterimStart(tentative, maxVoiceInterimBytes)
+	stable = truncateVoiceInterimStart(stable, maxVoiceInterimBytes-len(tentative))
 	return voiceInterimDraft{Stable: stable, Tentative: tentative}, true
 }
 
-func normalizeVoiceInterimPart(text string, preserveEnd bool) (string, bool) {
+func normalizeVoiceInterimPart(text string) (string, bool) {
 	source := text
-	truncatedStart, truncatedEnd := false, false
+	var truncated bool
 	if len(source) > maxVoiceInterimScanBytes {
-		if preserveEnd {
-			start := len(source) - maxVoiceInterimScanBytes
-			for start < len(source) && !utf8.RuneStart(source[start]) {
-				start++
-			}
-			source = source[start:]
-			truncatedStart = true
-		} else {
-			end := maxVoiceInterimScanBytes
-			for end > 0 && !utf8.RuneStart(source[end]) {
-				end--
-			}
-			source = source[:end]
-			truncatedEnd = true
+		start := len(source) - maxVoiceInterimScanBytes
+		for start < len(source) && !utf8.RuneStart(source[start]) {
+			start++
 		}
+		source = source[start:]
+		truncated = true
 	}
 	var out strings.Builder
 	out.Grow(min(len(source), maxVoiceInterimBytes))
@@ -208,11 +197,8 @@ func normalizeVoiceInterimPart(text string, preserveEnd bool) (string, bool) {
 		}
 		out.WriteRune(r)
 	}
-	if truncatedStart {
+	if truncated {
 		return "…" + out.String(), true
-	}
-	if truncatedEnd {
-		out.WriteRune('…')
 	}
 	return out.String(), true
 }
@@ -249,26 +235,6 @@ func truncateVoiceInterimStart(text string, budget int) string {
 	}
 	result := marker + strings.TrimLeft(text[start:], " ")
 	return clipVoiceInterimEnd(result, budget)
-}
-
-func truncateVoiceInterimEnd(text string, budget int) string {
-	if budget <= 0 {
-		return ""
-	}
-	if len(text) <= budget {
-		return text
-	}
-	marker := "…"
-	contentBudget := max(0, budget-len(marker))
-	end := contentBudget
-	for end > 0 && !utf8.RuneStart(text[end]) {
-		end--
-	}
-	// Avoid ending on half a word when a boundary is readily available.
-	if boundary := strings.LastIndexFunc(text[:end], unicode.IsSpace); boundary >= 0 {
-		end = boundary
-	}
-	return text[:end] + marker
 }
 
 func clipVoiceInterimEnd(text string, budget int) string {
