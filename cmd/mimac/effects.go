@@ -81,6 +81,9 @@ func (d *deviceCoordinator) dispatchSequence(effects []bridge.Effect, state *eff
 				submitErr = errKeyEffectSinkUnavailable
 			} else {
 				submitErr = d.sink.Submit(batch)
+				if token, event := voiceShortcutReceipt(batch, effects[end:]); event != "" {
+					traceAudioSession(token.Device().Generation(), 0, token.ID(), event, submitErr)
+				}
 			}
 			if submitErr != nil {
 				state.errs = errors.Join(state.errs, submitErr)
@@ -227,6 +230,37 @@ func uncertainTapKeys(effects []bridge.Effect) []bridge.Key {
 		}
 	}
 	return keys
+}
+
+// Only classify a host shortcut batch immediately followed by a voice effect
+// for a known session. Ordinary keyboard mappings have no such receipt.
+func voiceShortcutReceipt(batch, tail []bridge.Effect) (bridge.SessionToken, string) {
+	if len(tail) == 0 || len(batch) == 0 {
+		return bridge.SessionToken{}, ""
+	}
+	token, ok := effectSessionToken(tail[0])
+	if !ok || token.ID() == 0 {
+		return bridge.SessionToken{}, ""
+	}
+	var kind string
+	for _, effect := range batch {
+		var code string
+		switch effect.(type) {
+		case bridge.KeyDownEffect:
+			code = "shortcut_down"
+		case bridge.KeyUpEffect:
+			code = "shortcut_up"
+		case bridge.TargetTapEffect:
+			code = "shortcut_tap"
+		default:
+			return bridge.SessionToken{}, ""
+		}
+		if kind != "" && kind != code {
+			return bridge.SessionToken{}, ""
+		}
+		kind = code
+	}
+	return token, kind
 }
 
 func effectSessionToken(effect bridge.Effect) (bridge.SessionToken, bool) {

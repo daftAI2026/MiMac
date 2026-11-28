@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
+	"mimac.local/mimac/internal/bridge"
 )
 
 func TestAudioTraceRecordRedactsTargetPayload(t *testing.T) {
@@ -25,6 +26,25 @@ func TestAudioTraceRecordRedactsTargetPayload(t *testing.T) {
 		want := "time=2026-11-24T08:00:00Z pid=42 generation=7 press=3 session=2 event=failed stage= result=" + test.want
 		if got != want {
 			t.Errorf("record = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestVoiceShortcutReceiptIdentifiesHostSubmissionOnly(t *testing.T) {
+	token := preparedAudioToken(t)
+	for _, tt := range []struct {
+		batch, tail []bridge.Effect
+		event       string
+	}{
+		{[]bridge.Effect{bridge.KeyDownEffect{}, bridge.KeyDownEffect{}}, []bridge.Effect{bridge.PrepareSourceEffect{Token: token}}, "shortcut_down"},
+		{[]bridge.Effect{bridge.KeyUpEffect{}}, []bridge.Effect{bridge.CloseGateEffect{Token: token}}, "shortcut_up"},
+		{[]bridge.Effect{bridge.TargetTapEffect{}}, []bridge.Effect{bridge.CloseGateEffect{Token: token}}, "shortcut_tap"},
+		{[]bridge.Effect{bridge.KeyUpEffect{}}, nil, ""},
+		{[]bridge.Effect{bridge.KeyDownEffect{}, bridge.KeyUpEffect{}}, []bridge.Effect{bridge.StopSourceEffect{Token: token}}, ""},
+	} {
+		id, event := voiceShortcutReceipt(tt.batch, tt.tail)
+		if event != tt.event || (event != "" && id != token) {
+			t.Fatalf("got %v %q want %q", id, event, tt.event)
 		}
 	}
 }
