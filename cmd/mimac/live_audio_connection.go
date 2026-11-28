@@ -39,10 +39,11 @@ type liveAudioConnection struct {
 	route    liveAudioRoute
 	startErr error
 
-	stateMu   sync.Mutex
-	closing   bool
-	isClosed  bool
-	closeGate chan struct{}
+	stateMu          sync.Mutex
+	closing          bool
+	isClosed         bool
+	discardUnclaimed bool
+	closeGate        chan struct{}
 }
 
 var (
@@ -73,6 +74,18 @@ func (c *liveAudioConnection) prepare(factory func(context.Context) (liveAudioRo
 		if err == nil && route == nil {
 			err = errLiveAudioRouteNil
 		}
+		if route != nil {
+			// Publish the exact route before Start so a cancelled deferred press
+			// can invalidate its unclaimed source even while Start is pending.
+			c.stateMu.Lock()
+			c.route = route
+			discard := c.discardUnclaimed
+			c.discardUnclaimed = false
+			c.stateMu.Unlock()
+			if discard {
+				discardUnclaimedPress(route)
+			}
+		}
 		if err == nil {
 			if cancelled := c.ctx.Err(); cancelled != nil {
 				err = cancelled
@@ -84,9 +97,51 @@ func (c *liveAudioConnection) prepare(factory func(context.Context) (liveAudioRo
 	if cancelled := c.ctx.Err(); cancelled != nil {
 		err = errors.Join(err, cancelled)
 	}
-	c.route = route
+	c.stateMu.Lock()
+	if c.route == nil {
+		c.route = route
+	}
 	c.startErr = err
+	discard := c.discardUnclaimed
+	c.discardUnclaimed = false
+	c.stateMu.Unlock()
+	if discard {
+		discardUnclaimedPress(route)
+	}
+	// Done is the handoff barrier for Prepare/Take. Publish it only after any
+	// construction-time cancellation has reached the route.
 	close(c.done)
+}
+
+// DiscardUnclaimedPress invalidates pre-armed data captured for a held voice
+// press that was cancelled before Runtime took ownership. A request made while
+// the route factory or Start is still running is carried to that exact route.
+func (c *liveAudioConnection) DiscardUnclaimedPress() {
+	if c == nil {
+		return
+	}
+	c.stateMu.Lock()
+	if c.closing || c.isClosed {
+		c.stateMu.Unlock()
+		return
+	}
+	route := c.route
+	if route == nil {
+		c.discardUnclaimed = true
+		c.stateMu.Unlock()
+		return
+	}
+	c.stateMu.Unlock()
+	discardUnclaimedPress(route)
+}
+
+func discardUnclaimedPress(route liveAudioRoute) {
+	if route == nil {
+		return
+	}
+	if discarder, ok := route.(interface{ DiscardUnclaimedPress() }); ok {
+		discarder.DiscardUnclaimedPress()
+	}
 }
 
 // Done closes when the factory and route Start call have completed. It does

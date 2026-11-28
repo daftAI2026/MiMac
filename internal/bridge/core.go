@@ -180,6 +180,13 @@ type connectedEvent struct{ device Device }
 type disconnectedEvent struct{ device Device }
 type voiceBeganEvent struct{ press PressToken }
 type voiceEndedEvent struct{ press PressToken }
+type deferredVoiceBeganEvent struct {
+	press   PressToken
+	binding Binding
+}
+type deferredVoiceReadyEvent struct{ press PressToken }
+type deferredVoicePromoteEvent struct{ press PressToken }
+type deferredVoiceCancelEvent struct{ press PressToken }
 type observedBeganEvent struct{ press PressToken }
 type targetActionBeganEvent struct {
 	press PressToken
@@ -223,30 +230,53 @@ type ordinaryBeganEvent struct {
 type ordinaryEndedEvent struct{ press PressToken }
 type confirmToggleIdleEvent struct{ keys []Key }
 
-func (connectedEvent) bridgeEvent()         {}
-func (disconnectedEvent) bridgeEvent()      {}
-func (voiceBeganEvent) bridgeEvent()        {}
-func (voiceEndedEvent) bridgeEvent()        {}
-func (observedBeganEvent) bridgeEvent()     {}
-func (targetActionBeganEvent) bridgeEvent() {}
-func (cancelToolActionsEvent) bridgeEvent() {}
-func (sourcePreparedEvent) bridgeEvent()    {}
-func (sourceFailedEvent) bridgeEvent()      {}
-func (sourceDrainedEvent) bridgeEvent()     {}
-func (timeoutEvent) bridgeEvent()           {}
-func (routeEvent) bridgeEvent()             {}
-func (scopeEvent) bridgeEvent()             {}
-func (configureEvent) bridgeEvent()         {}
-func (outputFailedEvent) bridgeEvent()      {}
-func (outputRecoveredEvent) bridgeEvent()   {}
-func (ordinaryBeganEvent) bridgeEvent()     {}
-func (ordinaryEndedEvent) bridgeEvent()     {}
-func (confirmToggleIdleEvent) bridgeEvent() {}
+func (connectedEvent) bridgeEvent()            {}
+func (disconnectedEvent) bridgeEvent()         {}
+func (voiceBeganEvent) bridgeEvent()           {}
+func (voiceEndedEvent) bridgeEvent()           {}
+func (deferredVoiceBeganEvent) bridgeEvent()   {}
+func (deferredVoiceReadyEvent) bridgeEvent()   {}
+func (deferredVoicePromoteEvent) bridgeEvent() {}
+func (deferredVoiceCancelEvent) bridgeEvent()  {}
+func (observedBeganEvent) bridgeEvent()        {}
+func (targetActionBeganEvent) bridgeEvent()    {}
+func (cancelToolActionsEvent) bridgeEvent()    {}
+func (sourcePreparedEvent) bridgeEvent()       {}
+func (sourceFailedEvent) bridgeEvent()         {}
+func (sourceDrainedEvent) bridgeEvent()        {}
+func (timeoutEvent) bridgeEvent()              {}
+func (routeEvent) bridgeEvent()                {}
+func (scopeEvent) bridgeEvent()                {}
+func (configureEvent) bridgeEvent()            {}
+func (outputFailedEvent) bridgeEvent()         {}
+func (outputRecoveredEvent) bridgeEvent()      {}
+func (ordinaryBeganEvent) bridgeEvent()        {}
+func (ordinaryEndedEvent) bridgeEvent()        {}
+func (confirmToggleIdleEvent) bridgeEvent()    {}
 
 func DeviceConnected(device Device) Event    { return connectedEvent{device: device} }
 func DeviceDisconnected(device Device) Event { return disconnectedEvent{device: device} }
 func VoiceBegan(press PressToken) Event      { return voiceBeganEvent{press: press} }
 func VoiceEnded(press PressToken) Event      { return voiceEndedEvent{press: press} }
+
+// DeferredVoiceBegan records a held physical voice press while the prior
+// session drains or the selected route is temporarily unavailable. It owns
+// no target action until VoiceRouteReady and PromoteDeferredVoice arrive.
+func DeferredVoiceBegan(press PressToken, binding Binding) Event {
+	return deferredVoiceBeganEvent{press: press, binding: binding.clone()}
+}
+
+// VoiceRouteReady acknowledges the existing route owner's readiness notice
+// for this exact still-held physical press.
+func VoiceRouteReady(press PressToken) Event { return deferredVoiceReadyEvent{press: press} }
+
+// PromoteDeferredVoice starts a deferred press only after the host has
+// revalidated its target and route. It is idempotent for stale press tokens.
+func PromoteDeferredVoice(press PressToken) Event { return deferredVoicePromoteEvent{press: press} }
+
+// CancelDeferredVoice forgets a pending start while retaining the physical
+// press ledger until its matching release arrives.
+func CancelDeferredVoice(press PressToken) Event { return deferredVoiceCancelEvent{press: press} }
 
 // ObservedBegan records a physical press that has no adopted ordinary-key
 // mapping. It never acquires a key lease; release it with OrdinaryEnded.
@@ -387,6 +417,12 @@ type sessionState struct {
 	resourceID string
 }
 
+type deferredVoiceState struct {
+	press   PressToken
+	binding Binding
+	ready   bool
+}
+
 type coreState struct {
 	hasDevice           bool
 	device              Device
@@ -405,6 +441,7 @@ type coreState struct {
 	outputFailureID     uint64
 	outputRecovered     bool
 	session             *sessionState
+	deferredVoice       *deferredVoiceState
 	lastAction          *ActionSnapshot
 	active              map[buttonSlot]activePress
 	leases              map[Key]map[leaseOwner]struct{}
@@ -475,6 +512,29 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 			return nil, fmt.Errorf("%w: invalid voice release", ErrInvalidInput)
 		}
 		c.pressEnded(e.press, &effects)
+	case deferredVoiceBeganEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid deferred voice press", ErrInvalidInput)
+		}
+		if err := e.binding.validate(); err != nil {
+			return nil, err
+		}
+		c.deferredVoiceBegan(e.press, e.binding, &effects)
+	case deferredVoiceReadyEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid deferred voice readiness", ErrInvalidInput)
+		}
+		c.deferredVoiceReady(e.press)
+	case deferredVoicePromoteEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid deferred voice promotion", ErrInvalidInput)
+		}
+		c.promoteDeferredVoice(e.press, &effects)
+	case deferredVoiceCancelEvent:
+		if !e.press.valid() {
+			return nil, fmt.Errorf("%w: invalid deferred voice cancellation", ErrInvalidInput)
+		}
+		c.cancelDeferredVoice(e.press)
 	case observedBeganEvent:
 		if !e.press.valid() {
 			return nil, fmt.Errorf("%w: invalid observed press", ErrInvalidInput)
@@ -530,6 +590,7 @@ func (c *Core) Step(event Event) ([]Effect, error) {
 			c.state.scopeKnown = true
 			c.state.scopeAvailable = e.available
 			if !e.available {
+				c.state.deferredVoice = nil
 				if c.state.session != nil && c.state.session.binding.policy != PolicyAudio {
 					c.cancelSession(&effects)
 				}
@@ -622,6 +683,7 @@ func (c *Core) teardownDevice(effects *[]Effect) {
 	c.cancelSession(effects)
 	c.releaseOrdinary(effects)
 	c.releaseOrphanLeases(effects)
+	c.state.deferredVoice = nil
 	c.state.active = make(map[buttonSlot]activePress)
 	c.finishOutputRecovery()
 }
@@ -637,7 +699,11 @@ func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
 	if !allowed {
 		return
 	}
-	binding := c.state.adopted.clone()
+	c.startVoiceSession(press, c.state.adopted, effects)
+}
+
+func (c *Core) startVoiceSession(press PressToken, binding Binding, effects *[]Effect) {
+	binding = binding.clone()
 	token := SessionToken{device: press.device, id: c.state.nextSessionID}
 	c.state.nextSessionID++
 	c.state.session = &sessionState{token: token, press: press, binding: binding, phase: PhasePreparing}
@@ -649,10 +715,64 @@ func (c *Core) voiceBegan(press PressToken, effects *[]Effect) {
 	*effects = append(*effects, PrepareSourceEffect{Token: token})
 }
 
+func (c *Core) deferredVoiceBegan(press PressToken, binding Binding, effects *[]Effect) {
+	if !c.beginPress(press, ownerVoice, nil) {
+		return
+	}
+	if c.state.deferredVoice != nil {
+		return
+	}
+	if session := c.state.session; session != nil && session.phase != PhaseDraining {
+		// A deferred start is only meaningful after the previous physical press
+		// has ended. During capture/preparation, keep this edge observed only.
+		slot := buttonSlot{device: press.device, button: press.buttonID}
+		active := c.state.active[slot]
+		active.kind = ownerObserved
+		c.state.active[slot] = active
+		return
+	}
+	c.state.deferredVoice = &deferredVoiceState{press: press, binding: binding.clone()}
+}
+
+func (c *Core) deferredVoiceReady(press PressToken) {
+	pending := c.state.deferredVoice
+	if pending == nil || pending.press != press || !c.deferredPressHeld(press) {
+		return
+	}
+	pending.ready = true
+}
+
+func (c *Core) cancelDeferredVoice(press PressToken) {
+	if pending := c.state.deferredVoice; pending != nil && pending.press == press {
+		c.state.deferredVoice = nil
+	}
+}
+
+func (c *Core) promoteDeferredVoice(press PressToken, effects *[]Effect) {
+	if !c.CanPromoteDeferredVoice(press) {
+		return
+	}
+	pending := c.state.deferredVoice
+	c.state.deferredVoice = nil
+	c.startVoiceSession(press, pending.binding, effects)
+}
+
+func (c *Core) deferredPressHeld(press PressToken) bool {
+	if c == nil || !c.matchesCurrentDevice(press) {
+		return false
+	}
+	active, ok := c.state.active[buttonSlot{device: press.device, button: press.buttonID}]
+	return ok && active.token == press && active.kind == ownerVoice
+}
+
 // voiceStartAdmission is the side-effect-free session admission rule shared
 // by CanBeginVoice and voiceBegan. reason is zero when the existing behavior
 // rejects silently; otherwise it preserves the BlockedEffect reason/order.
 func (c *Core) voiceStartAdmission() (allowed bool, reason BlockReason) {
+	return c.voiceBindingAdmission(c.state.adopted)
+}
+
+func (c *Core) voiceBindingAdmission(binding Binding) (allowed bool, reason BlockReason) {
 	if c == nil || !c.initialized || c.state.outputFailureID != 0 || !c.state.configured {
 		return false, 0
 	}
@@ -662,7 +782,6 @@ func (c *Core) voiceStartAdmission() (allowed bool, reason BlockReason) {
 	if !c.state.routeAvailable || c.state.session != nil {
 		return false, 0
 	}
-	binding := c.state.adopted
 	if binding.policy != PolicyAudio && !c.state.scopeAvailable {
 		return false, 0
 	}
@@ -673,6 +792,20 @@ func (c *Core) voiceStartAdmission() (allowed bool, reason BlockReason) {
 		return false, BlockTapConflictsWithHeldKey
 	}
 	return true, 0
+}
+
+// CanPromoteDeferredVoice reports whether this exact, still-held press is
+// ready to start under the binding frozen when it was pressed.
+func (c *Core) CanPromoteDeferredVoice(press PressToken) bool {
+	if c == nil || !c.initialized || !press.valid() || !c.matchesCurrentDevice(press) {
+		return false
+	}
+	pending := c.state.deferredVoice
+	if pending == nil || pending.press != press || !pending.ready || press.pressID != c.state.lastPressID || !c.deferredPressHeld(press) || c.state.session != nil {
+		return false
+	}
+	allowed, _ := c.voiceBindingAdmission(pending.binding)
+	return allowed
 }
 
 // CanBeginVoice reports whether VoiceBegan for press would pass this Core's
@@ -836,6 +969,9 @@ func (c *Core) pressEnded(press PressToken, effects *[]Effect) {
 		return
 	}
 	delete(c.state.active, slot)
+	if pending := c.state.deferredVoice; pending != nil && pending.press == press {
+		c.state.deferredVoice = nil
+	}
 	c.finishOutputRecovery()
 	if active.kind == ownerObserved {
 		return
@@ -959,6 +1095,7 @@ func (c *Core) outputFailed(failureID uint64, uncertainToggleKeys []Key, effects
 	c.state.lastOutputFailureID = failureID
 	c.state.outputFailureID = failureID
 	c.state.outputRecovered = false
+	c.state.deferredVoice = nil
 	for _, key := range uncertainToggleKeys {
 		c.state.uncertain[key] = struct{}{}
 	}
@@ -1117,13 +1254,17 @@ type Snapshot struct {
 	Configured bool
 	// OutputFailureID is nonzero while system key output is faulted or waiting
 	// for the sink to confirm cleanup and all physical presses to end.
-	OutputFailureID uint64
-	Adopted         Binding
-	HasPending      bool
-	Pending         Binding
-	HasSession      bool
-	Session         SessionSnapshot
-	LastAction      *ActionSnapshot
+	OutputFailureID      uint64
+	Adopted              Binding
+	HasPending           bool
+	Pending              Binding
+	HasSession           bool
+	Session              SessionSnapshot
+	HasDeferredVoice     bool
+	DeferredVoice        PressToken
+	DeferredVoiceReady   bool
+	DeferredVoiceBinding Binding
+	LastAction           *ActionSnapshot
 	// PressedButtons lists every physical press still active, regardless of
 	// whether it owns a voice session or an ordinary key lease.
 	PressedButtons []PressToken
@@ -1163,6 +1304,12 @@ func (c *Core) Snapshot() Snapshot {
 			Binding: current.binding.clone(),
 			Phase:   current.phase,
 		}
+	}
+	if pending := c.state.deferredVoice; pending != nil {
+		s.HasDeferredVoice = true
+		s.DeferredVoice = pending.press
+		s.DeferredVoiceReady = pending.ready
+		s.DeferredVoiceBinding = pending.binding.clone()
 	}
 	if last := c.state.lastAction; last != nil {
 		action := last.clone()

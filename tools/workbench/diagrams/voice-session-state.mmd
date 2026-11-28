@@ -1,7 +1,11 @@
 flowchart TD
     idle["Idle"] -->|合法物理按下| admission["admission：configured、route 可用、无冲突且无活动会话"]
     admission -->|通过：冻结 binding 与 session token| preparing["Preparing"]
-    admission -->|拒绝：不发语音效果| idle
+    admission -->|选定输入法的路由正在准备，或上一按已松开且仍在排空| pending["保留当前实体按压与选定动作"]
+    pending -->|上一句结束、路由就绪、同一按仍按住且目标复核通过| preparing
+    pending -->|先松键、换设备或换动作| withdraw["撤销本按，丢弃尚未交付的声音"]
+    withdraw --> idle
+    admission -->|其他不满足条件的按压| idle
     preparing -->|准备回调到达| prepared["SourcePrepared(token, resourceID)"]
     draining -->|允许尾段时准备回调到达| prepared
     cancel -->|取消后的迟到回调| prepared

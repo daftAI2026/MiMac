@@ -273,6 +273,162 @@ func TestVoiceAudioConfigureIsPendingUntilFrozenSessionDrains(t *testing.T) {
 	}
 }
 
+func TestVoiceAudioFreshPressDuringDrainPromotesAfterOldDrainOnce(t *testing.T) {
+	first := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	second := voiceAudioTestPlan(t, bridge.ActionTap, bridge.RequestToggle, bridge.RequestNone, "RightOption")
+	d, device, _ := newVoiceAudioTestCoordinator(t, first)
+	current := first
+	d.resolveVoiceAction = func() (bridge.ActionPlan, error) { return current, nil }
+	d.voiceDeferralIdentity = func() (deferredAudioRouteIdentity, bool) {
+		return deferredAudioRouteIdentity{generation: device.Generation(), toolID: "tool", appPath: "/Applications/tool.app"}, true
+	}
+	preflightCalls := 0
+	d.beforeAudioStart = func() error { preflightCalls++; return nil }
+
+	// Physical up for the old sentence is delivered before the next physical
+	// down, but its local receiver drain has not completed yet.
+	firstPress := voiceAudioTestPress(t, device, 1)
+	acceptVoiceAudioEdge(t, d, device, firstPress, devices.EdgeDown)
+	firstSession := d.core.Snapshot().Session
+	if err := d.step(bridge.SourcePrepared(firstSession.Token, "first-source")); err != nil {
+		t.Fatal(err)
+	}
+	acceptVoiceAudioEdge(t, d, device, firstPress, devices.EdgeUp)
+	if snapshot := d.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Phase != bridge.PhaseDraining || len(snapshot.PressedButtons) != 0 {
+		t.Fatalf("first up was not retired before the next down: %+v", snapshot)
+	}
+
+	current = second
+	secondPress := voiceAudioTestPress(t, device, 2)
+	acceptVoiceAudioEdge(t, d, device, secondPress, devices.EdgeDown)
+	snapshot := d.core.Snapshot()
+	if !snapshot.HasSession || snapshot.Session.Token != firstSession.Token || !snapshot.HasDeferredVoice ||
+		snapshot.DeferredVoice != secondPress || !snapshot.DeferredVoiceReady {
+		t.Fatalf("rapid fresh press was not held behind the old drain: %+v", snapshot)
+	}
+	if got := countEffectName(d.audio.(*routedEffectsAudioSink).effects, "PrepareSourceEffect"); got != 1 {
+		t.Fatalf("rapid press prepared before old SourceDrained: PrepareSource=%d", got)
+	}
+
+	if err := d.step(bridge.SourceDrained(firstSession.Token)); err != nil {
+		t.Fatal(err)
+	}
+	preflightCalls = 0
+	if !d.resumeDeferredVoice() {
+		t.Fatalf("held next press did not promote after old drain: %+v", d.core.Snapshot())
+	}
+	secondSession := d.core.Snapshot().Session
+	if secondSession.Press != secondPress || secondSession.Binding.Policy() != bridge.PolicyToggle || preflightCalls != 1 {
+		t.Fatalf("promoted gesture identity/binding/preflight = %+v calls=%d", secondSession, preflightCalls)
+	}
+	if got := len(voiceAudioTargetTaps(d.sink.(*routedEffectsKeySink))); got != 1 {
+		t.Fatalf("toggle start taps after promotion = %d, want exactly one", got)
+	}
+
+	if err := d.step(bridge.SourcePrepared(secondSession.Token, "second-source")); err != nil {
+		t.Fatal(err)
+	}
+	acceptVoiceAudioEdge(t, d, device, secondPress, devices.EdgeUp)
+	if err := d.step(bridge.SourceDrained(secondSession.Token)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(voiceAudioTargetTaps(d.sink.(*routedEffectsKeySink))); got != 2 {
+		t.Fatalf("toggle start/finish taps = %d, want one pair", got)
+	}
+	if snapshot := d.core.Snapshot(); snapshot.HasSession || snapshot.HasDeferredVoice || len(snapshot.PressedButtons) != 0 || len(snapshot.HeldKeys) != 0 {
+		t.Fatalf("rapid drain sequence left held state: %+v", snapshot)
+	}
+}
+
+func TestVoiceAudioDeferredPressReleaseBeforeRouteReadyCannotPromote(t *testing.T) {
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	d, device, _ := newVoiceAudioTestCoordinator(t, plan)
+	ready := false
+	d.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
+		if !ready {
+			return bridge.Binding{}, errAudioSessionResourcesNotReady
+		}
+		return voiceAudioBindingForAction(plan)
+	}
+	d.voiceDeferralIdentity = func() (deferredAudioRouteIdentity, bool) {
+		return deferredAudioRouteIdentity{generation: device.Generation(), toolID: "tool", appPath: "/Applications/tool.app"}, true
+	}
+	if err := d.step(bridge.RouteAvailable(false)); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPress := voiceAudioTestPress(t, device, 1)
+	acceptVoiceAudioEdge(t, d, device, firstPress, devices.EdgeDown)
+	if snapshot := d.core.Snapshot(); !snapshot.HasDeferredVoice || snapshot.DeferredVoice != firstPress || snapshot.DeferredVoiceReady || len(snapshot.PressedButtons) != 1 {
+		t.Fatalf("route-unready press was not retained as one held gesture: %+v", snapshot)
+	}
+	if got := countEffectName(d.audio.(*routedEffectsAudioSink).effects, "PrepareSourceEffect"); got != 0 {
+		t.Fatalf("route-unready press prepared audio before readiness: %d", got)
+	}
+
+	// The physical up wins the race with both the readiness callback and
+	// SourceDrained. It cancels Core ownership and asks the route to discard its
+	// unclaimed prepared stream through the existing host callback.
+	discardCalls := 0
+	d.discardDeferredVoice = func(bridge.ActionPlan) { discardCalls++ }
+	acceptVoiceAudioEdge(t, d, device, firstPress, devices.EdgeUp)
+	if snapshot := d.core.Snapshot(); snapshot.HasDeferredVoice || len(snapshot.PressedButtons) != 0 || d.deferredVoice != nil || discardCalls != 1 {
+		t.Fatalf("release did not retire pending gesture/source: snapshot=%+v metadata=%+v discards=%d", snapshot, d.deferredVoice, discardCalls)
+	}
+
+	ready = true
+	if err := d.step(bridge.RouteAvailable(true)); err != nil {
+		t.Fatal(err)
+	}
+	if d.resumeDeferredVoice() || d.core.Snapshot().HasSession {
+		t.Fatalf("ready callback replayed the released press: %+v", d.core.Snapshot())
+	}
+	if got := countEffectName(d.audio.(*routedEffectsAudioSink).effects, "PrepareSourceEffect"); got != 0 {
+		t.Fatalf("released press created a late source: %d", got)
+	}
+
+	secondPress := voiceAudioTestPress(t, device, 2)
+	acceptVoiceAudioEdge(t, d, device, secondPress, devices.EdgeDown)
+	if snapshot := d.core.Snapshot(); !snapshot.HasSession || snapshot.Session.Press != secondPress || snapshot.Session.Token.ID() != 1 {
+		t.Fatalf("new fresh press did not start independently after cancellation: %+v", snapshot)
+	}
+}
+
+func TestVoiceAudioDeferredPressIsCancelledWhenTargetIdentityChanges(t *testing.T) {
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	d, device, _ := newVoiceAudioTestCoordinator(t, plan)
+	ready := false
+	d.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
+		if !ready {
+			return bridge.Binding{}, errAudioSessionResourcesNotReady
+		}
+		return voiceAudioBindingForAction(plan)
+	}
+	identity := deferredAudioRouteIdentity{generation: device.Generation(), toolID: "target-a", appPath: "/Applications/target-a.app"}
+	d.voiceDeferralIdentity = func() (deferredAudioRouteIdentity, bool) { return identity, true }
+	discardCalls := 0
+	d.discardDeferredVoice = func(bridge.ActionPlan) { discardCalls++ }
+	if err := d.step(bridge.RouteAvailable(false)); err != nil {
+		t.Fatal(err)
+	}
+	press := voiceAudioTestPress(t, device, 1)
+	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeDown)
+
+	identity = deferredAudioRouteIdentity{generation: device.Generation(), toolID: "target-b", appPath: "/Applications/target-b.app"}
+	d.validateDeferredVoice()
+	if snapshot := d.core.Snapshot(); snapshot.HasDeferredVoice || len(snapshot.PressedButtons) != 1 || discardCalls != 1 {
+		t.Fatalf("target change did not cancel only the pending start: snapshot=%+v discard=%d", snapshot, discardCalls)
+	}
+	ready = true
+	if err := d.step(bridge.RouteAvailable(true)); err != nil {
+		t.Fatal(err)
+	}
+	if d.resumeDeferredVoice() || d.core.Snapshot().HasSession {
+		t.Fatalf("changed target received the old held press: %+v", d.core.Snapshot())
+	}
+	acceptVoiceAudioEdge(t, d, device, press, devices.EdgeUp)
+}
+
 func TestVoiceAudioNilHookKeepsControlOnlyBehavior(t *testing.T) {
 	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
 	d, device, _ := newVoiceAudioTestCoordinator(t, plan)

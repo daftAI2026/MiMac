@@ -15,19 +15,22 @@ import (
 type liveAudioConnectionTestRoute struct {
 	mu sync.Mutex
 
-	startErr    error
-	currentErr  error
-	sourceFault error
-	ready       bool
-	changes     chan struct{}
-	closeErrors []error
-	closeEnter  chan struct{}
-	closeBlock  <-chan struct{}
-	resources   audiosession.Resources
+	startErr     error
+	currentErr   error
+	sourceFault  error
+	ready        bool
+	changes      chan struct{}
+	closeErrors  []error
+	closeEnter   chan struct{}
+	closeBlock   <-chan struct{}
+	discardEnter chan struct{}
+	discardBlock <-chan struct{}
+	resources    audiosession.Resources
 
 	startCalls   int
 	prepareCalls int
 	closeCalls   int
+	discardCalls int
 }
 
 func newLiveAudioConnectionTestRoute() *liveAudioConnectionTestRoute {
@@ -97,6 +100,20 @@ func (r *liveAudioConnectionTestRoute) Close(context.Context) error {
 	return err
 }
 
+func (r *liveAudioConnectionTestRoute) DiscardUnclaimedPress() {
+	r.mu.Lock()
+	r.discardCalls++
+	entered, unblock := r.discardEnter, r.discardBlock
+	r.discardEnter = nil
+	r.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if unblock != nil {
+		<-unblock
+	}
+}
+
 func (r *liveAudioConnectionTestRoute) calls() (start, prepare, close int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -153,6 +170,66 @@ func TestLiveAudioConnectionWaitsForDoneAndForwardsRoute(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 	waitLiveAudioClosed(t, connection)
+}
+
+func TestLiveAudioConnectionCarriesUnclaimedDiscardAcrossConstruction(t *testing.T) {
+	route := newLiveAudioConnectionTestRoute()
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+		close(factoryEntered)
+		<-releaseFactory
+		return route, nil
+	})
+	<-factoryEntered
+	connection.DiscardUnclaimedPress()
+
+	close(releaseFactory)
+	waitLiveAudioDone(t, connection)
+	route.mu.Lock()
+	discardCalls := route.discardCalls
+	route.mu.Unlock()
+	if discardCalls != 1 {
+		t.Fatalf("construction-time discard calls = %d, want 1", discardCalls)
+	}
+	connection.DiscardUnclaimedPress()
+	route.mu.Lock()
+	discardCalls = route.discardCalls
+	route.mu.Unlock()
+	if discardCalls != 2 {
+		t.Fatalf("ready-route discard calls = %d, want 2", discardCalls)
+	}
+	if err := connection.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLiveAudioConnectionPublishesDoneAfterPendingDiscard(t *testing.T) {
+	route := newLiveAudioConnectionTestRoute()
+	route.discardEnter = make(chan struct{})
+	releaseDiscard := make(chan struct{})
+	route.discardBlock = releaseDiscard
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	connection := newLiveAudioConnection(func(context.Context) (liveAudioRoute, error) {
+		close(factoryEntered)
+		<-releaseFactory
+		return route, nil
+	})
+	<-factoryEntered
+	connection.DiscardUnclaimedPress()
+	close(releaseFactory)
+	<-route.discardEnter
+	select {
+	case <-connection.Done():
+		t.Fatal("Done closed before the pending discard reached the route")
+	default:
+	}
+	close(releaseDiscard)
+	waitLiveAudioDone(t, connection)
+	if err := connection.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 }
 
 func TestLiveAudioConnectionCloseCancelsAndClosesPartialRoute(t *testing.T) {

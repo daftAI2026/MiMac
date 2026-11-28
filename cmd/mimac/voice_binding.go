@@ -14,6 +14,8 @@ func (s *shell) syncVoiceBinding() {
 	}
 	s.blockUnpreparedLiveAudio()
 	s.coordinator.voiceButton = s.voiceButtonID()
+	s.coordinator.voiceDeferralIdentity = s.voiceDeferralIdentity
+	s.coordinator.discardDeferredVoice = s.discardDeferredVoiceSource
 	s.coordinator.resolveLocalVoice = func() (bridge.Binding, bool, error) {
 		if !s.directTextVoiceSelected() {
 			return bridge.Binding{}, false, nil
@@ -29,6 +31,50 @@ func (s *shell) syncVoiceBinding() {
 		}
 		return s.selectedVoiceAction()
 	}
+	s.coordinator.validateDeferredVoice()
+}
+
+func (s *shell) discardDeferredVoiceSource(plan bridge.ActionPlan) {
+	if s == nil || s.coordinator == nil || s.coordinator.core == nil {
+		return
+	}
+	connection := s.liveAudio.connection
+	if connection == nil {
+		return
+	}
+	snapshot := s.coordinator.core.Snapshot()
+	tool := s.desiredLiveAudioTool()
+	if !snapshot.Connected || snapshot.Generation != s.liveAudio.generation || snapshot.Generation != s.remoteState.reservationGeneration ||
+		tool == nil || tool.id != plan.Spec().ToolID || tool.id != s.liveAudio.toolID || tool.snapshot.AppPath == "" || tool.snapshot.AppPath != s.liveAudio.appPath {
+		return
+	}
+	connection.DiscardUnclaimedPress()
+}
+
+// voiceDeferralIdentity limits a held pending gesture to the same HID
+// generation, reservation, selected action revision and installed target.
+// A missing or failed route is eligible only while its existing bounded
+// recovery path is active; it does not initiate another connection attempt.
+func (s *shell) voiceDeferralIdentity() (deferredAudioRouteIdentity, bool) {
+	if s == nil || s.closing || s.coordinator == nil || s.coordinator.core == nil || !s.remoteHasReservation() {
+		return deferredAudioRouteIdentity{}, false
+	}
+	snapshot := s.coordinator.core.Snapshot()
+	tool := s.desiredLiveAudioTool()
+	if !snapshot.Connected || snapshot.Generation == 0 || snapshot.Generation != s.remoteState.reservationGeneration || tool == nil || tool.snapshot.AppPath == "" {
+		return deferredAudioRouteIdentity{}, false
+	}
+	if connection := s.liveAudio.connection; connection != nil {
+		if s.liveAudio.toolID != tool.id || s.liveAudio.appPath != tool.snapshot.AppPath || s.liveAudio.generation != snapshot.Generation {
+			return deferredAudioRouteIdentity{}, false
+		}
+		if connection.Err() != nil && !s.liveAudio.recoveryAttempted && !s.liveAudio.retiring {
+			return deferredAudioRouteIdentity{}, false
+		}
+	} else if !s.liveAudio.retiring && !s.liveAudio.recoveryAttempted {
+		return deferredAudioRouteIdentity{}, false
+	}
+	return deferredAudioRouteIdentity{generation: snapshot.Generation, toolID: tool.id, appPath: tool.snapshot.AppPath}, true
 }
 
 // Selection reads the adapter's current, verified command contract. It never

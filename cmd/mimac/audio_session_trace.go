@@ -40,7 +40,7 @@ func traceVoiceEdge(press bridge.PressToken, state bridge.Snapshot, event string
 		return
 	}
 	record := audioTraceRecord(time.Now(), os.Getpid(), press.Device().Generation(), press.PressID(), state.Session.Token.ID(), event, err)
-	if event == "press" && state.HasSession && state.Session.Press == press {
+	if (event == "press" || event == "press_promoted") && state.HasSession && state.Session.Press == press {
 		switch state.Session.Binding.Policy() {
 		case bridge.PolicyExactEdge:
 			record += " end_policy=release_edge"
