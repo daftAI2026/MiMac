@@ -81,7 +81,7 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 python3 script/inspect_audio_session_trace.py --trace "$HOME/Library/Application Support/MiMac/audio-session.log" --pid "$PID" --start "$START_UTC" --end "$END_UTC"
 ```
 
-摘要只读取该日志的八个固定字段，不打开音频或听写正文。只有 `press` 记录里的非零 session 才作为该 press 接纳的 session；`press_during_session` 是新 press，其 `session` 仅作旧会话引用，不接收旧句的 `prepared`/`drained`/`failed` 回执。回执按 PID、generation 和接纳的 session 精确关联。范围内没有终态时标为 `unknown`，不会从释放或其他事件推断完成。`failure_count` 是失败 press 数，不是错误日志行数。可选 `--voice-report PATH` 用既有 `inspect_voice_report.py` 单独摘要本地 I/O 计数；报告没有 PID，因此会明确保持未关联，不按可重复的 session 编号合并。退出码 1 表示有失败、未知终态或未匹配生命周期事件，2 表示输入无效。
+摘要只读取该日志的固定字段，不打开音频或听写正文。旧记录的八字段格式继续可读；冻结基线增加的第九字段 `end_policy` 只接受 `release_edge`、`release_after_drain`、`toggle`、`audio_only`。普通 `press` 和 `press_promoted` 中非零 session 才表示实际接纳。`press_deferred` 的 session 只引用旧会话；后续 `press_promoted`（兼容旧 `press`）才分配新 session。`press_deferred_released` 或 `press_deferred_cancelled` 表示未接纳；没有 promotion 或最终释放/取消记录则保持 `unknown`。因此临近到达的旧句 `prepared`/`drained`/`failed` 不会归给 pending press。生命周期回执按 PID、generation 和实际接纳的 session 精确关联。`failure_count` 是失败 press 数，不是错误日志行数。可选 `--voice-report PATH` 用既有 `inspect_voice_report.py` 单独摘要本地 I/O 计数；报告没有 PID，因此会明确保持未关联，不按可重复的 session 编号合并。退出码 1 表示有失败、未知终态或未匹配生命周期事件，2 表示输入无效。
 
 ### Verify the ordinary-launch audio route
 

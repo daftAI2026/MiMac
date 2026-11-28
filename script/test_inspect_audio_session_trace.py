@@ -62,6 +62,101 @@ class AudioSessionTraceInspectionTests(unittest.TestCase):
         self.assertEqual(second["failure_codes"][0]["event"], "audio_binding_unready")
         self.assertEqual(result["failure_count"], 1)
 
+    def test_deferred_press_promotes_to_its_new_session_after_old_drain(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=1, session=8, event="press"),
+            row("2026-11-28T10:00:02Z", session=8, event="prepared"),
+            row("2026-11-28T10:00:03Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:04Z", session=8, event="drained"),
+            row("2026-11-28T10:00:05Z", press=2, session=9, event="press_promoted"),
+            row("2026-11-28T10:00:06Z", session=9, event="prepared"),
+            row("2026-11-28T10:00:07Z", session=9, event="drained"),
+        ])
+        first, second = result["presses"]
+        self.assertEqual((first["accepted_session_id"], first["terminal"]), (8, "drained"))
+        self.assertEqual(second["press_event"], "press_deferred")
+        self.assertEqual(second["session_field_reference_id"], 8)
+        self.assertEqual(second["accepted_session_id"], 9)
+        self.assertEqual(second["acceptance_event"], "press_promoted")
+        self.assertEqual(second["terminal"], "drained")
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["unknown_count"], 0)
+
+    def test_deferred_release_stays_unaccepted_when_old_drain_arrives(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=1, session=8, event="press"),
+            row("2026-11-28T10:00:02Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:03Z", session=8, event="drained"),
+            row("2026-11-28T10:00:04Z", press=2, session=8, event="press_deferred_released"),
+        ])
+        first, second = result["presses"]
+        self.assertEqual(first["terminal"], "drained")
+        self.assertEqual(second["session_field_reference_id"], 8)
+        self.assertIsNone(second["accepted_session_id"])
+        self.assertEqual(second["resolution_event"], "press_deferred_released")
+        self.assertEqual(second["terminal"], "not_accepted")
+        self.assertEqual(result["failure_count"], 0)
+
+    def test_legacy_press_receipt_can_resolve_deferred_press(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:02Z", session=8, event="drained"),
+            row("2026-11-28T10:00:03Z", press=2, session=9, event="press"),
+            row("2026-11-28T10:00:04Z", session=9, event="prepared"),
+            row("2026-11-28T10:00:05Z", session=9, event="drained"),
+        ])
+        pending = result["presses"][0]
+        self.assertEqual(pending["accepted_session_id"], 9)
+        self.assertEqual(pending["acceptance_event"], "press")
+        self.assertEqual(pending["terminal"], "drained")
+
+    def test_deferred_promotion_cannot_reuse_old_session_reference(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:02Z", press=2, session=8, event="press_promoted"),
+            row("2026-11-28T10:00:03Z", session=8, event="drained"),
+        ])
+        pending = result["presses"][0]
+        self.assertIsNone(pending["accepted_session_id"])
+        self.assertEqual(pending["terminal"], "unknown")
+        self.assertEqual(result["unmatched_lifecycle_event_count"], 1)
+        self.assertEqual(result["unknown_count"], 1)
+
+    def test_deferred_pending_without_promotion_or_release_is_unknown(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=1, session=8, event="press"),
+            row("2026-11-28T10:00:02Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:03Z", session=8, event="drained"),
+        ])
+        first, second = result["presses"]
+        self.assertEqual(first["terminal"], "drained")
+        self.assertIsNone(second["accepted_session_id"])
+        self.assertEqual(second["terminal"], "unknown")
+        self.assertEqual(result["unknown_count"], 1)
+
+    def test_pending_error_without_final_receipt_stays_unknown(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=2, session=8, event="press_deferred"),
+            row("2026-11-28T10:00:02Z", press=2, event="route_preflight_rejected", result="error"),
+        ])
+        pending = result["presses"][0]
+        self.assertEqual(pending["terminal"], "unknown")
+        self.assertEqual(pending["failure_codes"][0]["event"], "route_preflight_rejected")
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["unknown_count"], 1)
+
+    def test_deferred_cancel_with_error_is_one_pre_session_failure(self):
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=2, event="press_deferred"),
+            row("2026-11-28T10:00:02Z", press=2, event="press_deferred_cancelled",
+                stage="action_preflight", result="error"),
+        ])
+        pending = result["presses"][0]
+        self.assertIsNone(pending["accepted_session_id"])
+        self.assertEqual(pending["resolution_event"], "press_deferred_cancelled")
+        self.assertEqual(pending["terminal"], "failed_before_session")
+        self.assertEqual(result["failure_count"], 1)
+
     def test_missing_terminal_is_unknown_even_after_prepared(self):
         result = self.inspect_rows([
             row("2026-11-28T10:00:01Z", press=3, session=9, event="press"),
@@ -119,6 +214,30 @@ class AudioSessionTraceInspectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected fixed-field shape") as caught:
             parse_trace_line(line, 1)
         self.assertNotIn("private", str(caught.exception))
+
+    def test_old_eight_field_trace_remains_compatible(self):
+        parsed = parse_trace_line(row("2026-11-28T10:00:01Z", press=1, session=8, event="press"), 1)
+        self.assertIsNone(parsed["end_policy"])
+
+    def test_new_ninth_field_accepts_only_known_end_policies(self):
+        for policy in ("release_edge", "release_after_drain", "toggle", "audio_only"):
+            with self.subTest(policy=policy):
+                parsed = parse_trace_line(
+                    row("2026-11-28T10:00:01Z", press=1, session=8, event="press") +
+                    f" end_policy={policy}", 1)
+                self.assertEqual(parsed["end_policy"], policy)
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=1, session=8, event="press") +
+            " end_policy=release_after_drain",
+            row("2026-11-28T10:00:02Z", session=8, event="drained"),
+        ])
+        self.assertEqual(result["presses"][0]["end_policy"], "release_after_drain")
+        with self.assertRaisesRegex(ValueError, "invalid end policy"):
+            parse_trace_line(row("2026-11-28T10:00:01Z", event="press") + " end_policy=unknown", 1)
+        with self.assertRaisesRegex(ValueError, "end policy on non-acceptance"):
+            parse_trace_line(row("2026-11-28T10:00:01Z", event="release") + " end_policy=toggle", 1)
+        with self.assertRaisesRegex(ValueError, "end policy on non-acceptance"):
+            parse_trace_line(row("2026-11-28T10:00:01Z", event="press") + " end_policy=toggle", 1)
 
     def test_cli_requires_explicit_process_and_time_scope_and_emits_no_payload(self):
         with tempfile.TemporaryDirectory() as directory:

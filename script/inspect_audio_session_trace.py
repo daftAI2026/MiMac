@@ -15,7 +15,11 @@ from inspect_voice_report import inspect as inspect_voice_report
 
 
 TRACE_FIELDS = {"time", "pid", "generation", "press", "session", "event", "stage", "result"}
-PRESS_EDGE_EVENTS = {"press", "press_during_session", "press_without_session"}
+OPTIONAL_TRACE_FIELDS = {"end_policy"}
+END_POLICIES = {"release_edge", "release_after_drain", "toggle", "audio_only"}
+PRESS_EDGE_EVENTS = {"press", "press_during_session", "press_without_session", "press_deferred"}
+ACCEPTANCE_EVENTS = {"press", "press_promoted"}
+DEFERRED_RESOLUTION_EVENTS = {"press_deferred_released", "press_deferred_cancelled"}
 PRE_SESSION_FAILURE_EVENTS = {
     "local_binding_rejected", "local_audio_unavailable", "audio_unavailable",
     "action_unavailable", "action_preflight_rejected", "audio_binding_unready",
@@ -45,7 +49,7 @@ def parse_trace_line(line: str, line_number: int) -> dict:
         if key in fields:
             raise ValueError(f"line {line_number}: duplicate field")
         fields[key] = value
-    if fields.keys() != TRACE_FIELDS:
+    if not TRACE_FIELDS.issubset(fields) or fields.keys() - TRACE_FIELDS - OPTIONAL_TRACE_FIELDS:
         raise ValueError(f"line {line_number}: unexpected fixed-field shape")
     try:
         record = {
@@ -57,6 +61,7 @@ def parse_trace_line(line: str, line_number: int) -> dict:
             "event": fields["event"],
             "stage": fields["stage"],
             "result": fields["result"],
+            "end_policy": fields.get("end_policy"),
         }
     except (TypeError, ValueError) as error:
         raise ValueError(f"line {line_number}: invalid fixed-field value") from error
@@ -65,6 +70,11 @@ def parse_trace_line(line: str, line_number: int) -> dict:
     for key in ("event", "stage", "result"):
         if record[key] and not CODE.fullmatch(record[key]):
             raise ValueError(f"line {line_number}: invalid code field")
+    if record["end_policy"] is not None and record["end_policy"] not in END_POLICIES:
+        raise ValueError(f"line {line_number}: invalid end policy")
+    if record["end_policy"] is not None and (
+            record["event"] not in ACCEPTANCE_EVENTS or record["session"] == 0):
+        raise ValueError(f"line {line_number}: end policy on non-acceptance event")
     return record
 
 
@@ -99,6 +109,20 @@ def load_voice_report(path: Path) -> tuple[str, dict]:
     return hashlib.sha256(raw).hexdigest(), inspected
 
 
+def accepted_receipt(rows: list[dict], edge: dict | None) -> tuple[dict | None, bool]:
+    receipts = [row for row in rows if row["event"] in ACCEPTANCE_EVENTS]
+    candidates = [row for row in receipts if row["session"] > 0]
+    if len(candidates) != 1 or len(receipts) != len(candidates):
+        return None, bool(receipts)
+    accepted = candidates[0]
+    if (edge and edge["event"] == "press_deferred" and edge["session"] > 0
+            and accepted["session"] == edge["session"]):
+        # A deferred row's session is only a reference to the old draining
+        # session. It can never prove that the pending press was promoted.
+        return None, True
+    return accepted, False
+
+
 def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
               trace_sha256: str, voice_report: tuple[str, dict] | None = None) -> dict:
     presses: dict[tuple[int, int], list[dict]] = {}
@@ -106,11 +130,15 @@ def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
         if row["press"]:
             presses.setdefault((row["generation"], row["press"]), []).append(row)
 
+    press_details = {}
     owners: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for key, rows in presses.items():
+        rows.sort(key=lambda row: row["at"])
         edge = next((row for row in rows if row["event"] in PRESS_EDGE_EVENTS), None)
-        if edge and edge["event"] == "press" and edge["session"]:
-            owners.setdefault((edge["generation"], edge["session"]), []).append(key)
+        accepted, acceptance_conflict = accepted_receipt(rows, edge)
+        press_details[key] = (edge, accepted, acceptance_conflict)
+        if accepted and not acceptance_conflict:
+            owners.setdefault((accepted["generation"], accepted["session"]), []).append(key)
 
     lifecycle = [row for row in records if row["session"] and row["event"] in ({"prepared"} | TERMINAL_EVENTS)]
     lifecycle_by_session: dict[tuple[int, int], list[dict]] = {}
@@ -126,9 +154,10 @@ def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
     attached_sessions = set()
     for (generation, press), rows in sorted(presses.items(), key=lambda item: min(r["at"] for r in item[1])):
         rows = sorted(rows, key=lambda row: row["at"])
-        edge = next((row for row in rows if row["event"] in PRESS_EDGE_EVENTS), None)
+        edge, accepted, acceptance_conflict = press_details[(generation, press)]
         failures = [row for row in rows if row["event"] in PRE_SESSION_FAILURE_EVENTS or
                     row["result"] not in ("", "ok")]
+        deferred_resolutions = [row for row in rows if row["event"] in DEFERRED_RESOLUTION_EVENTS]
         result = {
             "generation": generation,
             "press_id": press,
@@ -137,26 +166,35 @@ def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
             "press_event_at": format_time(edge["at"]) if edge else None,
             "session_field_reference_id": edge["session"] if edge and edge["session"] else None,
             "accepted_session_id": None,
+            "acceptance_event": None,
+            "acceptance_event_at": None,
+            "end_policy": None,
+            "resolution_event": None,
+            "resolution_at": None,
             "prepared_count": 0,
             "terminal": "unknown",
             "terminal_event": None,
             "failure_codes": [record_code(row) for row in failures],
             "release_at": None,
         }
-        releases = [row for row in rows if row["event"] == "release"]
+        releases = [row for row in rows if row["event"] in {"release", "press_deferred_released"}]
         if releases:
             result["release_at"] = format_time(releases[-1]["at"])
 
-        accepted_session = None
-        if edge and edge["event"] == "press" and edge["session"] > 0:
-            accepted_session = edge["session"]
+        if accepted and not acceptance_conflict:
+            accepted_session = accepted["session"]
             result["accepted_session_id"] = accepted_session
+            result["acceptance_event"] = accepted["event"]
+            result["acceptance_event_at"] = format_time(accepted["at"])
+            result["end_policy"] = accepted["end_policy"]
+            result["resolution_event"] = accepted["event"]
+            result["resolution_at"] = format_time(accepted["at"])
             session_key = (generation, accepted_session)
-            attached_sessions.add(session_key)
             if len(owners.get(session_key, [])) != 1:
                 result["terminal"] = "unknown"
                 result["failure_codes"].append({"event": "session_owner_conflict", "stage": "", "result": ""})
             else:
+                attached_sessions.add(session_key)
                 session_rows = lifecycle_by_session.get(session_key, [])
                 prepared = [row for row in session_rows if row["event"] == "prepared"]
                 terminal_rows = [row for row in session_rows if row["event"] in TERMINAL_EVENTS]
@@ -171,11 +209,39 @@ def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
                     result["terminal_event"] = record_code(terminal_row)
                 elif len(terminal_rows) > 1:
                     result["failure_codes"].append({"event": "multiple_terminal_events", "stage": "", "result": ""})
+        elif acceptance_conflict:
+            result["failure_codes"].append({"event": "acceptance_receipt_conflict", "stage": "", "result": ""})
+        elif edge and edge["event"] == "press_deferred":
+            if len(deferred_resolutions) > 1:
+                result["failure_codes"].append({"event": "multiple_deferred_resolutions", "stage": "", "result": ""})
+            elif deferred_resolutions:
+                resolution = deferred_resolutions[0]
+                result["resolution_event"] = resolution["event"]
+                result["resolution_at"] = format_time(resolution["at"])
+                result["terminal"] = "failed_before_session" if failures else "not_accepted"
+            else:
+                # Compatibility with traces that recorded only the physical
+                # release edge while the press was still deferred.
+                deferred_releases = [row for row in rows if row["event"] == "release"]
+                if deferred_releases:
+                    result["resolution_event"] = "release"
+                    result["resolution_at"] = format_time(deferred_releases[-1]["at"])
+                    result["terminal"] = "failed_before_session" if failures else "not_accepted"
         elif edge and edge["event"] == "press_during_session":
             if failures:
                 result["terminal"] = "failed_before_session"
             else:
                 result["terminal"] = "not_accepted"
+        elif edge and edge["event"] == "press_without_session":
+            result["terminal"] = "failed_before_session" if failures else "not_accepted"
+        elif deferred_resolutions:
+            if len(deferred_resolutions) == 1:
+                resolution = deferred_resolutions[0]
+                result["resolution_event"] = resolution["event"]
+                result["resolution_at"] = format_time(resolution["at"])
+                result["terminal"] = "failed_before_session" if failures else "not_accepted"
+            elif failures:
+                result["terminal"] = "failed_before_session"
         elif failures:
             result["terminal"] = "failed_before_session"
         results.append(result)
