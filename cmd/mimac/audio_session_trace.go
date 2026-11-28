@@ -32,6 +32,31 @@ func traceAudioSession(generation, press, session uint64, event string, err erro
 	}
 }
 
+func traceAudioCompletion(generation, session uint64, event string, err error, receipt audiosession.PCMReceipt) {
+	path := audioSessionTracePath()
+	if path == "" {
+		return
+	}
+	appendPrivateTrace(path, audioCompletionTraceRecord(time.Now(), os.Getpid(), generation, session, event, err, receipt))
+}
+
+func audioCompletionTraceRecord(at time.Time, pid int, generation, session uint64, event string, err error, receipt audiosession.PCMReceipt) string {
+	line := audioTraceRecord(at, pid, generation, 0, session, event, err)
+	if event == "drained" || event == "failed" {
+		line += fmt.Sprintf(" pcm_rate_hz=%d pcm_source_samples=%d pcm_source_eof=%d pcm_sink_accepted_samples=%d pcm_cutoff=%d",
+			receipt.SampleRate, receipt.SourceSamples, boolNumber(receipt.SourceEOF),
+			receipt.SinkSamples, boolNumber(receipt.Cutoff))
+	}
+	return line
+}
+
+func boolNumber(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 // Write the accepted binding with the existing press receipt. It is the plan
 // adopted by this particular gesture, even if the user later changes tools.
 func traceVoiceEdge(press bridge.PressToken, state bridge.Snapshot, event string, err error) {

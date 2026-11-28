@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"mimac.local/mimac/internal/adapters/audiooutput"
@@ -93,6 +94,23 @@ type Completion struct {
 	// nonempty PCM block. It does not imply that the Sink accepted the block or
 	// that a target consumed it.
 	SourcePCMRead bool
+	// PCMReceipt is a fixed numeric snapshot at the session's terminal event.
+	// It records source frames returned and sink frames whose TryWrite succeeded;
+	// it does not mean the target consumed the audio or produced text.
+	PCMReceipt PCMReceipt
+}
+
+// PCMReceipt contains only fixed per-session counter snapshots. On failed
+// sessions, counts are the confirmed lower bounds captured at termination;
+// Cutoff marks that the terminal row may omit late or partially accepted work.
+// SourceEOF separately reports whether the source returned EOF. A drained
+// receipt is exact through source EOF and successful sink drain.
+type PCMReceipt struct {
+	SampleRate    int
+	SourceSamples uint64
+	SourceEOF     bool
+	SinkSamples   uint64
+	Cutoff        bool
 }
 
 var (
@@ -139,6 +157,9 @@ type resource struct {
 	stopReturned  bool
 	tailSamples   int
 	sourcePCMRead bool // Protected by Runtime.mu; carries one fact to Completion.
+	pcmRate       int
+	sourceSamples atomic.Uint64
+	sinkSamples   atomic.Uint64
 	cause         error
 	terminalSent  bool // Protected by Runtime.mu; arbitrates Core terminal events.
 	finished      bool
@@ -275,7 +296,17 @@ func (r *Runtime) claimFailureLocked(s *resource) (Completion, bool) {
 	}
 	s.terminalSent = true
 	r.stopDeadlineLocked(s)
-	return Completion{Event: bridge.SourceFailed(s.token), Err: s.cause, SourcePCMRead: s.sourcePCMRead}, true
+	return Completion{
+		Event: bridge.SourceFailed(s.token), Err: s.cause,
+		SourcePCMRead: s.sourcePCMRead, PCMReceipt: pcmReceiptLocked(s, true),
+	}, true
+}
+
+func pcmReceiptLocked(s *resource, cutoff bool) PCMReceipt {
+	return PCMReceipt{
+		SampleRate: s.pcmRate, SourceSamples: s.sourceSamples.Load(),
+		SourceEOF: s.sourceEOF, SinkSamples: s.sinkSamples.Load(), Cutoff: cutoff,
+	}
 }
 
 func (r *Runtime) stopDeadlineLocked(s *resource) {
@@ -405,7 +436,12 @@ func (r *Runtime) advanceStopDeadlineLocked(s *resource) (Completion, bool) {
 
 func (r *Runtime) run(s *resource) {
 	resources, err := r.prepare(s.ctx, s.token)
+	validPCM := err == nil && resources.Source != nil && resources.Sink != nil &&
+		(resources.SampleRate == 8000 || resources.SampleRate == 16000)
 	s.resources = resources
+	if validPCM {
+		s.pcmRate = resources.SampleRate
+	}
 	close(s.ready)
 	if err == nil && (resources.Source == nil || resources.Sink == nil || (resources.SampleRate != 8000 && resources.SampleRate != 16000)) {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
@@ -516,8 +552,12 @@ func (r *Runtime) copyPCM(s *resource, reader *startupReader, watcher *receiverW
 			if s.resources.Observer != nil {
 				s.resources.Observer.Observe(pcm[:n], time.Now())
 			}
-			if err := writePCM(s.ctx, s.resources.Sink, pcm[:n]); err != nil {
-				return atStage("sink_write", err)
+			accepted, writeErr := writePCM(s.ctx, s.resources.Sink, pcm[:n])
+			if accepted {
+				s.sinkSamples.Add(uint64(n))
+			}
+			if writeErr != nil {
+				return atStage("sink_write", writeErr)
 			}
 		}
 		if readErr == io.EOF {
@@ -620,6 +660,7 @@ func (r *Runtime) claimDrain(s *resource, stopCtx context.Context, completion Co
 		return false
 	}
 	s.terminalSent = true
+	completion.PCMReceipt = pcmReceiptLocked(s, false)
 	r.stopDeadlineLocked(s)
 	r.mu.Unlock()
 	r.emit(completion)
@@ -633,12 +674,12 @@ func sourceHealth(source Source) error {
 	return nil
 }
 
-func writePCM(ctx context.Context, sink Sink, pcm []int16) error {
+func writePCM(ctx context.Context, sink Sink, pcm []int16) (accepted bool, err error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if err := sink.TryWrite(pcm); !errors.Is(err, audiooutput.ErrBackpressure) {
-		return err
+		return err == nil, err
 	}
 	// The steady path allocates no timer. Retry timing exists only while the
 	// bounded native queue is full, and cannot extend indefinitely.
@@ -649,15 +690,15 @@ func writePCM(ctx context.Context, sink Sink, pcm []int16) error {
 	for {
 		select {
 		case <-deadline.C:
-			return context.DeadlineExceeded
+			return false, context.DeadlineExceeded
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-ticker.C:
 			if err := ctx.Err(); err != nil {
-				return err
+				return false, err
 			}
 			if err := sink.TryWrite(pcm); !errors.Is(err, audiooutput.ErrBackpressure) {
-				return err
+				return err == nil, err
 			}
 		}
 	}
@@ -706,7 +747,10 @@ func (r *Runtime) cleanup(s *resource) {
 	if closeErr != nil {
 		r.emit(Completion{Event: bridge.SourceFailed(s.token), Err: closeErr, CleanupFailed: true})
 		if rejected != nil {
-			r.emit(Completion{Event: bridge.SourceFailed(rejected.token), Err: errors.Join(ErrResourceBusy, closeErr)})
+			r.emit(Completion{
+				Event: bridge.SourceFailed(rejected.token), Err: errors.Join(ErrResourceBusy, closeErr),
+				PCMReceipt: PCMReceipt{Cutoff: true},
+			})
 		}
 	}
 }

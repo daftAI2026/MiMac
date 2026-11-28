@@ -247,6 +247,7 @@ type sourceStub struct {
 	reads       chan readResult
 	readStarted chan struct{}
 	readLengths chan int
+	stopTail    []int16
 	stopStarted chan struct{}
 	stopSignal  chan struct{}
 	closeStart  chan struct{}
@@ -277,15 +278,18 @@ func (s *sourceStub) Read(ctx context.Context, dst []int16) (int, error) {
 	}
 	select {
 	case <-s.stopSignal:
-		return 0, io.EOF
+		return copy(dst, s.stopTail), io.EOF
 	default:
 	}
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	case <-s.stopSignal:
-		return 0, io.EOF
+		return copy(dst, s.stopTail), io.EOF
 	case result := <-s.reads:
+		if result.err == io.EOF {
+			return copy(dst, result.pcm), io.EOF
+		}
 		if result.err != nil {
 			return 0, result.err
 		}
@@ -588,6 +592,10 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 	if !drained.SourcePCMRead {
 		t.Fatal("drained completion lost the source PCM read receipt")
 	}
+	if got := drained.PCMReceipt; got.SampleRate != 16000 || got.SourceSamples != 3 || !got.SourceEOF ||
+		got.SinkSamples != 3 || got.Cutoff {
+		t.Fatalf("drained PCM receipt = %#v, want exact 3-frame source and sink totals with EOF", got)
+	}
 	cleanup := applyCompletion(t, core, drained)
 	applySourceEffects(t, runtime, cleanup)
 	ctx, cancel := context.WithTimeout(context.Background(), audioSessionTestTimeout)
@@ -619,7 +627,53 @@ func TestRuntimeFailureCompletionCarriesSourcePCMReadBeforeSinkError(t *testing.
 	if !errors.Is(failed.Err, sink.defaultWriteErr) || !failed.SourcePCMRead {
 		t.Fatalf("sink failure receipt = %#v, want source PCM read and target stopped", failed)
 	}
+	if got := failed.PCMReceipt; got.SampleRate != 16000 || got.SourceSamples != 3 || got.SourceEOF ||
+		got.SinkSamples != 0 || !got.Cutoff {
+		t.Fatalf("failed PCM receipt = %#v, want confirmed source lower bound, no accepted block, and cutoff", got)
+	}
 	applyExpectedFailure(t, core, failed)
+}
+
+func TestRuntimeCountsPartialBlockReturnedWithEOF(t *testing.T) {
+	source, sink := newSourceStub(), newSinkStub()
+	source.stopTail = []int16{4, -7, 11}
+	sink.drainRelease = closedSignal()
+	runtime := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+		return testResources(source, sink), nil
+	})
+	core, device := newCoreForSessionTest(t, "audio-session-eof-tail-receipt")
+	press, _, prepare := beginVoiceSession(t, core, device, 1)
+	if err := runtime.Submit(prepare); err != nil {
+		t.Fatal(err)
+	}
+	prepared := waitCompletion(t, runtime)
+	applySourceEffects(t, runtime, applyCompletion(t, core, prepared))
+	waitSignal(t, source.readStarted)
+	ended, err := core.Step(bridge.VoiceEnded(press))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySourceEffects(t, runtime, ended)
+	select {
+	case got := <-sink.writes:
+		if !reflect.DeepEqual(got, []int16{4, -7, 11}) {
+			t.Fatalf("accepted EOF tail = %v", got)
+		}
+	case <-time.After(audioSessionTestTimeout):
+		t.Fatal("partial block returned with EOF was not delivered")
+	}
+	drained := waitCompletion(t, runtime)
+	if got := drained.PCMReceipt; got.SampleRate != 16000 || got.SourceSamples != 3 || !got.SourceEOF ||
+		got.SinkSamples != 3 || got.Cutoff {
+		t.Fatalf("EOF tail completion = %#v err=%v receipt=%#v, want drained exact tail totals and no cutoff", drained.Event, drained.Err, got)
+	}
+	cleanup := applyCompletion(t, core, drained)
+	applySourceEffects(t, runtime, cleanup)
+	ctx, cancel := context.WithTimeout(context.Background(), audioSessionTestTimeout)
+	defer cancel()
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRuntimeZeroLengthReadDoesNotClaimSourcePCM(t *testing.T) {
