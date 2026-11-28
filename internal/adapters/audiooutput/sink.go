@@ -50,6 +50,13 @@ type nativeQueuePreparation interface {
 	Pause() error
 }
 
+// nativeQueueTimelineResetter may restart a queue whose output clock has
+// advanced beyond all successfully submitted PCM. It must preserve the route
+// and prove that no native buffers remain queued before resetting.
+type nativeQueueTimelineResetter interface {
+	ResetIfTimelineExhausted() (bool, error)
+}
+
 // Sink permits concurrent calls but serializes native operations. Open/Drain/
 // Close belong on a session worker, not the UI thread. No worker or timer exists
 // while idle; Drain alone polls for at most two seconds. Native calls themselves
@@ -276,6 +283,24 @@ func (s *Sink) TryWrite(pcm []int16) error {
 	if err != nil {
 		s.fault = err
 		return err
+	}
+	if s.wrotePCM && len(s.free) == bufferCount {
+		if resetter, ok := s.queue.(nativeQueueTimelineResetter); ok {
+			reset, resetErr := resetter.ResetIfTimelineExhausted()
+			if resetErr != nil {
+				s.fault = resetErr
+				return resetErr
+			}
+			if reset {
+				s.started = false
+				s.observedRunning = false
+				running, err = s.queue.Check()
+				if err != nil {
+					s.fault = err
+					return err
+				}
+			}
+		}
 	}
 	// AudioQueueStart acknowledges the request before IsRunning changes.
 	// Only a later falling edge proves an unexpected stop. A start that never

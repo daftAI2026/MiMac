@@ -5,6 +5,7 @@ package audiooutput
 import (
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 const (
 	cfStringEncodingUTF8 uint32 = 0x08000100
+	audioTimeStampSampleTimeValid uint32 = 1 << 0
 
 	audioFormatLinearPCM             uint32 = 0x6c70636d // 'lpcm'
 	audioFormatFlagIsSignedInteger   uint32 = 1 << 2
@@ -47,6 +49,28 @@ type audioQueueBuffer struct {
 	packetDescCount        uint32
 }
 
+type smpteTime struct {
+	subframes       int16
+	subframeDivisor int16
+	counter         uint32
+	kind            uint32
+	flags           uint32
+	hours           int16
+	minutes         int16
+	seconds         int16
+	frames          int16
+}
+
+type audioTimeStamp struct {
+	sampleTime    float64
+	hostTime      uint64
+	rateScalar    float64
+	wordClockTime uint64
+	smpteTime     smpteTime
+	flags         uint32
+	reserved      uint32
+}
+
 type audioQueueAPI struct {
 	newOutput      func(*audioStreamBasicDescription, uintptr, uintptr, uintptr, uintptr, uint32, *uintptr) int32
 	allocateBuffer func(uintptr, uint32, **audioQueueBuffer) int32
@@ -55,6 +79,7 @@ type audioQueueAPI struct {
 	start          func(uintptr, uintptr) int32
 	pause          func(uintptr) int32
 	stop           func(uintptr, bool) int32
+	getCurrentTime func(uintptr, uintptr, *audioTimeStamp, *uint8) int32
 	dispose        func(uintptr, bool) int32
 	setProperty    func(uintptr, uint32, unsafe.Pointer, uint32) int32
 	getProperty    func(uintptr, uint32, unsafe.Pointer, *uint32) int32
@@ -96,6 +121,7 @@ func loadAudioQueueAPI() (*audioQueueAPI, error) {
 			{audioToolbox, &a.start, "AudioQueueStart"},
 			{audioToolbox, &a.pause, "AudioQueuePause"},
 			{audioToolbox, &a.stop, "AudioQueueStop"},
+			{audioToolbox, &a.getCurrentTime, "AudioQueueGetCurrentTime"},
 			{audioToolbox, &a.dispose, "AudioQueueDispose"},
 			{audioToolbox, &a.setProperty, "AudioQueueSetProperty"},
 			{audioToolbox, &a.getProperty, "AudioQueueGetProperty"},
@@ -201,6 +227,8 @@ type darwinNativeQueue struct {
 	token           uintptr
 	uidRef          uintptr
 	framesPerBuffer int
+	timelineBase    float64
+	timelineFrames  uint64
 	buffers         [bufferCount]*audioQueueBuffer
 	queued          [bufferCount]atomic.Bool
 	returnBuffer    func(slot int)
@@ -348,7 +376,59 @@ func (d *darwinNativeQueue) Enqueue(slot int, pcm []int16) error {
 		d.queued[slot].Store(false)
 		return fmt.Errorf("audiooutput: AudioQueueEnqueueBuffer slot=%d status=%d", slot, status)
 	}
+	d.timelineFrames += uint64(len(pcm))
 	return nil
+}
+
+// ResetIfTimelineExhausted starts a new sample-time epoch only after all
+// application buffers have returned and AudioQueue's playback clock has moved
+// beyond the last submitted PCM by one native buffer. The clock threshold is
+// measured from the queue itself; this method never sleeps or inserts silence.
+func (d *darwinNativeQueue) ResetIfTimelineExhausted() (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disposed.Load() || d.disposing.Load() || d.queue == 0 {
+		return false, errors.New("audiooutput: queue is disposed")
+	}
+	if d.stopRequested {
+		return false, errors.New("audiooutput: queue is stopping")
+	}
+	for slot := range d.queued {
+		if d.queued[slot].Load() {
+			return false, nil
+		}
+	}
+	var current audioTimeStamp
+	if status := d.api.getCurrentTime(d.queue, 0, &current, nil); status != 0 {
+		// The timing query is an optimization guard, not a prerequisite for
+		// accepting output. Preserve the existing queue path when the system has
+		// not published a valid clock yet.
+		return false, nil
+	}
+	if current.flags&audioTimeStampSampleTimeValid == 0 {
+		return false, nil
+	}
+	if math.IsNaN(current.sampleTime) || math.IsInf(current.sampleTime, 0) || current.sampleTime < 0 {
+		return false, nil
+	}
+	expectedEnd := d.timelineBase + float64(d.timelineFrames)
+	if current.sampleTime < expectedEnd+float64(d.framesPerBuffer) {
+		return false, nil
+	}
+	if status := d.api.stop(d.queue, true); status != 0 {
+		return false, fmt.Errorf("audiooutput: AudioQueueStop(immediate=true) timeline reset status=%d", status)
+	}
+	d.stopRequested = false
+	d.timelineFrames = 0
+	var resetTime audioTimeStamp
+	if status := d.api.getCurrentTime(d.queue, 0, &resetTime, nil); status == 0 &&
+		resetTime.flags&audioTimeStampSampleTimeValid != 0 &&
+		!math.IsNaN(resetTime.sampleTime) && !math.IsInf(resetTime.sampleTime, 0) && resetTime.sampleTime >= 0 {
+		d.timelineBase = resetTime.sampleTime
+	} else {
+		d.timelineBase = 0
+	}
+	return true, nil
 }
 
 func (d *darwinNativeQueue) Start() error {
