@@ -179,8 +179,10 @@ def check_permission_snapshot(snapshot):
     if snapshot.get("status") != "ok" or snapshot.get("truncated"):
         raise RuntimeError("permission state is unverified: AX snapshot is incomplete")
     for node in snapshot.get("nodes", []):
-        if node.get("role") == "AXStaticText" and node.get("value") in ("需要输入监控权限", "需要辅助功能权限"):
-            raise RuntimeError("permission blocked: " + node["value"])
+        label_key = {"AXGroup": "description", "AXStaticText": "value"}.get(node.get("role"))
+        label = node.get(label_key)
+        if label in ("需要输入监控权限", "需要辅助功能权限"):
+            raise RuntimeError("permission blocked: " + label)
 
 
 def request_quit_once(directory, pid):

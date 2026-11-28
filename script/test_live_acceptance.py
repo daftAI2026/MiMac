@@ -240,6 +240,14 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unverified"):
             live_acceptance.check_permission_snapshot({"status": "partial"})
 
+    def test_native_permission_status_group_blocks_voice_preparation(self):
+        snapshot = {"status": "ok", "nodes": [
+            {"role": "AXGroup", "description": "需要输入监控权限"},
+            {"role": "AXButton", "title": "启用遥控器"},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "需要输入监控权限"):
+            live_acceptance.check_permission_snapshot(snapshot)
+
     def test_quit_marker_prevents_a_second_signal_after_interruption(self):
         with tempfile.TemporaryDirectory() as directory, patch("live_acceptance.os.kill") as kill:
             live_acceptance.request_quit_once(directory, 11)
