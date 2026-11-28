@@ -443,7 +443,7 @@ func (d *deviceCoordinator) resumeDeferredVoice() bool {
 	if d.preflightAction != nil {
 		if err := d.preflightAction(pending.plan); err != nil {
 			d.clearDeferredVoice(true)
-			traceVoiceEdge(pending.press, snapshot, "press_deferred_cancelled", err)
+			traceAudioSession(pending.press.Device().Generation(), pending.press.PressID(), 0, "action_preflight_rejected", err)
 			return false
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
+	"mimac.local/mimac/internal/devices"
 )
 
 type xiaomiRouteTestSource struct {
@@ -618,17 +619,34 @@ func TestCompatRouteClaimsOnlyAudioForTheCurrentGesture(t *testing.T) {
 	}
 	emit(atvv.NativeEventControlValue, 0x0b, 1, 0, 0xa5, 0x5a, 0, 0x78, 0xcc)
 	waitXiaomiRoute(t, r.Ready)
-	tokens := hexRouteTestTokens(t, 2)
-	lease, err := r.Prepare(ctx, tokens[0])
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	coordinator, remote, _ := newVoiceAudioTestCoordinator(t, plan)
+	coordinator.voiceDeferralIdentity = func() (deferredAudioRouteIdentity, bool) {
+		return deferredAudioRouteIdentity{generation: remote.Generation(), toolID: plan.Spec().ToolID, appPath: "/test/tool.app"}, true
+	}
+	coordinator.discardDeferredVoice = func(bridge.ActionPlan) { live.DiscardUnclaimedPress() }
+	first := voiceAudioTestPress(t, remote, 1)
+	acceptVoiceAudioEdge(t, coordinator, remote, first, devices.EdgeDown)
+	firstSession := coordinator.core.Snapshot().Session.Token
+	lease, err := r.Prepare(ctx, firstSession)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.step(bridge.SourcePrepared(firstSession, "wire-source")); err != nil {
 		t.Fatal(err)
 	}
 	emit(atvv.NativeEventControlValue, 4, 3, 2, 1)
 	emit(atvv.NativeEventAudioValue, 0x70)
 	emit(atvv.NativeEventControlValue, 0)
+	acceptVoiceAudioEdge(t, coordinator, remote, first, devices.EdgeUp)
+	second := voiceAudioTestPress(t, remote, 2)
+	acceptVoiceAudioEdge(t, coordinator, remote, second, devices.EdgeDown)
+	if pending := coordinator.core.Snapshot(); !pending.HasDeferredVoice || pending.DeferredVoice != second {
+		t.Fatal("second physical press did not wait for the old drain")
+	}
 	emit(atvv.NativeEventControlValue, 4, 3, 2, 2)
 	emit(atvv.NativeEventAudioValue, 0x77)
-	live.DiscardUnclaimedPress()
+	acceptVoiceAudioEdge(t, coordinator, remote, second, devices.EdgeUp)
 	emit(atvv.NativeEventControlValue, 0)
 	// The old sink still owns its source. The canceled second press cannot erase its tail.
 	samples := make([]int16, 8)
@@ -639,7 +657,19 @@ func TestCompatRouteClaimsOnlyAudioForTheCurrentGesture(t *testing.T) {
 	waitXiaomiRoute(t, r.Ready)
 	emit(atvv.NativeEventControlValue, 4, 3, 2, 3)
 	emit(atvv.NativeEventAudioValue, 0xf0)
-	lease, err = r.Prepare(ctx, tokens[1])
+	if err := coordinator.step(bridge.SourceDrained(firstSession)); err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.resumeDeferredVoice() {
+		t.Fatal("released second press started after the first drain")
+	}
+	third := voiceAudioTestPress(t, remote, 3)
+	acceptVoiceAudioEdge(t, coordinator, remote, third, devices.EdgeDown)
+	session := coordinator.core.Snapshot().Session
+	if session.Press != third {
+		t.Fatalf("next wire source assigned to %v, want third press", session.Press)
+	}
+	lease, err = r.Prepare(ctx, session.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
