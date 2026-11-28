@@ -350,10 +350,10 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
             observeControlBoundaries(data)
             emit(.controlValue, bytes: data)
         } else if characteristic === audio {
-            if activeStreamID != nil && !remoteStopObserved && !data.isEmpty {
+            if let streamID = activeStreamID, !remoteStopObserved, !data.isEmpty {
                 packetTiming.received(at: DispatchTime.now().uptimeNanoseconds)
                 if audioBytes == 0 {
-                    Self.logger.notice("First audio packet connection=\(self.handle)")
+                    Self.logger.notice("First audio packet connection=\(self.handle) stream_id=\(streamID)")
                 }
                 audioBytes &+= UInt64(data.count)
             }
@@ -368,7 +368,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
                 let reason = data.dropFirst().first.map(Int.init) ?? -1
                 let hostCloseSent = closeSentForStream == streamID
                 let lastToStop = packetTiming.lastToStopMicroseconds(at: DispatchTime.now().uptimeNanoseconds)
-                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes) stop_reason=\(reason) host_close_sent=\(hostCloseSent) packets=\(self.packetTiming.count) max_packet_gap_us=\(self.packetTiming.longestGapMicroseconds) last_packet_to_stop_us=\(lastToStop)")
+                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes) stop_reason=\(reason) host_close_sent=\(hostCloseSent) packets=\(self.packetTiming.count) max_packet_gap_us=\(self.packetTiming.longestGapMicroseconds) last_packet_to_stop_us=\(lastToStop) stream_id=\(streamID)")
             }
             remoteStopObserved = true
             return
@@ -379,7 +379,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
         activeStreamID = data[3]
         audioBytes = 0
         packetTiming = AudioPacketTiming()
-        Self.logger.notice("Remote audio started connection=\(self.handle)")
+        Self.logger.notice("Remote audio started connection=\(self.handle) stream_id=\(data[3]) codec=\(data[2])")
         remoteStopObserved = false
         closeRequestedForStream = nil
         closeSentForStream = nil
