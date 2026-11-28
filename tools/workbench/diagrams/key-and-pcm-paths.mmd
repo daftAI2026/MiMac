@@ -34,6 +34,7 @@ flowchart LR
     stage --> consume
     consume --> pcm["有序 PCM 数据块"]
     pcm --> sink["配置的 Sink：Apple Speech、Hex 本机识别或兼容音频路由"]
+    sink -.->|虚拟麦输出| epoch["写入恢复时核对队列播放时钟\n已投递音频播完且队列耗尽时，在同一设备上重新开始播放"]
     sink --> targetInput["目标输入路由\n本地 Sink 接受不证明目标已消费"]
     consume -->|合法 EOF 且 Stop 已请求| drain["源停止与 EOF 后，按有限尾部时长排空
 本地 drain 与可选最终转写"]
