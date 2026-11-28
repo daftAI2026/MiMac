@@ -9,6 +9,27 @@ public typealias MiMacATVVEventCallback = @convention(c) (
     UInt64, Int32, Int32, UnsafePointer<UInt8>?, Int32
 ) -> Void
 
+// Per-stream callback timing on the transport's serial queue. These are host
+// arrival times. They do not identify missing packets or audio on the remote.
+struct AudioPacketTiming {
+    private(set) var count = 0
+    private(set) var longestGapMicroseconds: Int64 = -1
+    private var lastArrival: UInt64?
+
+    mutating func received(at uptime: UInt64) {
+        if let previous = lastArrival {
+            longestGapMicroseconds = max(longestGapMicroseconds, Int64((uptime - previous) / 1_000))
+        }
+        count += 1
+        lastArrival = uptime
+    }
+
+    func lastToStopMicroseconds(at uptime: UInt64) -> Int64 {
+        guard let lastArrival else { return -1 }
+        return Int64((uptime - lastArrival) / 1_000)
+    }
+}
+
 private let atvvServiceUUID = CBUUID(string: "AB5E0001-5A21-4F05-BC7D-AF01F617B664")
 private let atvvTransmitUUID = CBUUID(string: "AB5E0002-5A21-4F05-BC7D-AF01F617B664")
 private let atvvAudioUUID = CBUUID(string: "AB5E0003-5A21-4F05-BC7D-AF01F617B664")
@@ -113,6 +134,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
     private var queuedCloseStream: UInt8?
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.mimac.app", category: "remote-audio")
     private var audioBytes: UInt64 = 0
+    private var packetTiming = AudioPacketTiming()
     private var lastLoggedFailure: Int32?
     private var activeStreamID: UInt8?
     private var remoteStopObserved = false
@@ -329,6 +351,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
             emit(.controlValue, bytes: data)
         } else if characteristic === audio {
             if activeStreamID != nil && !remoteStopObserved && !data.isEmpty {
+                packetTiming.received(at: DispatchTime.now().uptimeNanoseconds)
                 if audioBytes == 0 {
                     Self.logger.notice("First audio packet connection=\(self.handle)")
                 }
@@ -344,7 +367,8 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
             if let streamID = activeStreamID, !remoteStopObserved {
                 let reason = data.dropFirst().first.map(Int.init) ?? -1
                 let hostCloseSent = closeSentForStream == streamID
-                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes) stop_reason=\(reason) host_close_sent=\(hostCloseSent)")
+                let lastToStop = packetTiming.lastToStopMicroseconds(at: DispatchTime.now().uptimeNanoseconds)
+                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes) stop_reason=\(reason) host_close_sent=\(hostCloseSent) packets=\(self.packetTiming.count) max_packet_gap_us=\(self.packetTiming.longestGapMicroseconds) last_packet_to_stop_us=\(lastToStop)")
             }
             remoteStopObserved = true
             return
@@ -354,6 +378,7 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
         guard opcode == 0x04, data.count >= 4 else { return }
         activeStreamID = data[3]
         audioBytes = 0
+        packetTiming = AudioPacketTiming()
         Self.logger.notice("Remote audio started connection=\(self.handle)")
         remoteStopObserved = false
         closeRequestedForStream = nil

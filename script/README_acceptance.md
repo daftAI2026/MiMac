@@ -71,7 +71,7 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 
 同一连接依次记录订阅就绪、遥控器开始发送、首个音频包和停止时收到的字节数。出现传输错误时记录数值错误码。日志只包含事件与计数；判断插件读入和整句结果仍用上面的现场流程。
 
-打包运行时，应用数据目录的 `audio-session.log` 记录宿主侧边界。用 UTC 时间与系统日志对时，再按 PID、设备代际、按压编号和会话编号关联。按下后若没有建立会话，查看同一按压的启动前检查。已建立的会话按 `prepared`、`drained` 或 `failed` 跟踪；失败的 `stage` 区分音源读取、等待读端、读端停读、写入、排空与获取最终文字。ATVV 源时序失败只记录固定枚举：`source_audio_before_start`（AUDIO_START 前音频）、`source_audio_after_stop`（AUDIO_STOP 后的迟到音频）、`source_stop_without_active_stream`（无活动流时收到 AUDIO_STOP；不进一步断言是重复 stop 还是缺少 start）；不记录逐包事件或内容。`source_rebuild` 和 `source_recovery_rearmed` 记录自动恢复及重新获得恢复机会的时点。按同一连接对齐系统日志的 `remote-audio`。停止通知中的 `received_bytes` 是收到的蓝牙字节数，`stop_reason=-1` 表示设备未给原因，`host_close_sent` 表示 MiMac 在通知之前已向该流发出关闭请求。目标停读、遥控器停发与用户松键分别取各自的时间戳。
+打包运行时，应用数据目录的 `audio-session.log` 记录宿主侧边界。用 UTC 时间与系统日志对时，再按 PID、设备代际、按压编号和会话编号关联。按下后若没有建立会话，查看同一按压的启动前检查。已建立的会话按 `prepared`、`drained` 或 `failed` 跟踪；失败的 `stage` 区分音源读取、等待读端、读端停读、写入、排空与获取最终文字。ATVV 源时序失败只记录固定枚举：`source_audio_before_start`（AUDIO_START 前音频）、`source_audio_after_stop`（AUDIO_STOP 后的迟到音频）、`source_stop_without_active_stream`（无活动流时收到 AUDIO_STOP；不进一步断言是重复 stop 还是缺少 start）；不记录逐包事件或内容。`source_rebuild` 和 `source_recovery_rearmed` 记录自动恢复及重新获得恢复机会的时点。按同一连接对齐系统日志的 `remote-audio`。停止通知中的 `received_bytes` 是收到的蓝牙字节数，`stop_reason=-1` 表示设备未给原因，`host_close_sent` 表示 MiMac 在通知之前已向该流发出关闭请求。目标停读、遥控器停发与用户松键分别取各自的时间戳。 同一停止通知中的 `packets` 为该流非空音频回调次数，`max_packet_gap_us` 为相邻回调的最大到达间隔，`last_packet_to_stop_us` 为最后一次回调到停止通知的时间。缺少对应样本时为 −1。主机回调间隔不能单独证明丢包。
 
 同一语音会话的 `shortcut_down`、`shortcut_up`、`shortcut_tap` 记录 MiMac 向键盘输出层提交该动作的时间和返回结果。用它对齐物理松键与目标停读时间。目标是否接收该动作另取目标侧证据。日志只记录动作类型。
 
