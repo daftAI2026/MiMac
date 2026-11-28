@@ -786,3 +786,75 @@ func TestHeldPhysicalEdgeDuringRouteFactoryReachesSink(t *testing.T) {
 		t.Fatalf("starts=%d factories=%d", starts, calls.Load())
 	}
 }
+
+func TestVoiceDownBeforeSourceFaultNotification(t *testing.T) {
+	for _, releaseEarly := range []bool{false, true} {
+		name := "keep held press"
+		if releaseEarly {
+			name = "release before replacement"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, queue := liveHostFixture(t, nil)
+			first, next := newLiveAudioConnectionTestRoute(), newLiveAudioConnectionTestRoute()
+			source, sink := newHostPCMSource(), newHostPCMSink()
+			next.resources = audiosession.Resources{Source: source, Sink: sink, SampleRate: 16000}
+			var opens atomic.Int32
+			s.liveAudio.factory = func(context.Context, uint64, string) (liveAudioRoute, error) {
+				if opens.Add(1) == 1 {
+					return first, nil
+				}
+				return next, nil
+			}
+			keys := &routedEffectsKeySink{}
+			if err := s.coordinator.attachOutput(keys); err != nil {
+				t.Fatal(err)
+			}
+			plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+			s.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) { return plan, nil }
+			s.refreshLiveAudio()
+			old := s.liveAudio.connection
+			waitLiveAudioDone(t, old)
+			runHostTask(t, queue)
+			failTestRouteSource(first, atvv.ErrTransportFault)
+
+			device, _ := bridge.NewDevice("live-host", 1)
+			press, _ := bridge.NewPressToken(device, toolShortcutsTestButton, 17)
+			edge := func(kind devices.EdgeKind) {
+				s.handleDeviceEvent(devices.InputEvent{State: devices.InputStateConnected, Device: device, Edges: []devices.Edge{{Kind: kind, Press: press}}})
+			}
+			// The device callback reaches the main thread before the queued route change.
+			edge(devices.EdgeDown)
+			if snap := s.coordinator.core.Snapshot(); !snap.HasDeferredVoice || snap.DeferredVoice != press || countVoiceStartEffects(keys) != 0 {
+				t.Fatal("fresh press was lost or sent to the failed route")
+			}
+			if releaseEarly {
+				edge(devices.EdgeUp)
+			}
+			pumpLiveHost(t, queue, func() bool { return s.liveAudio.connection != old && s.audioResourcesReady() })
+			if releaseEarly {
+				if snap := s.coordinator.core.Snapshot(); snap.HasSession || snap.HasDeferredVoice || len(snap.PressedButtons) != 0 || countVoiceStartEffects(keys) != 0 {
+					t.Fatal("released press started on the replacement route")
+				}
+			} else {
+				pumpLiveHost(t, queue, func() bool { return s.coordinator.core.Snapshot().Session.Phase == bridge.PhaseCapturing })
+				source.samples <- []int16{11, -12}
+				select {
+				case got := <-sink.writes:
+					if !reflect.DeepEqual(got, []int16{11, -12}) {
+						t.Fatalf("replacement wrote %v", got)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("replacement did not receive the held press audio")
+				}
+				edge(devices.EdgeUp)
+				pumpLiveHost(t, queue, func() bool { return !s.coordinator.core.Snapshot().HasSession })
+				if countVoiceStartEffects(keys) != 1 {
+					t.Fatal("held press did not start exactly once")
+				}
+			}
+			if opens.Load() != 2 {
+				t.Fatalf("opened %d routes for one recoverable fault", opens.Load())
+			}
+		})
+	}
+}

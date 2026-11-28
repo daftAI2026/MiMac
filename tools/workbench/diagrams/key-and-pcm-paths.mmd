@@ -3,12 +3,13 @@ flowchart LR
     coordinator -.-> observation["已接受的设备事件边沿计数\n包含启动前检查失败；不等于动作成功"]
     coordinator --> resolve["解析当前映射或工具动作"]
     resolve --> core["bridge.Core\n冻结唯一动作计划与会话策略"]
+    resolve -.->|按下时已发现可恢复音源故障| recovery
     core -.-> deferred["最多一个延后语音手势\n保留原 press token、冻结 Binding；只在原按键仍按住时有效"]
     connection -.-> readiness["既有 route Changes / 会话 Completion 唤醒协调器"]
     readiness --> promote{"同一设备代次、工具路径和动作仍有效？\n旧会话已排空且路由资源已就绪？"}
     deferred --> promote
     promote -->|是：按原 token 晋升一次| prepare
-    promote -->|否：松手、取消、切换或仍未就绪| deferred
+    promote -->|仍按住且尚未就绪| deferred
     deferred -->|松手、取消、设备代次或目标变化| discard["撤销 Core 候选；仅丢弃尚未交给 Runtime 的源"]
     discard --> source
     core -->|按键效果| keyout["系统按键输出适配器"]

@@ -135,22 +135,32 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 		// Activating a verified audio factory must also select Core's audio
 		// path for physical voice edges. Otherwise they remain shortcut-only.
 		ready := s.audioResourcesReady
-		s.coordinator.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
+		checkReady := func() error {
 			if s.closing {
-				return bridge.Binding{}, errAudioSessionUnavailable
+				return errAudioSessionUnavailable
 			}
-			if s.audioSession != host || (ready != nil && !ready()) {
-				return bridge.Binding{}, errAudioSessionResourcesNotReady
+			if s.audioSession != host {
+				return errAudioSessionResourcesNotReady
+			}
+			if ready != nil && !ready() {
+				// A press can reach the main thread before the source's change
+				// notification. Start eligible recovery before Core records it as
+				// held, so the existing deferred press can follow the replacement.
+				s.recoverFailedLiveAudio(host.connection)
+				return errAudioSessionResourcesNotReady
+			}
+			return nil
+		}
+		s.coordinator.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
+			if err := checkReady(); err != nil {
+				return bridge.Binding{}, err
 			}
 			return voiceAudioBindingForAction(plan)
 		}
 		beforeStart := s.audioResourcesBeforeStart
 		s.coordinator.beforeAudioStart = func() error {
-			if s.closing {
-				return errAudioSessionUnavailable
-			}
-			if s.audioSession != host || (ready != nil && !ready()) {
-				return errAudioSessionResourcesNotReady
+			if err := checkReady(); err != nil {
+				return err
 			}
 			if beforeStart == nil {
 				return nil
