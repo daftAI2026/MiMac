@@ -200,7 +200,19 @@ func (m *weTypeWindowEventMonitor) disableRepark() windowlease.ReparkDecision {
 }
 
 func wechatRecordingWindowIdentity(window windowlease.Window) bool {
-	return window.OnScreen && window.OwnerPID > 0 && window.Layer == wechatRecordingLayer &&
+	return window.OnScreen && wechatRecordingWindowClassified(window)
+}
+
+// wechatPrepaintRecordingWindow accepts only the same exact recording bar
+// while it is still off-screen. It is used solely for AXWindowCreated events.
+func wechatPrepaintRecordingWindow(window windowlease.Window) bool {
+	return !window.OnScreen && wechatRecordingWindowClassified(window) &&
+		window.Frame.Size == (windowlease.Size{Width: 200, Height: 130}) &&
+		window.Position == window.Frame.Origin && window.Size == window.Frame.Size
+}
+
+func wechatRecordingWindowClassified(window windowlease.Window) bool {
+	return window.OwnerPID > 0 && window.Layer == wechatRecordingLayer &&
 		window.Role == "AXWindow" && window.Subrole == "AXSystemDialog" &&
 		window.IdentifierKnown && window.IdentifierEmpty && window.DescriptionKnown && window.DescriptionEmpty &&
 		window.ChildrenKnown && len(window.ChildRoles) == 0 && window.AXMatchCount == 1 &&

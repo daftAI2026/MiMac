@@ -29,8 +29,13 @@ const (
 	ApplicationEventShown
 )
 
+type ApplicationNotice struct {
+	Event   ApplicationEvent
+	Element uintptr
+}
+
 type ApplicationEventSource interface {
-	Events() <-chan ApplicationEvent
+	Events() <-chan ApplicationNotice
 	Close()
 }
 
@@ -40,6 +45,12 @@ type ApplicationVisibilityProbe interface {
 	ApplicationVisibility(pid int32, element uintptr) (ApplicationVisibility, error)
 	SetApplicationHidden(pid int32, hidden bool) error
 	WatchApplication(pid int32) (ApplicationEventSource, error)
+}
+
+// prepaintWindowProbe is intentionally separate from Probe.Windows: only an
+// adapter that opts into prepaint suppression can inspect off-screen CG rows.
+type prepaintWindowProbe interface {
+	WindowForPrepaint(pid int32, element uintptr) (Window, int, bool, error)
 }
 
 type HiddenBaseline struct {
@@ -90,6 +101,20 @@ func CaptureHiddenBaseline(pid int32, checkIdentity func() error, probe Probe) (
 // its AXWindows entry, so incomplete matches wait for the next event or bounded
 // observation rather than being treated as the recording panel.
 func (b *HiddenBaseline) Suppress(ctx context.Context, eligible func(Window) bool, observeLimit, pollInterval time.Duration) (*HiddenLease, Outcome, error) {
+	return b.suppress(ctx, eligible, nil, observeLimit, pollInterval)
+}
+
+// SuppressWithWindowCreatedPrepaint allows a caller with an exact off-screen
+// classifier to claim a window only on AXWindowCreated. The regular visible
+// discovery path remains unchanged.
+func (b *HiddenBaseline) SuppressWithWindowCreatedPrepaint(ctx context.Context, eligible, prepaintEligible func(Window) bool, observeLimit, pollInterval time.Duration) (*HiddenLease, Outcome, error) {
+	if prepaintEligible == nil {
+		return nil, OutcomeUnavailable, ErrVisibilityUnavailable
+	}
+	return b.suppress(ctx, eligible, prepaintEligible, observeLimit, pollInterval)
+}
+
+func (b *HiddenBaseline) suppress(ctx context.Context, eligible, prepaintEligible func(Window) bool, observeLimit, pollInterval time.Duration) (*HiddenLease, Outcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -165,12 +190,112 @@ func (b *HiddenBaseline) Suppress(ctx context.Context, eligible func(Window) boo
 		case <-deadline.C:
 			return nil, OutcomeUnchanged, nil
 		case <-ticker.C:
-		case _, ok := <-events.Events():
+		case notice, ok := <-events.Events():
 			if !ok {
 				return nil, OutcomeUnavailable, ErrVisibilityUnavailable
 			}
+			if notice.Event == ApplicationEventWindowCreated && prepaintEligible != nil && notice.Element != 0 {
+				lease, outcome, done, err := b.suppressPrepaintCandidate(ctx, prepaintEligible, events, notice.Element)
+				if lease != nil {
+					transferEvents = true
+					return lease, outcome, err
+				}
+				b.probe.Release(notice.Element)
+				if err != nil {
+					return nil, outcome, err
+				}
+				if done {
+					return nil, outcome, nil
+				}
+			} else if notice.Element != 0 {
+				b.probe.Release(notice.Element)
+			}
 		}
 	}
+}
+
+func (b *HiddenBaseline) suppressPrepaintCandidate(ctx context.Context, eligible func(Window) bool, events ApplicationEventSource, element uintptr) (*HiddenLease, Outcome, bool, error) {
+	probe, ok := b.probe.(prepaintWindowProbe)
+	if !ok {
+		return nil, OutcomeUnchanged, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, OutcomeCancelled, true, err
+	}
+	if err := b.checkIdentity(); err != nil {
+		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
+	window, onScreenCount, found, err := probe.WindowForPrepaint(b.pid, element)
+	if err != nil {
+		if errors.Is(err, ErrAmbiguous) {
+			return nil, OutcomeAmbiguous, true, err
+		}
+		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, OutcomeCancelled, true, err
+	}
+	// A visible target or another visible IME window belongs to the ordinary
+	// exact on-screen path. A callback alone never claims an off-screen CG ID.
+	if !found || onScreenCount != 0 || window.OnScreen || window.ID == 0 || window.Element != element || !eligible(window) {
+		return nil, OutcomeUnchanged, false, nil
+	}
+	state, err := b.appProbe.ApplicationVisibility(b.pid, element)
+	if err != nil {
+		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, OutcomeCancelled, true, err
+	}
+	if state.WindowCount > 1 {
+		return nil, OutcomeAmbiguous, true, ErrAmbiguous
+	}
+	if state.Hidden || state.WindowCount != 1 || !state.ContainsElement || state.FocusedPID != b.focusedPID {
+		return nil, OutcomeUnchanged, false, nil
+	}
+	if err := b.checkIdentity(); err != nil {
+		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
+	// Recheck only the stable CG identity immediately before AXHidden. If it
+	// has become visible, continue observing so the ordinary path can handle it.
+	current, found, err := b.probe.WindowByID(b.pid, window.ID)
+	if err != nil {
+		return nil, OutcomeUnavailable, true, err
+	}
+	if !found || current.OnScreen || !samePrepaintCGWindow(window, current) {
+		return nil, OutcomeUnchanged, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, OutcomeCancelled, true, err
+	}
+	if err := b.appProbe.SetApplicationHidden(b.pid, true); err != nil {
+		return nil, OutcomeUnchanged, true, err
+	}
+	if err := ctx.Err(); err != nil {
+		if b.checkIdentity() == nil {
+			_ = b.appProbe.SetApplicationHidden(b.pid, false)
+		}
+		return nil, OutcomeCancelled, true, err
+	}
+	state, err = b.appProbe.ApplicationVisibility(b.pid, element)
+	if err != nil {
+		if b.checkIdentity() == nil {
+			_ = b.appProbe.SetApplicationHidden(b.pid, false)
+		}
+		return nil, OutcomeUnavailable, true, err
+	}
+	if !state.Hidden {
+		// The input method won the show race. Do not re-hide; resume observing
+		// so its now-visible recorder can use the existing exact path.
+		return nil, OutcomeUnchanged, false, nil
+	}
+	if state.WindowCount != 1 || !state.ContainsElement || state.FocusedPID != b.focusedPID {
+		if b.checkIdentity() == nil {
+			_ = b.appProbe.SetApplicationHidden(b.pid, false)
+		}
+		return nil, OutcomeUnchanged, true, nil
+	}
+	return &HiddenLease{baseline: b, element: element, events: events, hiddenByLease: true}, OutcomeSuppressedPrepaint, true, nil
 }
 
 func (b *HiddenBaseline) hideCandidate(ctx context.Context, window Window, events ApplicationEventSource) (result *HiddenLease, outcome Outcome, err error) {
@@ -225,6 +350,10 @@ func (b *HiddenBaseline) hideCandidate(ctx context.Context, window Window, event
 		lease.hiddenByLease = false
 	}
 	return nil, OutcomeUnchanged, nil
+}
+
+func samePrepaintCGWindow(a, b Window) bool {
+	return a.ID == b.ID && a.OwnerPID == b.OwnerPID && a.Layer == b.Layer && a.Frame == b.Frame
 }
 
 type HiddenLease struct {
@@ -294,9 +423,11 @@ func (s *HiddenLease) Maintain(ctx context.Context, sessionEnd <-chan struct{}) 
 			return s.Restore(context.Background())
 		case <-sessionEnd:
 			sessionEnd = nil
-		case _, ok := <-events:
+		case notice, ok := <-events:
 			if !ok {
 				events = nil
+			} else if notice.Element != 0 {
+				s.baseline.probe.Release(notice.Element)
 			}
 		case <-ticker.C:
 		}

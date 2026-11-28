@@ -66,6 +66,130 @@ func TestPositionLeaseWakesForFullyClassifiedRecorder(t *testing.T) {
 	}
 }
 
+func TestWindowCreatedPrepaintClaimsExactOffscreenWindowAndRestoresOnWeTypeShow(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline := captureVisibilityTestBaseline(t, probe)
+	probe.putWindow(visibilityTestWindowRecord(false), true)
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
+	lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, time.Second, time.Millisecond)
+	if err != nil || outcome != OutcomeSuppressedPrepaint || lease == nil {
+		t.Fatalf("prepaint Suppress() = (%v, %q, %v)", lease != nil, outcome, err)
+	}
+	if state := probe.snapshot(); state.hideWrites != 1 || !state.hidden {
+		t.Fatalf("prepaint claim: writes=%d hidden=%v", state.hideWrites, state.hidden)
+	}
+	probe.setWindowOnScreen(visibilityTestWindow, true)
+	probe.setHiddenExternally(false) // WeType takes display ownership after the lease.
+	if err := lease.Maintain(context.Background(), nil); err != nil {
+		t.Fatalf("Maintain() after WeType show: %v", err)
+	}
+	if state := probe.snapshot(); state.hideWrites != 1 || state.hidden || state.retained != 0 || state.observerCloses != 1 {
+		t.Fatalf("after WeType show: writes=%d hidden=%v refs=%d closes=%d", state.hideWrites, state.hidden, state.retained, state.observerCloses)
+	}
+}
+
+func TestWindowCreatedPrepaintRequiresNewUniqueAXAndExactRecorder(t *testing.T) {
+	prepaintEligible := func(window Window) bool {
+		return visibilityTestEligible(window) && !window.OnScreen && window.Frame.Size == (Size{Width: 200, Height: 130})
+	}
+	t.Run("old offscreen CG row without event", func(t *testing.T) {
+		probe := newVisibilityTestProbe()
+		baseline := captureVisibilityTestBaseline(t, probe)
+		probe.putWindow(visibilityTestWindowRecord(false), true)
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, 5*time.Millisecond, time.Millisecond)
+		if err != nil || outcome != OutcomeUnchanged || lease != nil || probe.snapshot().hideWrites != 0 {
+			t.Fatalf("old offscreen row: lease=%v outcome=%q err=%v writes=%d", lease != nil, outcome, err, probe.snapshot().hideWrites)
+		}
+	})
+	t.Run("candidate event", func(t *testing.T) {
+		probe := newVisibilityTestProbe()
+		baseline := captureVisibilityTestBaseline(t, probe)
+		candidate := visibilityTestWindowRecord(false)
+		candidate.Frame.Size = Size{Width: 510, Height: 32}
+		candidate.Size = candidate.Frame.Size
+		probe.putWindow(candidate, true)
+		probe.sendApplicationEvent(ApplicationEventWindowCreated)
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, 5*time.Millisecond, time.Millisecond)
+		if err != nil || outcome != OutcomeUnchanged || lease != nil || probe.snapshot().hideWrites != 0 {
+			t.Fatalf("candidate event: lease=%v outcome=%q err=%v writes=%d", lease != nil, outcome, err, probe.snapshot().hideWrites)
+		}
+	})
+	t.Run("CG row without AX membership", func(t *testing.T) {
+		probe := newVisibilityTestProbe()
+		baseline := captureVisibilityTestBaseline(t, probe)
+		probe.putWindow(visibilityTestWindowRecord(false), false)
+		probe.sendApplicationEvent(ApplicationEventWindowCreated)
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, 5*time.Millisecond, time.Millisecond)
+		if err != nil || outcome != OutcomeUnchanged || lease != nil || probe.snapshot().hideWrites != 0 || probe.snapshot().retained != 0 {
+			t.Fatalf("CG-only event: lease=%v outcome=%q err=%v writes=%d refs=%d", lease != nil, outcome, err, probe.snapshot().hideWrites, probe.snapshot().retained)
+		}
+	})
+	t.Run("focus changed", func(t *testing.T) {
+		probe := newVisibilityTestProbe()
+		baseline := captureVisibilityTestBaseline(t, probe)
+		probe.putWindow(visibilityTestWindowRecord(false), true)
+		probe.changeFocusOnNextSnapshot = true
+		probe.sendApplicationEvent(ApplicationEventWindowCreated)
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, 5*time.Millisecond, time.Millisecond)
+		if err != nil || outcome != OutcomeUnchanged || lease != nil || probe.snapshot().hideWrites != 0 {
+			t.Fatalf("focus change: lease=%v outcome=%q err=%v writes=%d", lease != nil, outcome, err, probe.snapshot().hideWrites)
+		}
+	})
+	t.Run("another window is onscreen", func(t *testing.T) {
+		probe := newVisibilityTestProbe()
+		baseline := captureVisibilityTestBaseline(t, probe)
+		probe.putWindow(visibilityTestWindowRecord(false), true)
+		other := visibilityTestWindowRecord(true)
+		other.ID++
+		other.Element++
+		probe.putWindow(other, false)
+		probe.sendApplicationEvent(ApplicationEventWindowCreated)
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, time.Second, time.Millisecond)
+		if err != nil || outcome != OutcomeUnchanged || lease != nil || probe.snapshot().hideWrites != 0 {
+			t.Fatalf("onscreen peer: lease=%v outcome=%q err=%v writes=%d", lease != nil, outcome, err, probe.snapshot().hideWrites)
+		}
+	})
+}
+
+func TestWindowCreatedPrepaintOnscreenRaceUsesExistingPath(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline := captureVisibilityTestBaseline(t, probe)
+	probe.putWindow(visibilityTestWindowRecord(false), true)
+	probe.windowOnScreenOnIDRead = true
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
+	lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, time.Second, time.Millisecond)
+	if err != nil || outcome != OutcomeSuppressed || lease == nil {
+		t.Fatalf("ordinary on-screen fallback: lease=%v outcome=%q err=%v", lease != nil, outcome, err)
+	}
+	if probe.snapshot().hideWrites != 1 {
+		t.Fatalf("fallback hide writes=%d, want one ordinary hide", probe.snapshot().hideWrites)
+	}
+	if err := lease.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWindowCreatedPrepaintYieldToWeTypeShowUsesExistingPath(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline := captureVisibilityTestBaseline(t, probe)
+	probe.putWindow(visibilityTestWindowRecord(false), true)
+	probe.showOnFirstHide = true
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
+	lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, time.Second, time.Millisecond)
+	if err != nil || outcome != OutcomeSuppressed || lease == nil {
+		t.Fatalf("ordinary path after WeType show: lease=%v outcome=%q err=%v", lease != nil, outcome, err)
+	}
+	if probe.snapshot().hideWrites != 2 {
+		t.Fatalf("hide writes=%d, want one prepaint attempt and one on-screen claim", probe.snapshot().hideWrites)
+	}
+	if err := lease.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDelayedRecorderDuringActiveSession(t *testing.T) {
 	for _, endFirst := range []bool{false, true} {
 		name := "created"
@@ -428,6 +552,8 @@ type visibilityTestProbe struct {
 	changeFocusOnNextSnapshot     bool
 	addForeignOnNextSnapshot      bool
 	incompleteFirstAXRead         bool
+	windowOnScreenOnIDRead        bool
+	showOnFirstHide               bool
 	events                        *visibilityTestEvents
 }
 
@@ -454,10 +580,12 @@ func (p *visibilityTestProbe) snapshot() visibilityTestSnapshot {
 }
 
 func newVisibilityTestProbe() *visibilityTestProbe {
-	return &visibilityTestProbe{
+	probe := &visibilityTestProbe{
 		windows: make(map[uint32]Window), focusedPID: visibilityTestFocus,
-		retained: make(map[uintptr]int), events: &visibilityTestEvents{events: make(chan ApplicationEvent, 8)},
+		retained: make(map[uintptr]int), events: &visibilityTestEvents{events: make(chan ApplicationNotice, 8)},
 	}
+	probe.events.release = probe.Release
+	return probe
 }
 
 func (p *visibilityTestProbe) putWindow(window Window, axVisible bool) {
@@ -482,7 +610,12 @@ func (p *visibilityTestProbe) setHiddenExternally(hidden bool) {
 }
 
 func (p *visibilityTestProbe) sendApplicationEvent(event ApplicationEvent) {
-	p.events.events <- event
+	notice := ApplicationNotice{Event: event}
+	if event == ApplicationEventWindowCreated {
+		notice.Element = visibilityTestElement
+		p.Retain(notice.Element)
+	}
+	p.events.events <- notice
 }
 
 func (p *visibilityTestProbe) WindowNumbers(pid int32) (map[uint32]struct{}, error) {
@@ -530,8 +663,39 @@ func (p *visibilityTestProbe) Windows(pid int32, newerThan map[uint32]struct{}) 
 func (p *visibilityTestProbe) WindowByID(pid int32, id uint32) (Window, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.windowOnScreenOnIDRead {
+		p.windowOnScreenOnIDRead = false
+		window := p.windows[id]
+		window.OnScreen = true
+		p.windows[id] = window
+	}
 	window, ok := p.windows[id]
 	return window, ok && window.OwnerPID == pid, nil
+}
+
+func (p *visibilityTestProbe) WindowForPrepaint(pid int32, element uintptr) (Window, int, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	onScreenCount := 0
+	for _, window := range p.windows {
+		if window.OwnerPID == pid && window.OnScreen {
+			onScreenCount++
+		}
+	}
+	for _, window := range p.windows {
+		if window.OwnerPID == pid && window.Element == element {
+			return window, onScreenCount, window.AXMatchCount == 1, nil
+		}
+	}
+	return Window{}, onScreenCount, false, nil
+}
+
+func (p *visibilityTestProbe) setWindowOnScreen(id uint32, onScreen bool) {
+	p.mu.Lock()
+	window := p.windows[id]
+	window.OnScreen = onScreen
+	p.windows[id] = window
+	p.mu.Unlock()
 }
 
 func (p *visibilityTestProbe) SetPosition(element uintptr, point Point) error {
@@ -626,6 +790,14 @@ func (p *visibilityTestProbe) SetApplicationHidden(pid int32, hidden bool) error
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.hideWrites++
+	if hidden && p.showOnFirstHide {
+		p.showOnFirstHide = false
+		p.hidden = false
+		window := p.windows[visibilityTestWindow]
+		window.OnScreen = true
+		p.windows[visibilityTestWindow] = window
+		return nil
+	}
 	if hidden && p.hideNoopCount > 0 {
 		p.hideNoopCount--
 		return nil
@@ -642,14 +814,15 @@ func (p *visibilityTestProbe) WatchApplication(pid int32) (ApplicationEventSourc
 }
 
 type visibilityTestEvents struct {
-	events     chan ApplicationEvent
+	events     chan ApplicationNotice
+	release    func(uintptr)
 	mu         sync.Mutex
 	watchCount int
 	closeCount int
 	closeOnce  sync.Once
 }
 
-func (e *visibilityTestEvents) Events() <-chan ApplicationEvent { return e.events }
+func (e *visibilityTestEvents) Events() <-chan ApplicationNotice { return e.events }
 
 func (e *visibilityTestEvents) Close() {
 	e.closeOnce.Do(func() {
@@ -657,5 +830,10 @@ func (e *visibilityTestEvents) Close() {
 		e.closeCount++
 		e.mu.Unlock()
 		close(e.events)
+		for notice := range e.events {
+			if notice.Element != 0 && e.release != nil {
+				e.release(notice.Element)
+			}
+		}
 	})
 }

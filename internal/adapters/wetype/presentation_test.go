@@ -83,6 +83,41 @@ func TestWeTypeClassifierRequiresExactObservedMetadata(t *testing.T) {
 	}
 }
 
+func TestWeTypePrepaintClassifierOnlyAcceptsExactOffscreenRecorder(t *testing.T) {
+	base := testWeTypeWindow(52574, 4162, 200, 130, true, nil)
+	base.OnScreen = false
+	tests := []struct {
+		name   string
+		mutate func(*windowlease.Window)
+		want   bool
+	}{
+		{name: "exact offscreen recorder", want: true},
+		{name: "already onscreen", mutate: func(w *windowlease.Window) { w.OnScreen = true }},
+		{name: "candidate dimensions", mutate: func(w *windowlease.Window) {
+			w.Frame.Size = windowlease.Size{Width: 510, Height: 32}
+			w.Size = w.Frame.Size
+		}},
+		{name: "candidate has children", mutate: func(w *windowlease.Window) { w.ChildRoles = []string{"AXButton"} }},
+		{name: "unavailable identifier", mutate: func(w *windowlease.Window) { w.IdentifierKnown = false }},
+		{name: "unavailable children", mutate: func(w *windowlease.Window) { w.ChildrenKnown = false }},
+		{name: "wrong role", mutate: func(w *windowlease.Window) { w.Role = "AXGroup" }},
+		{name: "wrong layer", mutate: func(w *windowlease.Window) { w.Layer++ }},
+		{name: "nonwritable position", mutate: func(w *windowlease.Window) { w.PositionSettable = false }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			window := base
+			window.ChildRoles = append([]string(nil), base.ChildRoles...)
+			if test.mutate != nil {
+				test.mutate(&window)
+			}
+			if got := wechatPrepaintRecordingWindow(window); got != test.want {
+				t.Fatalf("wechatPrepaintRecordingWindow() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWeTypeIdentityChangePreventsAnyWindowWrite(t *testing.T) {
 	const pid = int32(4162)
 	probe := newRecordingProbe()

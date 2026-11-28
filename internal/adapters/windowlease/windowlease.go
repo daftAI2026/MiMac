@@ -21,11 +21,12 @@ var (
 type Outcome string
 
 const (
-	OutcomeUnchanged   Outcome = "unchanged"
-	OutcomeSuppressed  Outcome = "suppressed"
-	OutcomeAmbiguous   Outcome = "ambiguous"
-	OutcomeCancelled   Outcome = "cancelled"
-	OutcomeUnavailable Outcome = "unavailable"
+	OutcomeUnchanged          Outcome = "unchanged"
+	OutcomeSuppressed         Outcome = "suppressed"
+	OutcomeSuppressedPrepaint Outcome = "suppressed_prepaint"
+	OutcomeAmbiguous          Outcome = "ambiguous"
+	OutcomeCancelled          Outcome = "cancelled"
+	OutcomeUnavailable        Outcome = "unavailable"
 )
 
 type Point struct{ X, Y float64 }
@@ -174,7 +175,7 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 	defer ticker.Stop()
 	// A fully classified recorder can be parked on first sight. Wake on window
 	// creation when the target supports it; the ticker also covers delayed AX data.
-	var notices <-chan ApplicationEvent
+	var notices <-chan ApplicationNotice
 	if watcher, ok := b.probe.(ApplicationVisibilityProbe); ok && stableInterval == 0 {
 		if events, err := watcher.WatchApplication(b.pid); err == nil && events != nil {
 			defer events.Close()
@@ -240,17 +241,21 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 			select {
 			case <-ctx.Done():
 				return nil, OutcomeCancelled, ctx.Err()
-			case _, open := <-notices:
+			case notice, open := <-notices:
 				if !open {
 					return nil, OutcomeUnchanged, nil
+				} else if notice.Element != 0 {
+					b.probe.Release(notice.Element)
 				}
 			}
 			ticker.Reset(pollInterval)
 			deadline.Reset(observeLimit)
 		case <-ticker.C:
-		case _, open := <-notices:
+		case notice, open := <-notices:
 			if !open {
 				notices = nil
+			} else if notice.Element != 0 {
+				b.probe.Release(notice.Element)
 			}
 		}
 	}

@@ -380,22 +380,84 @@ func (probe darwinPresentationProbe) Windows(pid int32, newerThan map[uint32]str
 	if err != nil {
 		return nil, err
 	}
-	newRecords[0].AXMatchCount = matched.Count
-	if matched.Count == 1 {
-		newRecords[0].Role = matched.Role
-		newRecords[0].Subrole = matched.Subrole
-		newRecords[0].Element = matched.Element
-		newRecords[0].Position = matched.Position
-		newRecords[0].Size = matched.Size
-		newRecords[0].PositionSettable = matched.PositionSettable
-		newRecords[0].IdentifierEmpty = matched.IdentifierEmpty
-		newRecords[0].IdentifierKnown = matched.IdentifierKnown
-		newRecords[0].DescriptionEmpty = matched.DescriptionEmpty
-		newRecords[0].DescriptionKnown = matched.DescriptionKnown
-		newRecords[0].ChildrenKnown = matched.ChildrenKnown
-		newRecords[0].ChildRoles = matched.ChildRoles
-	}
+	setAXWindowMatch(&newRecords[0], matched)
 	return newRecords, nil
+}
+
+// WindowForPrepaint joins the AXWindowCreated callback element directly to
+// one same-PID CG row. The callback owns element until the lease takes it.
+func (probe darwinPresentationProbe) WindowForPrepaint(pid int32, element uintptr) (Window, int, bool, error) {
+	if pid <= 0 || element == 0 {
+		return Window{}, 0, false, ErrUnavailable
+	}
+	var elementPID int32
+	if probe.api.axGetPID(element, &elementPID) != 0 || elementPID != pid {
+		return Window{}, 0, false, nil
+	}
+	values, err := probe.api.copyAttributes(element, "AXRole", "AXSubrole", "AXPosition", "AXSize", "AXIdentifier", "AXDescription", "AXChildren")
+	if err != nil {
+		return Window{}, 0, false, err
+	}
+	defer probe.api.cfRelease(values)
+	position, positionOK := probe.api.pointValue(probe.api.cfArrayValue(values, 2))
+	size, sizeOK := probe.api.sizeValue(probe.api.cfArrayValue(values, 3))
+	if !positionOK || !sizeOK {
+		return Window{}, 0, false, nil
+	}
+	records, err := probe.api.windowRecords(pid, 0, 0)
+	if err != nil {
+		return Window{}, 0, false, err
+	}
+	onScreenCount, matchCount, matchIndex := 0, 0, -1
+	for i, record := range records {
+		if record.OnScreen {
+			onScreenCount++
+		}
+		if sameRect(Rect{Origin: position, Size: size}, record.Frame) {
+			matchCount++
+			matchIndex = i
+		}
+	}
+	if matchCount > 1 {
+		return Window{}, onScreenCount, false, ErrAmbiguous
+	}
+	if matchCount == 0 {
+		return Window{}, onScreenCount, false, nil
+	}
+	window := records[matchIndex]
+	window.Role = probe.api.stringValue(probe.api.cfArrayValue(values, 0))
+	window.Subrole = probe.api.stringValue(probe.api.cfArrayValue(values, 1))
+	window.Element = element
+	window.Position = position
+	window.Size = size
+	window.AXMatchCount = 1
+	window.IdentifierEmpty, window.IdentifierKnown = probe.api.optionalStringEmpty(probe.api.cfArrayValue(values, 4))
+	window.DescriptionEmpty, window.DescriptionKnown = probe.api.optionalStringEmpty(probe.api.cfArrayValue(values, 5))
+	window.ChildRoles, window.ChildrenKnown = probe.api.childRolesInArray(probe.api.cfArrayValue(values, 6))
+	var settable uint8
+	if probe.api.axIsSettable(element, probe.api.attributes["AXPosition"], &settable) == 0 {
+		window.PositionSettable = settable != 0
+	}
+	return window, onScreenCount, true, nil
+}
+
+func setAXWindowMatch(window *Window, matched axWindowMatch) {
+	window.AXMatchCount = matched.Count
+	if matched.Count != 1 {
+		return
+	}
+	window.Role = matched.Role
+	window.Subrole = matched.Subrole
+	window.Element = matched.Element
+	window.Position = matched.Position
+	window.Size = matched.Size
+	window.PositionSettable = matched.PositionSettable
+	window.IdentifierEmpty = matched.IdentifierEmpty
+	window.IdentifierKnown = matched.IdentifierKnown
+	window.DescriptionEmpty = matched.DescriptionEmpty
+	window.DescriptionKnown = matched.DescriptionKnown
+	window.ChildrenKnown = matched.ChildrenKnown
+	window.ChildRoles = matched.ChildRoles
 }
 
 type axWindowMatch struct {

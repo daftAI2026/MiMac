@@ -108,10 +108,19 @@ func (p darwinPresentationProbe) SetApplicationHidden(pid int32, hidden bool) er
 
 type darwinApplicationEvents struct {
 	*darwinWindowEventSource
-	notices chan ApplicationEvent
+	notices chan ApplicationNotice
 }
 
-func (s *darwinApplicationEvents) Events() <-chan ApplicationEvent { return s.notices }
+func (s *darwinApplicationEvents) Events() <-chan ApplicationNotice { return s.notices }
+
+func (s *darwinApplicationEvents) Close() {
+	s.darwinWindowEventSource.Close()
+	for notice := range s.notices {
+		if notice.Element != 0 {
+			s.api.cfRelease(notice.Element)
+		}
+	}
+}
 
 var applicationObservers sync.Map
 var appAXCallback = purego.NewCallback(func(observer, element, notification, ref uintptr) {
@@ -119,13 +128,17 @@ var appAXCallback = purego.NewCallback(func(observer, element, notification, ref
 	if !ok {
 		return
 	}
-	// A created-window notification can name the new window rather than its
-	// application element. Its owning observer is bound to this single PID.
-	// Notifications only wake discovery; the write checks fresh AX and CG state.
-	events := value.(chan ApplicationEvent)
+	source := value.(*darwinApplicationEvents)
+	notice := ApplicationNotice{Event: ApplicationEvent(ref)}
+	if notice.Event == ApplicationEventWindowCreated && element != 0 {
+		notice.Element = source.api.cfRetain(element)
+	}
 	select {
-	case events <- ApplicationEvent(ref):
+	case source.notices <- notice:
 	default:
+		if notice.Element != 0 {
+			source.api.cfRelease(notice.Element)
+		}
 	}
 })
 
@@ -136,7 +149,7 @@ func (p darwinPresentationProbe) WatchApplication(pid int32) (ApplicationEventSo
 	}
 	source := &darwinApplicationEvents{
 		darwinWindowEventSource: &darwinWindowEventSource{api: p.api, element: app, stop: make(chan struct{}), done: make(chan struct{})},
-		notices:                 make(chan ApplicationEvent, 2),
+		notices:                 make(chan ApplicationNotice, 2),
 	}
 	ready := make(chan error, 1)
 	go func() {
@@ -147,12 +160,12 @@ func (p darwinPresentationProbe) WatchApplication(pid int32) (ApplicationEventSo
 			{"AXWindowCreated", uintptr(ApplicationEventWindowCreated)},
 			{"AXApplicationShown", uintptr(ApplicationEventShown)},
 		}, func(observer uintptr) func() {
-			applicationObservers.Store(observer, source.notices)
+			applicationObservers.Store(observer, source)
 			return func() { applicationObservers.Delete(observer) }
 		})
 	}()
 	if err := <-ready; err != nil {
-		<-source.done
+		source.Close()
 		return nil, err
 	}
 	return source, nil

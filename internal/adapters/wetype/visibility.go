@@ -29,7 +29,7 @@ func (b *RecordingBarVisibilityBaseline) Suppress(ctx context.Context) (*Recordi
 	if b == nil || b.inner == nil {
 		return nil, windowlease.OutcomeUnavailable, ErrPresentationUnavailable
 	}
-	lease, outcome, err := b.inner.Suppress(ctx, wechatRecordingWindow, visibilityObserveLimit, visibilityPollInterval)
+	lease, outcome, err := b.inner.SuppressWithWindowCreatedPrepaint(ctx, wechatRecordingWindow, wechatPrepaintRecordingWindow, visibilityObserveLimit, visibilityPollInterval)
 	if lease == nil {
 		return nil, outcome, err
 	}
