@@ -172,6 +172,12 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 			}
 			log.Printf("audio route: ready=%t error=%v", ready, err)
 			s.recoverFailedLiveAudio(connection)
+			if s.coordinator != nil {
+				s.coordinator.validateDeferredVoice()
+				if s.audioResourcesReady != nil && s.audioResourcesReady() {
+					s.coordinator.resumeDeferredVoice()
+				}
+			}
 			s.invalidateDeviceView()
 		})
 	}
@@ -218,7 +224,7 @@ func (s *shell) recoverFailedLiveAudio(connection *liveAudioConnection) bool {
 	}
 	s.liveAudio.recoveryAttempted = true
 	traceAudioSession(snapshot.Generation, 0, 0, "source_rebuild", connection.sourceFailure())
-	s.retireLiveAudio()
+	s.retireLiveAudioForRecovery()
 	return s.liveAudio.retiring
 }
 
@@ -244,6 +250,17 @@ func recoverableLiveAudioSourceFailure(err error) bool {
 // Tool changes retire the previous session before preparing the next target.
 // HID ownership survives this swap; failed cleanup retains its original host.
 func (s *shell) retireLiveAudio() {
+	s.retireLiveAudioWithDeferral(false)
+}
+
+func (s *shell) retireLiveAudioForRecovery() {
+	s.retireLiveAudioWithDeferral(true)
+}
+
+func (s *shell) retireLiveAudioWithDeferral(preserveDeferredPress bool) {
+	if !preserveDeferredPress && s.coordinator != nil {
+		s.coordinator.clearDeferredVoice(true)
+	}
 	if s.liveAudio.retiring || s.audioSession == nil {
 		return
 	}
@@ -337,7 +354,7 @@ func liveAudioFailureStatus(err error) (string, bool) {
 func (s *shell) blockUnpreparedLiveAudio() {
 	if s.audioRequested() && s.coordinator != nil && s.audioSession == nil {
 		s.coordinator.voiceAudioBinding = func(bridge.ActionPlan) (bridge.Binding, error) {
-			return bridge.Binding{}, errors.New("remote audio backend is not prepared")
+			return bridge.Binding{}, errAudioSessionResourcesNotReady
 		}
 	}
 }

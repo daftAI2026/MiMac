@@ -22,6 +22,11 @@ import (
 const audioSessionPlugin = "audio-session"
 const audioShutdownErrorPrefix = "audio shutdown: "
 
+var (
+	errAudioSessionResourcesNotReady = errors.New("audio session resources are not ready")
+	errAudioSessionUnavailable       = errors.New("audio session is unavailable")
+)
+
 // A verified device plugin supplies the source and its negotiated PCM format
 // and selected route. No production factory is installed until that device's
 // real start/stop/tail contract is verified.
@@ -131,15 +136,21 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 		// path for physical voice edges. Otherwise they remain shortcut-only.
 		ready := s.audioResourcesReady
 		s.coordinator.voiceAudioBinding = func(plan bridge.ActionPlan) (bridge.Binding, error) {
-			if s.closing || s.audioSession != host || (ready != nil && !ready()) {
-				return bridge.Binding{}, errors.New("audio session resources are not ready")
+			if s.closing {
+				return bridge.Binding{}, errAudioSessionUnavailable
+			}
+			if s.audioSession != host || (ready != nil && !ready()) {
+				return bridge.Binding{}, errAudioSessionResourcesNotReady
 			}
 			return voiceAudioBindingForAction(plan)
 		}
 		beforeStart := s.audioResourcesBeforeStart
 		s.coordinator.beforeAudioStart = func() error {
-			if s.closing || s.audioSession != host || (ready != nil && !ready()) {
-				return errors.New("audio session resources are not ready")
+			if s.closing {
+				return errAudioSessionUnavailable
+			}
+			if s.audioSession != host || (ready != nil && !ready()) {
+				return errAudioSessionResourcesNotReady
 			}
 			if beforeStart == nil {
 				return nil
@@ -288,6 +299,7 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 					}
 					s.recoverFailedLiveAudio(connection)
 				}
+				s.coordinator.resumeDeferredVoice()
 				s.report.Core = s.coordinator.report()
 				s.invalidateDeviceView()
 			})
