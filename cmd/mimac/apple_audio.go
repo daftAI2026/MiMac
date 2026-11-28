@@ -62,6 +62,9 @@ func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary, locale
 	}, func() (transcriptTarget, error) {
 		return textoutput.BeginDictation(), nil
 	}, appleRoutePartialConfig{onPartial: onPartial, enabled: partialsEnabled, openWithPartials: openSpeech})
+	if route != nil {
+		route.discardUnclaimed = owner.DiscardUnclaimedPress
+	}
 	return route, errors.Join(err, routeErr)
 }
 

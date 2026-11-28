@@ -41,13 +41,14 @@ type xiaomiAudioCloseAttempt struct {
 // output format and a prepared-resource owner. It does not select an output
 // UID, request MIC_OPEN, or start a target action.
 type xiaomiAudioRoute struct {
-	generation  uint64
-	sampleRate  int
-	newSource   xiaomiAudioSourceFactory
-	newSink     func(context.Context) (audiosession.Sink, error)
-	closeDevice func() error
-	sequence    atomic.Uint64
-	resources   *preparedAudioOwner
+	generation       uint64
+	sampleRate       int
+	newSource        xiaomiAudioSourceFactory
+	newSink          func(context.Context) (audiosession.Sink, error)
+	closeDevice      func() error
+	discardUnclaimed func()
+	sequence         atomic.Uint64
+	resources        *preparedAudioOwner
 
 	mu            sync.Mutex
 	deviceClosed  bool
@@ -58,7 +59,7 @@ func newXiaomiAudioRoute(generation uint64, device *atvv.DeviceOwner, config aud
 	if device == nil {
 		return nil, errors.New("xiaomi audio route: device owner is required")
 	}
-	return newXiaomiAudioRouteWithFactories(
+	route, err := newXiaomiAudioRouteWithFactories(
 		generation,
 		func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
 			source, err := device.PrepareSource(ctx, key)
@@ -68,6 +69,10 @@ func newXiaomiAudioRoute(generation uint64, device *atvv.DeviceOwner, config aud
 		config,
 		openXiaomiAudioSink,
 	)
+	if route != nil {
+		route.discardUnclaimed = device.DiscardUnclaimedPress
+	}
+	return route, err
 }
 
 // newXiaomiAudioRouteWithFactories is the fakeable composition seam for tests
@@ -141,6 +146,12 @@ func (r *xiaomiAudioRoute) Start() error {
 		return errPreparedAudioNil
 	}
 	return r.resources.Start()
+}
+
+func (r *xiaomiAudioRoute) DiscardUnclaimedPress() {
+	if r != nil && r.discardUnclaimed != nil {
+		r.discardUnclaimed()
+	}
 }
 
 func (r *xiaomiAudioRoute) Ready() bool {
@@ -300,6 +311,12 @@ type xiaomiRateCheckedSource struct {
 	mu           sync.Mutex
 	checked      bool
 	readyErr     error
+}
+
+func (s *xiaomiRateCheckedSource) ClaimPreparedPress() {
+	if claimed, ok := s.inner.(interface{ ClaimPreparedPress() }); ok {
+		claimed.ClaimPreparedPress()
+	}
 }
 
 func (s *xiaomiRateCheckedSource) Read(ctx context.Context, pcm []int16) (int, error) {

@@ -210,6 +210,9 @@ func (o *preparedAudioOwner) Take(token bridge.SessionToken) (audiosession.Resou
 	if o.generation != generation || o.state != preparedAudioReady {
 		return audiosession.Resources{}, errors.Join(errPreparedAudioNotReady, o.lastErr)
 	}
+	if source, ok := o.current.Source.(interface{ ClaimPreparedPress() }); ok {
+		source.ClaimPreparedPress()
+	}
 	o.state = preparedAudioLeased
 	o.signalChangeLocked()
 	o.leaseDone = make(chan struct{})

@@ -579,3 +579,73 @@ func TestXiaomiAudioRoutePreservesReceiverGateWithoutCallingItDuringPrewarm(t *t
 		t.Fatal("receiver context changed")
 	}
 }
+
+type wireRouteTestTransport struct{}
+
+func (wireRouteTestTransport) Ready(ctx context.Context) error { return ctx.Err() }
+func (wireRouteTestTransport) RequestStop(context.Context, byte) error {
+	return errors.New("unexpected host stop on finished wire stream")
+}
+func (wireRouteTestTransport) Close() error { return nil }
+
+func TestCompatRouteClaimsOnlyAudioForTheCurrentGesture(t *testing.T) {
+	var handler atvv.NativeEventHandler
+	device, err := atvv.NewDeviceOwner(1, func(h atvv.NativeEventHandler) (atvv.DeviceTransport, error) {
+		handler = h
+		return wireRouteTestTransport{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := &nativeCompatATVVOwner{owner: device}
+	r, err := newXiaomiPCMRoute(1, native.newSource, native.close, 16000, func(context.Context) (audiosession.Sink, error) { return &xiaomiRouteTestSink{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.discardUnclaimed = native.DiscardUnclaimedPress
+	live := &compatLiveAudioRoute{route: r}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+	emit := func(kind atvv.NativeEventKind, data ...byte) {
+		t.Helper()
+		if err := handler(atvv.NativeEvent{Kind: kind, Bytes: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(atvv.NativeEventControlValue, 0x0b, 1, 0, 0xa5, 0x5a, 0, 0x78, 0xcc)
+	waitXiaomiRoute(t, r.Ready)
+	tokens := hexRouteTestTokens(t, 2)
+	lease, err := r.Prepare(ctx, tokens[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit(atvv.NativeEventControlValue, 4, 3, 2, 1)
+	emit(atvv.NativeEventAudioValue, 0x70)
+	emit(atvv.NativeEventControlValue, 0)
+	emit(atvv.NativeEventControlValue, 4, 3, 2, 2)
+	emit(atvv.NativeEventAudioValue, 0x77)
+	live.DiscardUnclaimedPress()
+	emit(atvv.NativeEventControlValue, 0)
+	// The old sink still owns its source. The canceled second press cannot erase its tail.
+	samples := make([]int16, 8)
+	if n, err := lease.Source.Read(ctx, samples); err != nil || n != 2 || samples[0] != 11 {
+		t.Fatalf("first source n=%d pcm=%v err=%v", n, samples, err)
+	}
+	closeXiaomiResources(t, lease)
+	waitXiaomiRoute(t, r.Ready)
+	emit(atvv.NativeEventControlValue, 4, 3, 2, 3)
+	emit(atvv.NativeEventAudioValue, 0xf0)
+	lease, err = r.Prepare(ctx, tokens[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit(atvv.NativeEventControlValue, 0)
+	if n, err := lease.Source.Read(ctx, samples); err != nil || n != 2 || samples[0] != -11 {
+		t.Fatalf("next source n=%d pcm=%v err=%v", n, samples, err)
+	}
+	closeXiaomiResources(t, lease)
+}

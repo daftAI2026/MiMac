@@ -43,25 +43,27 @@ type DeviceTransportFactory func(NativeEventHandler) (DeviceTransport, error)
 type DeviceOwner struct {
 	generation uint64
 
-	mu           sync.Mutex
-	closeMu      sync.Mutex
-	transport    DeviceTransport
-	lease        *deviceLease
-	closingLease *deviceLease
-	nextLease    *deviceLease
-	capabilities []byte
-	capsReady    bool
-	changed      chan struct{}
-	fault        error
-	orphanStream bool
-	closing      bool
-	closed       bool
+	mu                   sync.Mutex
+	closeMu              sync.Mutex
+	transport            DeviceTransport
+	lease                *deviceLease
+	closingLease         *deviceLease
+	nextLease            *deviceLease
+	capabilities         []byte
+	capsReady            bool
+	changed              chan struct{}
+	fault                error
+	orphanStream         bool
+	dropEndedBeforeClaim bool
+	closing              bool
+	closed               bool
 }
 
 type deviceLease struct {
 	key        StreamKey
 	source     *Source
 	continuous bool
+	claimed    bool
 	closing    bool
 	fault      error
 }
@@ -69,12 +71,21 @@ type deviceLease struct {
 // NewDeviceOwner creates a connected-device owner. The factory receives the
 // synchronous event callback that must be passed to the native Transport.
 func NewDeviceOwner(generation uint64, factory DeviceTransportFactory) (*DeviceOwner, error) {
+	return newDeviceOwner(generation, factory, false)
+}
+
+func newDeviceOwner(generation uint64, factory DeviceTransportFactory, prepareFirst bool) (*DeviceOwner, error) {
 	if generation == 0 || factory == nil {
 		return nil, ErrInvalidSessionKey
 	}
 	owner := &DeviceOwner{
 		generation: generation,
 		changed:    make(chan struct{}),
+	}
+	// The live route uses sequential reservations starting at one. Install
+	// the first slot before CoreBluetooth can deliver any new-stream callbacks.
+	if prepareFirst {
+		owner.nextLease = &deviceLease{key: StreamKey{Generation: generation, Session: 1}}
 	}
 	transport, err := factory(owner.handleNativeEvent)
 	if err != nil {
@@ -97,9 +108,9 @@ func NewDeviceOwner(generation uint64, factory DeviceTransportFactory) (*DeviceO
 
 // OpenDeviceOwner opens one native transport and retains it until DeviceOwner.Close.
 func OpenDeviceOwner(generation uint64, libraryPath string) (*DeviceOwner, error) {
-	return NewDeviceOwner(generation, func(handler NativeEventHandler) (DeviceTransport, error) {
+	return newDeviceOwner(generation, func(handler NativeEventHandler) (DeviceTransport, error) {
 		return OpenTransport(libraryPath, handler)
-	})
+	}, true)
 }
 
 // NewSource reserves one stream and returns it after notification readiness and
@@ -155,6 +166,7 @@ func (d *DeviceOwner) newSource(ctx context.Context, key StreamKey, waitForStop 
 		lease = d.nextLease
 	}
 	d.nextLease = nil
+	lease.continuous = waitForStop
 	// Bluetooth can deliver AUDIO_START and samples before Ready returns. The
 	// reservation owns those callbacks now. Decode into the usual bounded ring,
 	// but publish nothing until the transport and the device both confirm readiness.
@@ -168,7 +180,7 @@ func (d *DeviceOwner) newSource(ctx context.Context, key StreamKey, waitForStop 
 
 	err := transport.Ready(ctx)
 	if err == nil {
-		err = d.waitCapabilities(ctx, lease, waitForStop)
+		err = d.waitCapabilities(ctx, lease)
 	}
 	if err == nil {
 		return &SessionSource{source: source, owner: d, lease: lease}, nil
@@ -176,8 +188,10 @@ func (d *DeviceOwner) newSource(ctx context.Context, key StreamKey, waitForStop 
 	d.mu.Lock()
 	if d.lease == lease {
 		source.mu.Lock()
-		d.orphanStream = source.started && !source.stopObserved
+		d.orphanStream = d.orphanStream || (source.started && !source.stopObserved)
 		source.mu.Unlock()
+		d.discardNextLocked()
+		d.nextLease = nil
 		d.lease = nil
 		d.signalChangedLocked()
 	}
@@ -227,6 +241,57 @@ type SessionSource struct {
 
 	closeMu sync.Mutex
 	closed  bool
+}
+
+// ClaimPreparedPress marks the transfer from route preparation to a real
+// recording session. A later canceled gesture must never erase this source.
+func (s *SessionSource) ClaimPreparedPress() {
+	if s == nil || s.owner == nil {
+		return
+	}
+	d := s.owner
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lease == s.lease {
+		s.lease.claimed = true
+		d.dropEndedBeforeClaim = false
+	}
+}
+
+// DiscardUnclaimedPress cuts the audio boundary of a withdrawn gesture.
+// Keep the subscribed device and any source already transferred to Runtime.
+func (d *DeviceOwner) DiscardUnclaimedPress() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.closing {
+		return
+	}
+	d.dropEndedBeforeClaim = true
+	d.discardNextLocked()
+	if current := d.lease; current != nil && !current.claimed && current.fault == nil {
+		d.resetUnclaimedLocked(current)
+	}
+	d.signalChangedLocked()
+}
+
+func (d *DeviceOwner) discardNextLocked() {
+	if next := d.nextLease; next != nil && next.source != nil {
+		d.orphanStream = d.orphanStream || (next.source.started && !next.source.stopObserved)
+		next.source, next.fault = nil, nil
+	}
+}
+
+func (d *DeviceOwner) resetUnclaimedLocked(lease *deviceLease) {
+	s := lease.source
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d.orphanStream = d.orphanStream || (s.started && !s.stopObserved)
+	s.streamData = streamData{state: sourceArmed}
+	s.signalLocked()
+	d.nextLease = nil
 }
 
 func (s *SessionSource) Read(ctx context.Context, dst []int16) (int, error) {
@@ -516,7 +581,7 @@ func (d *DeviceOwner) finishClose(transport DeviceTransport) error {
 	return nil
 }
 
-func (d *DeviceOwner) waitCapabilities(ctx context.Context, lease *deviceLease, continuous bool) error {
+func (d *DeviceOwner) waitCapabilities(ctx context.Context, lease *deviceLease) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for {
@@ -532,10 +597,6 @@ func (d *DeviceOwner) waitCapabilities(ctx context.Context, lease *deviceLease, 
 		case d.lease != lease:
 			return ErrSessionLeaseDetached
 		case d.capsReady:
-			lease.continuous = continuous
-			if continuous && lease.source.stopObserved {
-				d.expectFollowingLeaseLocked(lease)
-			}
 			return nil
 		}
 		changed := d.changed
@@ -571,6 +632,9 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 			d.signalChangedLocked()
 			return nil
 		}
+		if d.orphanStream {
+			return d.handleUnleasedControlLocked(event.Bytes)
+		}
 		if d.receiveNextControlLocked(event.Bytes) {
 			return nil
 		}
@@ -582,11 +646,18 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 			d.signalChangedLocked()
 			return err
 		}
-		if d.lease.continuous && d.lease.source.stopObserved {
-			d.expectFollowingLeaseLocked(d.lease)
+		if d.lease.source.stopObserved {
+			if d.dropEndedBeforeClaim && !d.lease.claimed {
+				d.resetUnclaimedLocked(d.lease)
+			} else if d.lease.continuous {
+				d.expectFollowingLeaseLocked(d.lease)
+			}
 		}
 		return nil
 	case NativeEventAudioValue:
+		if d.orphanStream {
+			return nil
+		}
 		if next := d.nextLease; next != nil && next.source != nil {
 			if next.fault == nil {
 				next.fault = next.source.HandleAudio(next.key, event.Bytes)

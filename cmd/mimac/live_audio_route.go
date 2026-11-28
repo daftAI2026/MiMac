@@ -100,6 +100,8 @@ func (o *nativeCompatATVVOwner) newSource(ctx context.Context, key atvv.StreamKe
 	return o.owner.PrepareSource(ctx, key)
 }
 
+func (o *nativeCompatATVVOwner) DiscardUnclaimedPress() { o.owner.DiscardUnclaimedPress() }
+
 func (o *nativeCompatATVVOwner) close() error {
 	if o == nil || o.owner == nil {
 		return nil
@@ -382,6 +384,9 @@ func openLiveXiaomiRouteForTargetWithDependencies(
 	if owner == nil {
 		return lease, errCompatRouteOwnerNil
 	}
+	if device, ok := owner.(interface{ DiscardUnclaimedPress() }); ok {
+		inner.discardUnclaimed = device.DiscardUnclaimedPress
+	}
 	if err := ctx.Err(); err != nil {
 		return lease, err
 	}
@@ -578,6 +583,12 @@ func (r *compatLiveAudioRoute) verifyCapturedTargetIdle(ctx context.Context) err
 		return errCompatRouteTargetMissing
 	}
 	return requireCompatTargetIdle(ctx, r.inspector, r.identity, r.pid)
+}
+
+func (r *compatLiveAudioRoute) DiscardUnclaimedPress() {
+	if r != nil && r.route != nil {
+		r.route.DiscardUnclaimedPress()
+	}
 }
 
 func (r *compatLiveAudioRoute) Ready() bool {

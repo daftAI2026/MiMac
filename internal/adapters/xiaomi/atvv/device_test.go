@@ -706,3 +706,153 @@ func TestPreparedSourceSeparatesBackToBackWireStreams(t *testing.T) {
 		})
 	}
 }
+
+func TestWithdrawnPressCannotDonatePCMToNextClaim(t *testing.T) {
+	for _, when := range []string{"during stream", "after wire stop", "before delayed stream"} {
+		t.Run(when, func(t *testing.T) {
+			tr := &fakeDeviceTransport{}
+			d := newFakeDeviceOwner(t, 1, tr)
+			t.Cleanup(func() { _ = d.Close() })
+			emitTestCapabilities(t, tr)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			src, err := d.PrepareSource(ctx, StreamKey{Generation: 1, Session: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			emit := func(kind NativeEventKind, data ...byte) {
+				t.Helper()
+				if err := tr.emit(NativeEvent{Kind: kind, Bytes: data}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if when == "before delayed stream" {
+				d.DiscardUnclaimedPress()
+			}
+			emit(NativeEventControlValue, 0x04, 0x03, 0x02, 1)
+			emit(NativeEventAudioValue, 0x77)
+			if when == "during stream" {
+				d.DiscardUnclaimedPress()
+				emit(NativeEventAudioValue, 0x77)
+			}
+			emit(NativeEventControlValue, 0x00)
+			if when == "after wire stop" {
+				d.DiscardUnclaimedPress()
+			}
+			emit(NativeEventControlValue, 0x04, 0x03, 0x02, 2)
+			emit(NativeEventAudioValue, 0x70)
+			src.ClaimPreparedPress()
+			d.DiscardUnclaimedPress() // another withdrawal must leave the claimed source alone
+			emit(NativeEventControlValue, 0x00)
+			samples := make([]int16, 8)
+			n, err := src.Read(ctx, samples)
+			if err != nil || n != 2 || samples[0] != 11 || samples[1] != 13 {
+				t.Fatalf("got %v n=%d err=%v", samples, n, err)
+			}
+			if err := src.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if stops, closes := tr.snapshot(); len(stops) != 0 || closes != 0 {
+				t.Fatalf("unexpected device stop / reopen: %v %d", stops, closes)
+			}
+		})
+	}
+}
+
+func TestConsecutiveWireStartsBeforeSubscriptionReady(t *testing.T) {
+	tr := &gatedReadyTransport{&fakeDeviceTransport{}, make(chan struct{}, 2), make(chan struct{})}
+	d, err := NewDeviceOwner(1, func(h NativeEventHandler) (DeviceTransport, error) { tr.handler = h; return tr, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	type result struct {
+		source *SessionSource
+		err    error
+	}
+	made := make(chan result, 1)
+	go func() {
+		source, err := d.PrepareSource(ctx, StreamKey{Generation: 1, Session: 1})
+		made <- result{source, err}
+	}()
+	select {
+	case <-tr.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	emitTestCapabilities(t, tr.fakeDeviceTransport)
+	emit := func(kind NativeEventKind, body ...byte) {
+		t.Helper()
+		if err := tr.emit(NativeEvent{Kind: kind, Bytes: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(NativeEventControlValue, 0x04, 0x03, 0x02, 1)
+	emit(NativeEventAudioValue, 0x70)
+	emit(NativeEventControlValue, 0)
+	emit(NativeEventControlValue, 0x04, 0x03, 0x02, 2)
+	emit(NativeEventAudioValue, 0xf0)
+	close(tr.resume)
+	first := <-made
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	buf := make([]int16, 8)
+	if n, err := first.source.Read(ctx, buf); err != nil || n != 2 || buf[0] != 11 {
+		t.Fatalf("first n=%d pcm=%v err=%v", n, buf, err)
+	}
+	if err := first.source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := d.PrepareSource(ctx, StreamKey{Generation: 1, Session: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit(NativeEventControlValue, 0)
+	if n, err := next.Read(ctx, buf); err != nil || n != 2 || buf[0] != -11 {
+		t.Fatalf("second n=%d pcm=%v err=%v", n, buf, err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFirstLiveReservationReceivesCallbacksDuringOpen(t *testing.T) {
+	tr := &fakeDeviceTransport{}
+	d, err := newDeviceOwner(1, func(h NativeEventHandler) (DeviceTransport, error) {
+		tr.handler = h
+		for _, ev := range []NativeEvent{
+			{Kind: NativeEventControlValue, Bytes: []byte{4, 3, 2, 9}},
+			{Kind: NativeEventAudioValue, Bytes: []byte{0x70}},
+		} {
+			if err := h(ev); err != nil {
+				return nil, err
+			}
+		}
+		return tr, nil
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	emitTestCapabilities(t, tr)
+	src, err := d.PrepareSource(ctx, StreamKey{Generation: 1, Session: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ClaimPreparedPress()
+	if err := tr.emit(NativeEvent{Kind: NativeEventControlValue, Bytes: []byte{0}}); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]int16, 4)
+	if n, err := src.Read(ctx, buf); err != nil || n != 2 || buf[0] != 11 || buf[1] != 13 {
+		t.Fatalf("first wire prefix n=%d pcm=%v err=%v", n, buf, err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

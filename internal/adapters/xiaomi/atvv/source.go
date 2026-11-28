@@ -110,9 +110,15 @@ type Source struct {
 
 	mu          sync.Mutex
 	transportMu sync.Mutex
-	state       sourceState
-	cause       error
 	wake        chan struct{} // closed and replaced under mu to broadcast changes
+	streamData
+}
+
+// streamData is owned only by this wire stream. A withdrawn, unpublished
+// recording can be erased atomically without replacing its lease or wake channel.
+type streamData struct {
+	state sourceState
+	cause error
 
 	decoder       Decoder
 	codec         Codec
@@ -149,7 +155,7 @@ func NewSource(key StreamKey, transport StreamTransport) (*Source, error) {
 }
 
 func newStreamSource(key StreamKey, transport StreamTransport, state sourceState) *Source {
-	return &Source{key: key, transport: transport, wake: make(chan struct{}), state: state}
+	return &Source{key: key, transport: transport, wake: make(chan struct{}), streamData: streamData{state: state}}
 }
 
 // Arm validates the device's v1 CAPS payload. Calling Arm is the transport's
