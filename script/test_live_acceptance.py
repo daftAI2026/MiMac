@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 import contextlib
+import copy
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import plistlib
@@ -240,6 +242,14 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unverified"):
             live_acceptance.check_permission_snapshot({"status": "partial"})
 
+    def test_native_permission_status_group_blocks_voice_preparation(self):
+        snapshot = {"status": "ok", "nodes": [
+            {"role": "AXGroup", "description": "需要输入监控权限"},
+            {"role": "AXButton", "title": "启用遥控器"},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "需要输入监控权限"):
+            live_acceptance.check_permission_snapshot(snapshot)
+
     def test_quit_marker_prevents_a_second_signal_after_interruption(self):
         with tempfile.TemporaryDirectory() as directory, patch("live_acceptance.os.kill") as kill:
             live_acceptance.request_quit_once(directory, 11)
@@ -353,6 +363,99 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(saved_status=saved_status), patch("live_acceptance.managed_run", return_value=(Path("/owned/run"), {"status": "FINISHED"})), patch("live_acceptance.read", return_value={"status": saved_status}), patch("live_acceptance.write") as write, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(finish("/owned/run"), expected_exit)
                 write.assert_not_called()
+
+
+class MultiplePlannedUtteranceTests(unittest.TestCase):
+    def evidence(self, merge_both_before_second=False, wrong_target_pid=False, lose_focus=False):
+        base_time = datetime.now(timezone.utc)
+        stamp = lambda offset: (base_time + timedelta(seconds=offset)).timestamp()
+        iso = lambda offset: (base_time + timedelta(seconds=offset)).isoformat()
+        voice = report()
+        first = copy.deepcopy(voice["io"]["sessions"][0])
+        first.update(session=21, generation=8, first_started_at=iso(.5), last_finished_at=iso(1.3))
+        second = copy.deepcopy(first)
+        second.update(session=22, first_started_at=iso(2.0), last_finished_at=iso(2.8))
+        voice["io"]["sessions"] = [first, second]
+        source = "com.bytedance.inputmethod.doubaoime.pinyin"
+        fixture_pid = live_acceptance.os.getpid()
+        target_pid = fixture_pid + 1
+        base_field = {"pid": fixture_pid, "window_title": "MiMac 语音验收", "focused": True,
+                      "app_active": True, "frontmost_pid": fixture_pid, "has_marked_text": False,
+                      "input_source_id": source, "status": "ok"}
+
+        def text_at(offset):
+            if merge_both_before_second and offset >= 1.6:
+                return "prefixalphabeta"
+            if offset >= 3.0:
+                return "prefixalphabeta"
+            if offset >= 1.6:
+                return "prefixalpha"
+            return "prefix"
+
+        timeline = []
+        for tick in range(1, 17):
+            offset = tick * .2
+            field = {**base_field, "time": stamp(offset), "text": text_at(offset)}
+            if lose_focus and offset == .8:
+                field["focused"] = False
+            timeline.append({"time": stamp(offset), "field": field})
+        target = {"reported_pid": target_pid + 1 if wrong_target_pid else target_pid,
+                  "bundle_id": source.removesuffix(".pinyin"),
+                  "running_input_status": 0, "running_input": 1,
+                  "input_devices": [{"uid": "dev.mimac.audio.compat.v1"}]}
+        target_timeline = [
+            {"query_start_time": stamp(offset - .01), "query_end_time": stamp(offset + .01),
+             "target": target}
+            for offset in (.7, 1.1, 2.2, 2.6)
+        ]
+        final_field = {**base_field, "time": stamp(3.2), "text": "prefixalphabeta"}
+        result = live_acceptance.assess(
+            {"normal_exit": True, "core": {"pressed": 0}}, voice, "prefix", final_field["text"],
+            timeline, source, fixture_pid, target_timeline,
+            expected_texts=["alpha", "beta"], final_field=final_field,
+            expected_target_pid=target_pid,
+        )
+        return result
+
+    def test_each_press_has_its_own_audio_route_focus_and_exact_text(self):
+        result = self.evidence()
+        self.assertEqual(result["status"], "PASS", result)
+        self.assertEqual([item["text"]["status"] for item in result["planned_utterances"]], ["PASS", "PASS"])
+        self.assertTrue(result["checks"]["session_audio_evidence"])
+        self.assertTrue(result["checks"]["target_route_evidence"])
+        self.assertTrue(result["checks"]["session_focus_evidence"])
+        self.assertTrue(result["checks"]["committed_before_next_session"])
+
+    def test_correct_total_text_cannot_hide_a_missing_per_session_boundary(self):
+        result = self.evidence(merge_both_before_second=True)
+        self.assertEqual(result["planned_utterances"][-1]["text"]["expected"], "beta")
+        self.assertFalse(result["checks"]["planned_text_complete"])
+        self.assertFalse(result["checks"]["committed_before_next_session"])
+        self.assertEqual(result["status"], "NOT_PASSED")
+
+    def test_legacy_state_and_single_cli_value_remain_one_sentence(self):
+        self.assertEqual(live_acceptance.expected_texts_from_state({"schema": 1, "expected_text": "alpha"}), ["alpha"])
+        self.assertEqual(live_acceptance.expected_texts_from_state({"schema": 1, "expected_text": None}), [])
+        self.assertEqual(live_acceptance.planned_text_values("alpha"), ["alpha"])
+        self.assertEqual(live_acceptance.expected_texts_from_state({
+            "schema": 1, "expected_text": "alphabeta", "expected_texts": ["alpha", "beta"]
+        }), ["alpha", "beta"])
+
+    def test_cli_collects_each_predeclared_sentence_in_order(self):
+        argv = ["live_acceptance.py", "prepare", "--expected-text", "alpha", "--expected-text", "beta"]
+        with patch.object(live_acceptance.sys, "argv", argv), patch.object(live_acceptance, "prepare", return_value=0) as prepare:
+            self.assertEqual(live_acceptance.main(), 0)
+            self.assertEqual(prepare.call_args.args[0].expected_text, ["alpha", "beta"])
+
+    def test_multi_session_target_pid_mismatch_fails_route_evidence(self):
+        result = self.evidence(wrong_target_pid=True)
+        self.assertFalse(result["checks"]["target_route_evidence"])
+        self.assertEqual(result["status"], "NOT_PASSED")
+
+    def test_focus_loss_in_a_planned_session_fails_the_pair(self):
+        result = self.evidence(lose_focus=True)
+        self.assertFalse(result["checks"]["session_focus_evidence"])
+        self.assertEqual(result["status"], "NOT_PASSED")
 
 
 if __name__ == "__main__":

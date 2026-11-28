@@ -179,8 +179,10 @@ def check_permission_snapshot(snapshot):
     if snapshot.get("status") != "ok" or snapshot.get("truncated"):
         raise RuntimeError("permission state is unverified: AX snapshot is incomplete")
     for node in snapshot.get("nodes", []):
-        if node.get("role") == "AXStaticText" and node.get("value") in ("需要输入监控权限", "需要辅助功能权限"):
-            raise RuntimeError("permission blocked: " + node["value"])
+        label_key = {"AXGroup": "description", "AXStaticText": "value"}.get(node.get("role"))
+        label = node.get(label_key)
+        if label in ("需要输入监控权限", "需要辅助功能权限"):
+            raise RuntimeError("permission blocked: " + label)
 
 
 def request_quit_once(directory, pid):
@@ -191,16 +193,39 @@ def request_quit_once(directory, pid):
         os.kill(pid, signal.SIGTERM)
 
 
+def planned_text_values(value):
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("expected text must be a sentence or a list of sentences")
+    result = list(values)
+    for text in result:
+        if not isinstance(text, str):
+            raise ValueError("expected text must be a sentence")
+        assess_utterance("", "", text)
+    return result
+
+
+def expected_texts_from_state(state):
+    # schema 1 runs stored one expected_text string; newer runs may store a list.
+    return planned_text_values(state.get("expected_texts", state.get("expected_text")))
+
+
 def prepare(args):
+    expected_texts = planned_text_values(getattr(args, "expected_text", None))
     CACHE.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=CACHE))
     stage = "preflight"
     state = {"schema": 1, "run": str(directory), "status": "PREPARING", "source_check": args.source_check,
-             "expected_text": getattr(args, "expected_text", None)}
+             "expected_text": "".join(expected_texts) if expected_texts else None}
+    if len(expected_texts) > 1:
+        state["expected_texts"] = expected_texts
     write(directory / "state.json", state)
     try:
         # Validate the written plan before building or touching any application.
-        assess_utterance("", None, state["expected_text"])
+        for expected_text in expected_texts:
+            assess_utterance("", "", expected_text)
         if sys.platform != "darwin":
             raise RuntimeError("macOS required")
         dev_receipt = getattr(args, "fixed_dev_receipt", None)
@@ -424,7 +449,12 @@ def fresh_target(rows, now):
     return row["target"]
 
 
-def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None, target_timeline=None, expected_text=None):
+def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=None, target_timeline=None, expected_text=None, expected_texts=None, final_field=None, focus_through=None, expected_target_pid=None):
+    planned = planned_text_values(expected_texts if expected_texts is not None else expected_text)
+    if len(planned) > 1:
+        return assess_planned_sessions(host, voice, baseline, final, timeline, expected_source,
+                                       fixture_pid, target_timeline, planned, final_field, expected_target_pid)
+    expected_text = planned[0] if planned else None
     checks = {"normal_exit": host.get("normal_exit") is True, "keys_released": host.get("core", {}).get("pressed") == 0, "new_text": isinstance(final, str) and final.startswith(baseline) and len(final) > len(baseline)}
     sessions = voice.get("io", {}).get("sessions", [])
     checks["sessions_present"] = bool(sessions)
@@ -437,6 +467,8 @@ def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=
         commits = [row.get("time", 0) for row in timeline if row.get("time", 0) >= start and isinstance(row.get("field", {}).get("text"), str) and row["field"]["text"].startswith(baseline) and len(row["field"]["text"]) > len(baseline) and row["field"].get("has_marked_text") is False]
         if commits:
             end = max(end, min(commits))
+        if focus_through is not None:
+            end = max(end, focus_through)
         samples = [x for x in timeline if start - .3 <= x.get("time", 0) <= end + .3]
         times = sorted(x["time"] for x in samples)
         covers_interval = bool(times) and times[0] <= start + .3 and times[-1] >= end - .3 and all(b - a <= .5 for a, b in zip(times, times[1:]))
@@ -460,6 +492,181 @@ def assess(host, voice, baseline, final, timeline, expected_source, fixture_pid=
     if expected_text is not None:
         checks["planned_text_complete"] = utterance["status"] == "PASS"
     return {"status": "PASS" if all(checks.values()) else "NOT_PASSED", "checks": checks, "utterance": utterance, "scope": "one planned voice session: actual text append, local audio acceptance, bounded sampled focus and cleanup; optional exact planned utterance, not every target-consumed sample, general ASR accuracy or Siri appearance"}
+
+
+def session_bounds(session):
+    return (dt.datetime.fromisoformat(session["first_started_at"]).timestamp(),
+            dt.datetime.fromisoformat(session["last_finished_at"]).timestamp())
+
+
+def timeline_time(row):
+    value = row.get("time", row.get("field", {}).get("time", 0))
+    if type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    return value
+
+
+def committed_text(row):
+    field = row.get("field", {})
+    return (isinstance(field.get("text"), str)
+            and field.get("has_marked_text") is False
+            and field.get("status", "ok") == "ok")
+
+
+def committed_field_is_focused(field, expected_source, fixture_pid):
+    return (field.get("focused") is True and field.get("app_active") is True
+            and field.get("window_title") == "MiMac 语音验收"
+            and field.get("frontmost_pid") == field.get("pid")
+            and (fixture_pid is None or field.get("pid") == fixture_pid)
+            and (not expected_source or field.get("input_source_id") == expected_source))
+
+
+def session_target_pid_evidence(rows, session, expected_target_pid):
+    if expected_target_pid is None:
+        return False
+    start, end = session_bounds(session)
+    for row in rows:
+        query_start, query_end = target_interval(row)
+        target = row.get("target", {})
+        if (start <= query_start <= query_end <= end
+                and "error" not in row and row.get("status", "ok") == "ok"
+                and target.get("reported_pid") == expected_target_pid
+                and target.get("target_pid", expected_target_pid) == expected_target_pid):
+            return True
+    return False
+
+
+def assess_planned_sessions(host, voice, baseline, final, timeline, expected_source,
+                            fixture_pid, target_timeline, planned, final_field, expected_target_pid):
+    sessions = voice.get("io", {}).get("sessions", [])
+    voice_inspection = inspect_voice_report(voice)
+    checks = {
+        "normal_exit": host.get("normal_exit") is True,
+        "keys_released": host.get("core", {}).get("pressed") == 0,
+        "new_text": isinstance(final, str) and final.startswith(baseline) and len(final) > len(baseline),
+        "sessions_present": bool(sessions),
+        "planned_session_count_matches": len(sessions) == len(planned),
+        "audio_delivery": voice_inspection["local_delivery"] == "complete",
+    }
+    if sessions:
+        identities = [(s.get("generation"), s.get("session")) for s in sessions]
+        checks["distinct_same_generation_sessions"] = (
+            len(set(identities)) == len(sessions)
+            and len({generation for generation, _ in identities}) == 1
+        )
+        bounds = [session_bounds(session) for session in sessions]
+        checks["sessions_sequential"] = all(
+            bounds[index][0] <= bounds[index][1]
+            and (index + 1 == len(bounds) or bounds[index][1] <= bounds[index + 1][0])
+            for index in range(len(bounds))
+        )
+    else:
+        checks["distinct_same_generation_sessions"] = False
+        checks["sessions_sequential"] = False
+
+    utterances = []
+    previous_text = baseline
+    for index, expected in enumerate(planned):
+        if index >= len(sessions):
+            utterances.append({"index": index + 1, "status": "NOT_PASSED",
+                               "reason": "planned session is missing", "expected": expected})
+            continue
+        session = sessions[index]
+        start, end = session_bounds(session)
+        next_start = session_bounds(sessions[index + 1])[0] if index + 1 < len(sessions) else None
+        rows = []
+        for row in timeline:
+            stamp = timeline_time(row)
+            if stamp is not None and start - .3 <= stamp and (next_start is None or stamp < next_start):
+                rows.append(row)
+
+        checkpoint = None
+        if next_start is not None:
+            candidates = [row for row in rows if start <= timeline_time(row) < next_start and committed_text(row)]
+            if candidates:
+                checkpoint = max(candidates, key=timeline_time)
+            segment_final = checkpoint.get("field", {}).get("text") if checkpoint else None
+        else:
+            segment_final = final
+            if final_field and committed_text({"field": final_field}):
+                checkpoint = {"time": final_field.get("time", final_field.get("timestamp", 0)),
+                              "field": final_field}
+
+        session_report = {**voice, "io": {**voice.get("io", {}), "sessions": [session]}}
+        session_local = inspect_voice_report(session_report)["sessions"][0]
+        checkpoint_time = timeline_time(checkpoint) if checkpoint else None
+        segment = assess(host, session_report, previous_text, segment_final, rows,
+                         expected_source, fixture_pid, target_timeline, expected_text=expected,
+                         focus_through=checkpoint_time if next_start is not None else None)
+        focus_at_commit = bool(checkpoint) and committed_field_is_focused(
+            checkpoint.get("field", {}), expected_source, fixture_pid)
+        committed_before_next = (next_start is not None and (
+            checkpoint is not None
+            and timeline_time(checkpoint) is not None
+            and timeline_time(checkpoint) < next_start
+            and committed_text(checkpoint)
+            and focus_at_commit
+            and segment["utterance"]["status"] == "PASS"
+        ))
+        session_checks = segment.get("checks", {})
+        target_rows = timeline if target_timeline is None else target_timeline
+        target_pid_evidence = (session_target_pid_evidence(target_rows, session, expected_target_pid)
+                               if expected_source else "NOT_APPLICABLE")
+        utterance = {
+            "index": index + 1,
+            "session": session.get("session"),
+            "generation": session.get("generation"),
+            "status": "PASS" if segment["status"] == "PASS" and (next_start is None or committed_before_next) else "NOT_PASSED",
+            "actual_audio": session_local,
+            "target_route_evidence": (session_checks.get("target_route_evidence")
+                                      if expected_source else "NOT_APPLICABLE"),
+            "target_pid_evidence": target_pid_evidence,
+            "focus_evidence": session_checks.get("session_focus_evidence", False) and (next_start is None or focus_at_commit),
+            "committed_before_next_session": committed_before_next if next_start is not None else None,
+            "final_text_committed": (None if next_start is not None else (
+                final_field is not None and final_field.get("text") == final
+                and committed_text({"field": final_field})
+                and committed_field_is_focused(final_field, expected_source, fixture_pid)
+            )),
+            "text": segment["utterance"],
+            "checks": session_checks,
+        }
+        utterances.append(utterance)
+        if segment["utterance"]["status"] == "PASS" and isinstance(segment_final, str):
+            previous_text = segment_final
+        else:
+            # Do not let a later correct total append hide a missed prior boundary.
+            previous_text = segment_final if isinstance(segment_final, str) else previous_text
+
+    checks["session_audio_evidence"] = len(utterances) == len(planned) and all(
+        item.get("actual_audio", {}).get("local_delivery") == "complete"
+        and item.get("actual_audio", {}).get("source_samples", 0) > 0
+        for item in utterances
+    )
+    checks["session_focus_evidence"] = len(utterances) == len(planned) and all(
+        item.get("focus_evidence") is True for item in utterances
+    )
+    if expected_source:
+        checks["target_route_evidence"] = len(utterances) == len(planned) and all(
+            item.get("target_route_evidence") is True and item.get("target_pid_evidence") is True
+            for item in utterances
+        )
+    prior_utterances = utterances[:-1]
+    checks["committed_before_next_session"] = len(utterances) == len(planned) and all(
+        item.get("committed_before_next_session") is True for item in prior_utterances
+    )
+    checks["final_text_committed"] = bool(utterances) and utterances[-1].get("final_text_committed") is True
+    checks["planned_text_complete"] = len(utterances) == len(planned) and all(
+        item.get("text", {}).get("status") == "PASS" for item in utterances
+    )
+    return {
+        "status": "PASS" if all(checks.values()) else "NOT_PASSED",
+        "checks": checks,
+        "utterance": {"status": "PASS" if checks["planned_text_complete"] else "NOT_PASSED",
+                      "expected": planned, "scope": "each planned phrase is checked against its own session boundary"},
+        "planned_utterances": utterances,
+        "scope": "predeclared voice sessions: each session's source PCM delivery, target route when applicable, sampled focus, exact committed text before the next session and final append; not every target-consumed sample, general ASR accuracy or Siri appearance",
+    }
 
 
 def assess_source_diagnostic(diagnostic, voice):
@@ -658,7 +865,11 @@ def finish(directory):
         timeline = [json.loads(line) for line in timeline_path.read_text().splitlines()] if timeline_path.exists() else []
         target_path = directory / "target-timeline.jsonl"
         target_timeline = [json.loads(line) for line in target_path.read_text().splitlines()] if target_path.exists() else None
-        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None, timeline, state.get("input_source"), state.get("fixture_pid"), target_timeline, state.get("expected_text"))
+        planned = expected_texts_from_state(state)
+        result = assess(host, voice, state.get("baseline_text", ""), final.get("text") if final else None,
+                        timeline, state.get("input_source"), state.get("fixture_pid"), target_timeline,
+                        state.get("expected_text"), expected_texts=planned if len(planned) > 1 else None,
+                        final_field=final, expected_target_pid=state.get("target_pid"))
         result["checks"]["final_text_settled"] = final is not None and final.get("has_marked_text") is False
         if state.get("target_pid") and state.get("probe"):
             target = json.loads(run(state["probe"], state["target_pid"], "audio", timeout=3))
@@ -704,7 +915,7 @@ def main():
     commands = parser.add_subparsers(dest="action", required=True)
     p = commands.add_parser("prepare", help="build, verify and prepare; no microphone/shortcut")
     p.add_argument("--go")
-    p.add_argument("--expected-text", help="planned spoken sentence; finish checks the whole new text, ignoring punctuation/spacing only")
+    p.add_argument("--expected-text", action="append", help="planned spoken sentence; repeat once per intended press for a multi-session run")
     p.add_argument("--source-check", action="store_true", help="explicit in-memory same-source local ASR diagnostic on App exit; never writes PCM")
     p.add_argument("--reuse-build", action="store_true", help="verify/relaunch the existing stopped binary after permission refresh; never rebuild")
     p.add_argument("--previous-run", type=Path, help="previous run whose bundle SHA values must match for --reuse-build")

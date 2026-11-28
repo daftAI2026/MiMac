@@ -1,21 +1,33 @@
 # 合并语音验收
 
-一轮使用一个正式 App 身份、一个语音工具和一个输入框。准备前选定句子，准备完成且输出 `READY` 后才让用户按键。沿用 `live_acceptance.py`，不另开监听器、不预触发快捷键。
+一轮使用一个正式 App 身份、一个语音工具和一个输入框。准备前选定单句或有序句子列表，准备完成且输出 `READY` 后才让用户按键。沿用 `live_acceptance.py`，不另开监听器、不预触发快捷键。
 
 ```sh
 python3 script/live_acceptance.py prepare \
   --go /absolute/path/to/go \
   --audio-backend mimac-compat --target-pid TARGET_PID \
-  --expected-text '现在检查完整语音，声音来自小米遥控器，最后是测试完成。'
+  --expected-text 'PLANNED_SENTENCE'
 python3 script/live_acceptance.py status /absolute/path/to/run
 python3 script/live_acceptance.py finish /absolute/path/to/run
 ```
+
+默认合同仍是一次准备、一次按压和一个语音会话。若要在同一 run 连续验收多句，在 `prepare` 前一次性为每次按压重复 `--expected-text`，顺序就是预期会话顺序：
+
+```sh
+python3 script/live_acceptance.py prepare \
+  --go /absolute/path/to/go \
+  --audio-backend mimac-compat --target-pid TARGET_PID \
+  --expected-text 'PLANNED_SENTENCE_1' \
+  --expected-text 'PLANNED_SENTENCE_2'
+```
+
+每句按压必须产生一个独立会话；下一次按压开始前，夹具中必须已有上一句的精确、已提交文本。`finish` 按会话分别核对非空源 PCM 与本地投递、适用时的目标输入路径、会话期间及前句提交时的焦点，以及该句的精确新增文本。总文本正确不能代替逐句检查。单个 `--expected-text` 的调用仍使用原单句合同；未指定时仍不作整句准确性判断。
 
 Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid`。Hex 先创建并取消一条空流，确认引擎可用并释放占用后再准备遥控器。未加载模型时停在此步。已核验的固定包使用原有 `--reuse-build --previous-run`；这些参数不会跳过当前权限、连接、输入法和焦点检查。
 
 冻结 Dev 的真机验收用 `prepare --fixed-dev-receipt /path/to/bundle-verification.json`。省略 `--audio-backend` 会沿用应用的正常选路，可验证已安装的声音组件是否被自动采用。
 
-安装包专项验收用 `prepare --installed-beta-manifest /path/to/release.json`，外部输入法仍传 `--target-pid`，整句验收传 `--expected-text`。该入口启动已安装且已退出的 `/Applications/MiMac.app`，沿用正常配置。绑定日用进程之前先结束日用会话，按准备阶段结果推进；Beta 安装、系统要求重开及球体实窗变化另行核对。
+安装包专项验收用 `prepare --installed-beta-manifest /path/to/release.json`，外部输入法仍传 `--target-pid`，整句验收传 `--expected-text`；多句时重复该参数。该入口启动已安装且已退出的 `/Applications/MiMac.app`，沿用正常配置。绑定日用进程之前先结束日用会话，按准备阶段结果推进；Beta 安装、系统要求重开及球体实窗变化另行核对。
 
 同一轮分别收集以下证据，不能用其中一项替代其他项：
 
@@ -33,7 +45,7 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 
 若需要区别源音频缺失与外部输入法漏字，在用户已经同意该诊断时加原有 `--source-check`。它复用本次源 PCM 的内存镜像做 Apple 对照，不额外开麦、不落盘录音；以报告的完整捕获及重放检查为准。
 
-每个 `prepare/finish` run 只允许一个会话；`finish` 会关闭 App 和自有输入窗口。一个批次若安排完整句和短句，应分别准备两个 run，不能把两次按键放进一个 run。连续输入、同窗口前缀保留和旧结果隔离使用专门的连续会话实验，不能由两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
+未重复 `--expected-text` 时，每个 `prepare/finish` run 仍只允许一个会话；多句 run 只允许与预先声明句数一致的会话数。`finish` 会关闭 App 和自有输入窗口。一个批次若安排不同合同的完整句和短句，应分别准备两个 run。连续输入、同窗口前缀保留和旧结果隔离仍需按对应会话逐句核对，不能由合并后的总文本或两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
 
 ### Apple 和 Hex 的听写与字幕
 
@@ -64,6 +76,14 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 同一语音会话的 `shortcut_down`、`shortcut_up`、`shortcut_tap` 记录 MiMac 向键盘输出层提交该动作的时间和返回结果。用它对齐物理松键与目标停读时间。目标是否接收该动作另取目标侧证据。日志只记录动作类型。
 
 该文件按当前应用配置目录隔离，只写阶段和结果代号，达到 1 MiB 后在下一次写入时截断。普通启动即可保留这些事件。每个音频块的投递计数或识别文字仍需对应的现场验收证据。
+
+离线按 press 核对可用 `script/inspect_audio_session_trace.py`。必须指定单个 `audio-session.log`、PID 和含时区的 UTC 起止时间，避免把进程重开或其他 PID 的事件拼在一起：
+
+```sh
+python3 script/inspect_audio_session_trace.py --trace "$HOME/Library/Application Support/MiMac/audio-session.log" --pid "$PID" --start "$START_UTC" --end "$END_UTC"
+```
+
+摘要只读取该日志的固定字段，不打开音频或听写正文。旧记录的八字段格式继续可读；冻结基线增加的第九字段 `end_policy` 只接受 `release_edge`、`release_after_drain`、`toggle`、`audio_only`。普通 `press` 和 `press_promoted` 中非零 session 才表示实际接纳。`press_deferred` 的 session 只引用旧会话；后续 `press_promoted`（兼容旧 `press`）才分配新 session。`press_deferred_released` 或 `press_deferred_cancelled` 表示未接纳；没有 promotion 或最终释放/取消记录则保持 `unknown`。因此临近到达的旧句 `prepared`/`drained`/`failed` 不会归给 pending press。生命周期回执按 PID、generation 和实际接纳的 session 精确关联。`failure_count` 是失败 press 数，不是错误日志行数。可选 `--voice-report PATH` 用既有 `inspect_voice_report.py` 单独摘要本地 I/O 计数；报告没有 PID，因此会明确保持未关联，不按可重复的 session 编号合并。退出码 1 表示有失败、未知终态或未匹配生命周期事件，2 表示输入无效。
 
 ### Verify the ordinary-launch audio route
 
