@@ -237,8 +237,8 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 				event, completionToken := bridge.AudioEventIdentity(completion.Event)
 				if completion.CleanupFailed {
 					event = "cleanup_failed"
-					traceAudioSession(completionToken.Device().Generation(), 0, completionToken.ID(), event, completion.Err)
-				} else if event == "drained" || event == "failed" {
+				}
+				if event == "drained" || event == "failed" {
 					traceAudioCompletion(completionToken.Device().Generation(), completionToken.ID(), event, completion.Err, completion.PCMReceipt)
 				} else {
 					traceAudioSession(completionToken.Device().Generation(), 0, completionToken.ID(), event, completion.Err)

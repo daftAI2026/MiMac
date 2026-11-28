@@ -443,7 +443,7 @@ func (r *Runtime) run(s *resource) {
 		s.pcmRate = resources.SampleRate
 	}
 	close(s.ready)
-	if err == nil && (resources.Source == nil || resources.Sink == nil || (resources.SampleRate != 8000 && resources.SampleRate != 16000)) {
+	if err == nil && !validPCM {
 		err = errors.New("audiosession: incomplete resources or unsupported PCM format")
 	}
 	err = atStage("prepare", err)
@@ -552,13 +552,10 @@ func (r *Runtime) copyPCM(s *resource, reader *startupReader, watcher *receiverW
 			if s.resources.Observer != nil {
 				s.resources.Observer.Observe(pcm[:n], time.Now())
 			}
-			accepted, writeErr := writePCM(s.ctx, s.resources.Sink, pcm[:n])
-			if accepted {
-				s.sinkSamples.Add(uint64(n))
+			if err := writePCM(s.ctx, s.resources.Sink, pcm[:n]); err != nil {
+				return atStage("sink_write", err)
 			}
-			if writeErr != nil {
-				return atStage("sink_write", writeErr)
-			}
+			s.sinkSamples.Add(uint64(n))
 		}
 		if readErr == io.EOF {
 			return r.drainEOF(s, watcher)
@@ -674,12 +671,12 @@ func sourceHealth(source Source) error {
 	return nil
 }
 
-func writePCM(ctx context.Context, sink Sink, pcm []int16) (accepted bool, err error) {
+func writePCM(ctx context.Context, sink Sink, pcm []int16) error {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return err
 	}
 	if err := sink.TryWrite(pcm); !errors.Is(err, audiooutput.ErrBackpressure) {
-		return err == nil, err
+		return err
 	}
 	// The steady path allocates no timer. Retry timing exists only while the
 	// bounded native queue is full, and cannot extend indefinitely.
@@ -690,15 +687,15 @@ func writePCM(ctx context.Context, sink Sink, pcm []int16) (accepted bool, err e
 	for {
 		select {
 		case <-deadline.C:
-			return false, context.DeadlineExceeded
+			return context.DeadlineExceeded
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		case <-ticker.C:
 			if err := ctx.Err(); err != nil {
-				return false, err
+				return err
 			}
 			if err := sink.TryWrite(pcm); !errors.Is(err, audiooutput.ErrBackpressure) {
-				return err == nil, err
+				return err
 			}
 		}
 	}
