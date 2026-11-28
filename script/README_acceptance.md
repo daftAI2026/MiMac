@@ -1,21 +1,33 @@
 # 合并语音验收
 
-一轮使用一个正式 App 身份、一个语音工具和一个输入框。准备前选定句子，准备完成且输出 `READY` 后才让用户按键。沿用 `live_acceptance.py`，不另开监听器、不预触发快捷键。
+一轮使用一个正式 App 身份、一个语音工具和一个输入框。准备前选定单句或有序句子列表，准备完成且输出 `READY` 后才让用户按键。沿用 `live_acceptance.py`，不另开监听器、不预触发快捷键。
 
 ```sh
 python3 script/live_acceptance.py prepare \
   --go /absolute/path/to/go \
   --audio-backend mimac-compat --target-pid TARGET_PID \
-  --expected-text '现在检查完整语音，声音来自小米遥控器，最后是测试完成。'
+  --expected-text 'PLANNED_SENTENCE'
 python3 script/live_acceptance.py status /absolute/path/to/run
 python3 script/live_acceptance.py finish /absolute/path/to/run
 ```
+
+默认合同仍是一次准备、一次按压和一个语音会话。若要在同一 run 连续验收多句，在 `prepare` 前一次性为每次按压重复 `--expected-text`，顺序就是预期会话顺序：
+
+```sh
+python3 script/live_acceptance.py prepare \
+  --go /absolute/path/to/go \
+  --audio-backend mimac-compat --target-pid TARGET_PID \
+  --expected-text 'PLANNED_SENTENCE_1' \
+  --expected-text 'PLANNED_SENTENCE_2'
+```
+
+每句按压必须产生一个独立会话；下一次按压开始前，夹具中必须已有上一句的精确、已提交文本。`finish` 按会话分别核对非空源 PCM 与本地投递、适用时的目标输入路径、会话期间及前句提交时的焦点，以及该句的精确新增文本。总文本正确不能代替逐句检查。单个 `--expected-text` 的调用仍使用原单句合同；未指定时仍不作整句准确性判断。
 
 Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid`。Hex 先创建并取消一条空流，确认引擎可用并释放占用后再准备遥控器。未加载模型时停在此步。已核验的固定包使用原有 `--reuse-build --previous-run`；这些参数不会跳过当前权限、连接、输入法和焦点检查。
 
 冻结 Dev 的真机验收用 `prepare --fixed-dev-receipt /path/to/bundle-verification.json`。省略 `--audio-backend` 会沿用应用的正常选路，可验证已安装的声音组件是否被自动采用。
 
-安装包专项验收用 `prepare --installed-beta-manifest /path/to/release.json`，外部输入法仍传 `--target-pid`，整句验收传 `--expected-text`。该入口启动已安装且已退出的 `/Applications/MiMac.app`，沿用正常配置。绑定日用进程之前先结束日用会话，按准备阶段结果推进；Beta 安装、系统要求重开及球体实窗变化另行核对。
+安装包专项验收用 `prepare --installed-beta-manifest /path/to/release.json`，外部输入法仍传 `--target-pid`，整句验收传 `--expected-text`；多句时重复该参数。该入口启动已安装且已退出的 `/Applications/MiMac.app`，沿用正常配置。绑定日用进程之前先结束日用会话，按准备阶段结果推进；Beta 安装、系统要求重开及球体实窗变化另行核对。
 
 同一轮分别收集以下证据，不能用其中一项替代其他项：
 
@@ -33,7 +45,7 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 
 若需要区别源音频缺失与外部输入法漏字，在用户已经同意该诊断时加原有 `--source-check`。它复用本次源 PCM 的内存镜像做 Apple 对照，不额外开麦、不落盘录音；以报告的完整捕获及重放检查为准。
 
-每个 `prepare/finish` run 只允许一个会话；`finish` 会关闭 App 和自有输入窗口。一个批次若安排完整句和短句，应分别准备两个 run，不能把两次按键放进一个 run。连续输入、同窗口前缀保留和旧结果隔离使用专门的连续会话实验，不能由两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
+未重复 `--expected-text` 时，每个 `prepare/finish` run 仍只允许一个会话；多句 run 只允许与预先声明句数一致的会话数。`finish` 会关闭 App 和自有输入窗口。一个批次若安排不同合同的完整句和短句，应分别准备两个 run。连续输入、同窗口前缀保留和旧结果隔离仍需按对应会话逐句核对，不能由合并后的总文本或两次独立 run 推导。冷启动、断连或撤权也各需对应前置条件。每轮先收齐同一会话的所有证据，再决定是否还需要现场操作。
 
 ### Apple 和 Hex 的听写与字幕
 
