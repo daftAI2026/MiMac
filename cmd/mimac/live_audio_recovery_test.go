@@ -710,3 +710,79 @@ func failTestRouteSource(route *liveAudioConnectionTestRoute, err error) {
 	default:
 	}
 }
+
+func TestHeldPhysicalEdgeDuringRouteFactoryReachesSink(t *testing.T) {
+	s, queue := liveHostFixture(t, nil)
+	plan := voiceAudioTestPlan(t, bridge.ActionHold, bridge.RequestStart, bridge.RequestFinish, "RightCommand")
+	s.coordinator.resolveVoiceAction = func() (bridge.ActionPlan, error) { return plan, nil }
+	keys := &routedEffectsKeySink{}
+	if err := s.coordinator.attachOutput(keys); err != nil {
+		t.Fatal(err)
+	}
+	first := newLiveAudioConnectionTestRoute()
+	next := newLiveAudioConnectionTestRoute()
+	source, sink := newHostPCMSource(), newHostPCMSink()
+	next.resources = audiosession.Resources{Source: source, Sink: sink, SampleRate: 16000}
+	release := make(chan struct{})
+	var calls atomic.Int32
+	s.liveAudio.factory = func(ctx context.Context, _ uint64, _ string) (liveAudioRoute, error) {
+		switch calls.Add(1) {
+		case 1:
+			return first, nil
+		case 2:
+			select {
+			case <-release:
+				return next, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		default:
+			return nil, errors.New("extra rebuild")
+		}
+	}
+	s.refreshLiveAudio()
+	old := s.liveAudio.connection
+	waitLiveAudioDone(t, old)
+	failTestRouteSource(first, errors.New("injected source failure"))
+	pumpLiveHost(t, queue, func() bool { return s.liveAudio.connection != nil && s.liveAudio.connection != old })
+	d, _ := bridge.NewDevice("live-host", 1)
+	press, _ := bridge.NewPressToken(d, toolShortcutsTestButton, 51)
+	edge := func(k devices.EdgeKind) {
+		s.handleDeviceEvent(devices.InputEvent{State: devices.InputStateConnected, Device: d, Edges: []devices.Edge{{Kind: k, Press: press}}})
+	}
+	edge(devices.EdgeDown)
+	if x := s.coordinator.core.Snapshot(); !x.HasDeferredVoice || x.HasSession || x.DeferredVoice != press {
+		t.Fatalf("during construction: %+v admission error: %s", x, s.report.Error)
+	}
+	close(release)
+	pumpLiveHost(t, queue, func() bool {
+		x := s.coordinator.core.Snapshot()
+		return x.HasSession && x.Session.Press == press && x.Session.Phase == bridge.PhaseCapturing
+	})
+	waitHostSignal(t, source.reading)
+	source.samples <- []int16{31, -32, 33}
+	select {
+	case got := <-sink.writes:
+		if !reflect.DeepEqual(got, []int16{31, -32, 33}) {
+			t.Fatalf("PCM=%v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("source did not reach sink")
+	}
+	edge(devices.EdgeUp)
+	pumpLiveHost(t, queue, func() bool { return !s.coordinator.core.Snapshot().HasSession })
+	select {
+	case tail := <-sink.writes:
+		if !reflect.DeepEqual(tail, []int16{7, -7, 9}) {
+			t.Fatalf("missing EOF samples %v", tail)
+		}
+	default:
+		t.Fatal("lost EOF audio")
+	}
+	if len(sink.writes) != 0 {
+		t.Fatal("duplicate audio")
+	}
+	if starts := countVoiceStartEffects(keys); starts != 1 || calls.Load() != 2 {
+		t.Fatalf("starts=%d factories=%d", starts, calls.Load())
+	}
+}
