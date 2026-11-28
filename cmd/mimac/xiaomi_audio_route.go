@@ -61,7 +61,7 @@ func newXiaomiAudioRoute(generation uint64, device *atvv.DeviceOwner, config aud
 	return newXiaomiAudioRouteWithFactories(
 		generation,
 		func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
-			source, err := device.NewSource(ctx, key)
+			source, err := device.PrepareSource(ctx, key)
 			return source, err
 		},
 		device.Close,

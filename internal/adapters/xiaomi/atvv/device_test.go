@@ -465,3 +465,161 @@ func TestDeviceOwnerCallbackAndSessionCloseAreMutuallyExclusive(t *testing.T) {
 		t.Fatalf("close did not stop callback-observed stream: stop IDs=%v", stops)
 	}
 }
+
+type gatedReadyTransport struct {
+	*fakeDeviceTransport
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (g *gatedReadyTransport) Ready(ctx context.Context) error {
+	select {
+	case g.entered <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-g.resume:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestReservedSourceReceivesStreamBeforeNotificationReadiness(t *testing.T) {
+	tr := &gatedReadyTransport{&fakeDeviceTransport{}, make(chan struct{}, 1), make(chan struct{})}
+	owner, err := NewDeviceOwner(1, func(h NativeEventHandler) (DeviceTransport, error) {
+		tr.handler = h
+		return tr, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		src *SessionSource
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		src, err := owner.NewSource(ctx, StreamKey{Generation: 1, Session: 1})
+		done <- result{src, err}
+	}()
+	select {
+	case <-tr.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for _, event := range []NativeEvent{
+		{Kind: NativeEventControlValue, Bytes: []byte{0x04, 0x03, 0x02, 0x09}},
+		{Kind: NativeEventAudioValue, Bytes: []byte{0x70}},
+		{Kind: NativeEventAudioValue, Bytes: []byte{0x00}},
+		{Kind: NativeEventControlValue, Bytes: []byte{0x00}},
+	} {
+		if err := tr.emit(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emitTestCapabilities(t, tr.fakeDeviceTransport)
+	select {
+	case <-done:
+		t.Fatal("published source before notification readiness")
+	default:
+	}
+	close(tr.resume)
+	res := <-done
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	buf := make([]int16, 8)
+	n, err := res.src.Read(ctx, buf)
+	if err != nil || n != 4 || buf[0] != 11 || buf[1] != 13 || buf[2] != 14 || buf[3] != 15 {
+		t.Fatalf("early prefix n=%d pcm=%v err=%v", n, buf, err)
+	}
+	if err := res.src.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCanceledReservationQuarantinesOnlyItsUnfinishedStream(t *testing.T) {
+	tr := &gatedReadyTransport{&fakeDeviceTransport{}, make(chan struct{}, 1), make(chan struct{})}
+	owner, err := NewDeviceOwner(2, func(h NativeEventHandler) (DeviceTransport, error) {
+		tr.handler = h
+		return tr, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	first, abort := context.WithCancel(ctx)
+	defer abort()
+	dropped := make(chan error, 1)
+	go func() { _, err := owner.PrepareSource(first, StreamKey{Generation: 2, Session: 1}); dropped <- err }()
+	select {
+	case <-tr.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	emit := func(kind NativeEventKind, data ...byte) {
+		t.Helper()
+		if err := tr.emit(NativeEvent{Kind: kind, Bytes: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(NativeEventControlValue, 0x04, 0x03, 0x02, 1)
+	emit(NativeEventAudioValue, 0x77)
+	abort()
+	if err := <-dropped; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reservation: %v", err)
+	}
+	if _, err := owner.NewSource(ctx, StreamKey{Generation: 2, Session: 2}); !errors.Is(err, ErrDeviceOrphanStreamActive) {
+		t.Fatalf("old stream still active: %v", err)
+	}
+	during, cancelDuring := context.WithCancel(ctx)
+	canceled := make(chan error, 1)
+	go func() { _, err := owner.PrepareSource(during, StreamKey{Generation: 2, Session: 2}); canceled <- err }()
+	cancelDuring()
+	if err := <-canceled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("orphan wait cancellation: %v", err)
+	}
+	type result struct {
+		src *SessionSource
+		err error
+	}
+	next := make(chan result, 1)
+	go func() {
+		src, err := owner.PrepareSource(ctx, StreamKey{Generation: 2, Session: 3})
+		next <- result{src, err}
+	}()
+	emit(NativeEventAudioValue, 0x77)
+	emit(NativeEventControlValue, 0x00)
+	select {
+	case <-tr.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	emitTestCapabilities(t, tr.fakeDeviceTransport)
+	emit(NativeEventControlValue, 0x04, 0x03, 0x02, 3)
+	emit(NativeEventAudioValue, 0x70)
+	emit(NativeEventControlValue, 0x00)
+	close(tr.resume)
+	res := <-next
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	buf := make([]int16, 8)
+	n, err := res.src.Read(ctx, buf)
+	if n != 2 || err != nil || buf[0] != 11 || buf[1] != 13 {
+		t.Fatalf("next stream n=%d pcm=%v err=%v", n, buf, err)
+	}
+	if err := res.src.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stops, closes := tr.snapshot(); len(stops) != 0 || closes != 0 {
+		t.Fatalf("unnecessary reconnect or stop: %v, %d", stops, closes)
+	}
+}

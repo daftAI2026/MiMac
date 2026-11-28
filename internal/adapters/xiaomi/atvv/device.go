@@ -50,7 +50,7 @@ type DeviceOwner struct {
 	closingLease *deviceLease
 	capabilities []byte
 	capsReady    bool
-	capsChanged  chan struct{}
+	changed  chan struct{}
 	fault        error
 	orphanStream bool
 	closing      bool
@@ -72,7 +72,7 @@ func NewDeviceOwner(generation uint64, factory DeviceTransportFactory) (*DeviceO
 	}
 	owner := &DeviceOwner{
 		generation:  generation,
-		capsChanged: make(chan struct{}),
+		changed: make(chan struct{}),
 	}
 	transport, err := factory(owner.handleNativeEvent)
 	if err != nil {
@@ -100,113 +100,96 @@ func OpenDeviceOwner(generation uint64, libraryPath string) (*DeviceOwner, error
 	})
 }
 
-// NewSource waits for notification readiness and a valid device CAPS value,
-// then arms one session-scoped source with the exact cached CAPS payload.
-// A pending lease reserves the device while either prerequisite is awaited.
+// NewSource reserves one stream and returns it after notification readiness and
+// valid device CAPS. A stream that began before the reservation is never adopted.
 func (d *DeviceOwner) NewSource(ctx context.Context, key StreamKey) (*SessionSource, error) {
+	return d.newSource(ctx, key, false)
+}
+
+// PrepareSource waits for an existing unleased stream to stop before reserving
+// the next one. Route preparation can therefore stay live through an orphan STOP.
+func (d *DeviceOwner) PrepareSource(ctx context.Context, key StreamKey) (*SessionSource, error) {
+	return d.newSource(ctx, key, true)
+}
+
+func (d *DeviceOwner) newSource(ctx context.Context, key StreamKey, waitForStop bool) (*SessionSource, error) {
 	if d == nil || ctx == nil || key.Generation == 0 || key.Session == 0 {
 		return nil, ErrInvalidSessionKey
 	}
 	if key.Generation != d.generation {
 		return nil, ErrStaleSession
 	}
-	lease := &deviceLease{key: key}
 	d.mu.Lock()
-	if d.closed {
+	for d.orphanStream && waitForStop && !d.closing && !d.closed && d.fault == nil {
+		changed := d.changed
 		d.mu.Unlock()
-		return nil, ErrDeviceOwnerClosed
-	}
-	if d.closing {
-		d.mu.Unlock()
-		return nil, ErrDeviceOwnerClosing
-	}
-	if d.fault != nil {
-		err := d.fault
-		d.mu.Unlock()
-		return nil, err
-	}
-	if d.orphanStream {
-		d.mu.Unlock()
-		return nil, ErrDeviceOrphanStreamActive
-	}
-	if d.lease != nil {
-		d.mu.Unlock()
-		return nil, ErrDeviceLeaseActive
-	}
-	transport := d.transport
-	if transport == nil {
-		d.mu.Unlock()
-		return nil, ErrDeviceOwnerClosed
-	}
-	d.lease = lease
-	d.mu.Unlock()
-
-	rollback := func(err error) (*SessionSource, error) {
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		d.mu.Lock()
-		if d.lease == lease {
-			d.lease = nil
-			d.signalCapsLocked()
-		}
+	}
+	if err := d.availabilityLocked(); err != nil {
 		d.mu.Unlock()
 		return nil, err
 	}
-
-	if err := transport.Ready(ctx); err != nil {
-		return rollback(err)
-	}
-	capabilities, err := d.waitCapabilities(ctx, lease)
-	if err != nil {
-		return rollback(err)
-	}
-
-	proxy := &leasedStreamTransport{owner: d, lease: lease}
-	source, err := NewSource(key, proxy)
-	if err != nil {
-		return rollback(err)
-	}
-	if err := source.Arm(key, capabilities); err != nil {
-		_ = source.Close()
-		return rollback(err)
-	}
-	session := &SessionSource{source: source, owner: d, lease: lease}
-	d.mu.Lock()
-	if d.lease != lease || d.closing || d.closed || d.fault != nil {
-		err := d.leaseErrorLocked(lease)
-		if d.lease == lease {
-			d.lease = nil
-		}
+	if err := ctx.Err(); err != nil {
 		d.mu.Unlock()
-		_ = source.Close()
 		return nil, err
 	}
-	if d.orphanStream {
-		d.lease = nil
+	lease := &deviceLease{key: key}
+	source, err := NewSource(key, &leasedStreamTransport{owner: d, lease: lease})
+	if err != nil {
 		d.mu.Unlock()
-		_ = source.Close()
-		return nil, ErrDeviceOrphanStreamActive
+		return nil, err
 	}
+	// Bluetooth can deliver AUDIO_START and samples before Ready returns. The
+	// reservation owns those callbacks now. Decode into the usual bounded ring,
+	// but publish nothing until the transport and the device both confirm readiness.
+	source.state = sourceArmed
 	lease.source = source
+	d.lease = lease
+	transport := d.transport
 	d.mu.Unlock()
-	return session, nil
+
+	err = transport.Ready(ctx)
+	if err == nil {
+		err = d.waitCapabilities(ctx, lease)
+	}
+	if err == nil {
+		return &SessionSource{source: source, owner: d, lease: lease}, nil
+	}
+	d.mu.Lock()
+	if d.lease == lease {
+		source.mu.Lock()
+		d.orphanStream = source.started && !source.stopObserved
+		source.mu.Unlock()
+		d.lease = nil
+		d.signalChangedLocked()
+	}
+	d.mu.Unlock()
+	_ = source.Close()
+	return nil, err
 }
 
-func (d *DeviceOwner) leaseErrorLocked(lease *deviceLease) error {
-	if d.closed {
+func (d *DeviceOwner) availabilityLocked() error {
+	switch {
+	case d.closed:
 		return ErrDeviceOwnerClosed
-	}
-	if d.closing {
+	case d.closing:
 		return ErrDeviceOwnerClosing
-	}
-	if d.fault != nil {
+	case d.fault != nil:
 		return d.fault
-	}
-	if d.orphanStream {
+	case d.orphanStream:
 		return ErrDeviceOrphanStreamActive
+	case d.lease != nil:
+		return ErrDeviceLeaseActive
+	case d.transport == nil:
+		return ErrDeviceOwnerClosed
+	default:
+		return nil
 	}
-	if d.lease != lease {
-		return ErrSessionLeaseDetached
-	}
-	return ErrDeviceLeaseActive
 }
 
 // SessionSource exposes the existing source contract while making Close a
@@ -447,7 +430,7 @@ func (d *DeviceOwner) closeUnrecoverableLease(lease *deviceLease, source *Source
 		d.closing = true
 		d.closingLease = lease
 		d.lease = nil
-		d.signalCapsLocked()
+		d.signalChangedLocked()
 	}
 	transport := d.transport
 	d.mu.Unlock()
@@ -474,7 +457,7 @@ func (d *DeviceOwner) Close() error {
 		d.closingLease = d.lease
 	}
 	d.lease = nil
-	d.signalCapsLocked()
+	d.signalChangedLocked()
 	transport := d.transport
 	d.mu.Unlock()
 	return d.finishClose(transport)
@@ -502,47 +485,36 @@ func (d *DeviceOwner) finishClose(transport DeviceTransport) error {
 	d.closed = true
 	d.closingLease = nil
 	d.transport = nil
-	d.signalCapsLocked()
+	d.signalChangedLocked()
 	d.mu.Unlock()
 	return nil
 }
 
-func (d *DeviceOwner) waitCapabilities(ctx context.Context, lease *deviceLease) ([]byte, error) {
+func (d *DeviceOwner) waitCapabilities(ctx context.Context, lease *deviceLease) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for {
-		d.mu.Lock()
-		if d.fault != nil {
-			err := d.fault
-			d.mu.Unlock()
-			return nil, err
+		switch {
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case d.closed:
+			return ErrDeviceOwnerClosed
+		case d.closing:
+			return ErrDeviceOwnerClosing
+		case lease.fault != nil:
+			return lease.fault
+		case d.lease != lease:
+			return ErrSessionLeaseDetached
+		case d.capsReady:
+			return nil
 		}
-		if d.closed {
-			d.mu.Unlock()
-			return nil, ErrDeviceOwnerClosed
-		}
-		if d.closing {
-			d.mu.Unlock()
-			return nil, ErrDeviceOwnerClosing
-		}
-		if d.lease != lease {
-			d.mu.Unlock()
-			return nil, ErrSessionLeaseDetached
-		}
-		if d.orphanStream {
-			d.mu.Unlock()
-			return nil, ErrDeviceOrphanStreamActive
-		}
-		if d.capsReady {
-			capabilities := append([]byte(nil), d.capabilities...)
-			d.mu.Unlock()
-			return capabilities, nil
-		}
-		changed := d.capsChanged
+		changed := d.changed
 		d.mu.Unlock()
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
 		case <-changed:
+		case <-ctx.Done():
 		}
+		d.mu.Lock()
 	}
 }
 
@@ -566,7 +538,7 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 			}
 			d.capabilities = capabilities.Raw
 			d.capsReady = true
-			d.signalCapsLocked()
+			d.signalChangedLocked()
 			return nil
 		}
 		if d.lease == nil || d.lease.source == nil {
@@ -574,6 +546,7 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 		}
 		if err := d.lease.source.HandleControl(d.lease.key, event.Bytes); err != nil {
 			d.lease.fault = err
+			d.signalChangedLocked()
 			return err
 		}
 		return nil
@@ -583,6 +556,7 @@ func (d *DeviceOwner) handleNativeEvent(event NativeEvent) error {
 		}
 		if err := d.lease.source.HandleAudio(d.lease.key, event.Bytes); err != nil {
 			d.lease.fault = err
+			d.signalChangedLocked()
 			return err
 		}
 		return nil
@@ -605,7 +579,7 @@ func (d *DeviceOwner) recordFaultLocked(err error) error {
 			d.lease.source.fail(d.fault)
 		}
 	}
-	d.signalCapsLocked()
+	d.signalChangedLocked()
 	return d.fault
 }
 
@@ -623,23 +597,23 @@ func (d *DeviceOwner) handleUnleasedControlLocked(raw []byte) error {
 			return d.recordFaultLocked(ErrDeviceOrphanStreamActive)
 		}
 		d.orphanStream = true
-		d.signalCapsLocked()
+		d.signalChangedLocked()
 	case ControlAudioStop:
 		if d.orphanStream {
 			d.orphanStream = false
-			d.signalCapsLocked()
+			d.signalChangedLocked()
 		}
 	}
 	return nil
 }
 
-func (d *DeviceOwner) signalCapsLocked() {
-	if d.capsChanged == nil {
-		d.capsChanged = make(chan struct{})
+func (d *DeviceOwner) signalChangedLocked() {
+	if d.changed == nil {
+		d.changed = make(chan struct{})
 		return
 	}
-	close(d.capsChanged)
-	d.capsChanged = make(chan struct{})
+	close(d.changed)
+	d.changed = make(chan struct{})
 }
 
 type leasedStreamTransport struct {
@@ -698,7 +672,7 @@ func (t *leasedStreamTransport) Close() error {
 		}
 	}
 	t.owner.lease = nil
-	t.owner.signalCapsLocked()
+	t.owner.signalChangedLocked()
 	return nil
 }
 

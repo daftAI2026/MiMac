@@ -56,7 +56,7 @@ func openAppleAudioRoute(generation uint64, deviceLibrary, speechLibrary, locale
 		return sink, err
 	}
 	route, routeErr := newAppleAudioRoute(generation, func(ctx context.Context, key atvv.StreamKey) (audiosession.Source, error) {
-		return owner.NewSource(ctx, key)
+		return owner.PrepareSource(ctx, key)
 	}, owner.Close, func(ctx context.Context) (localRecognizer, error) {
 		return openSpeech(ctx, false)
 	}, func() (transcriptTarget, error) {

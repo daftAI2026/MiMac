@@ -97,7 +97,7 @@ func (o *nativeCompatATVVOwner) newSource(ctx context.Context, key atvv.StreamKe
 	if o == nil || o.owner == nil {
 		return nil, errCompatRouteOwnerNil
 	}
-	return o.owner.NewSource(ctx, key)
+	return o.owner.PrepareSource(ctx, key)
 }
 
 func (o *nativeCompatATVVOwner) close() error {
