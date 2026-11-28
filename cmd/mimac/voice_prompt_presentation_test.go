@@ -150,8 +150,9 @@ func TestEarlyVoicePromptDiscoveryEndsWithItsOwnSession(t *testing.T) {
 	}
 	s.syncVoicePromptPresentation(preparing)
 	waitForVoicePromptSignal(t, started)
-	s.finishVoicePromptPresentation(token)
+	s.syncVoicePromptPresentation(voiceOverlayFrame{Visible: true, Token: token, Phase: bridge.PhaseDraining})
 	waitForVoicePromptSignal(t, stopped)
+	s.finishVoicePromptPresentation(token)
 	s.waitVoicePromptPresentationRestore()
 }
 

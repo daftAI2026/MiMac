@@ -166,7 +166,12 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 			}
 		}
 	}
-	if _, exists := a.jobs[frame.Token]; exists {
+	if job := a.jobs[frame.Token]; job != nil {
+		if frame.Phase == bridge.PhaseDraining && job.cancelDiscoveryOnEnd {
+			// Key-up closes discovery. An already parked recorder stays
+			// parked until the vendor dismisses it after finishing the text.
+			job.cancelSearch()
+		}
 		return
 	}
 	// An input method can show its recorder before its audio route is ready.
@@ -179,7 +184,9 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	a.baseline = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	ended, done := make(chan struct{}), make(chan struct{})
-	searchCtx, cancelSearch := context.WithTimeout(ctx, 2*time.Second)
+	// Discovery belongs to this press. Each adapter bounds its own polling;
+	// an event-driven adapter can sleep until a late recorder or session end.
+	searchCtx, cancelSearch := context.WithCancel(ctx)
 	job := &voicePromptPresentationJob{
 		token: frame.Token, cancel: cancel, cancelSearch: cancelSearch,
 		sessionEnd: ended, done: done, cancelDiscoveryOnEnd: tool.voicePromptOnPrepare,

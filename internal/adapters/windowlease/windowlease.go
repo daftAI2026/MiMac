@@ -230,7 +230,23 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 		case <-ctx.Done():
 			return nil, OutcomeCancelled, ctx.Err()
 		case <-deadline.C:
-			return nil, OutcomeUnchanged, nil
+			// Once the initial AX/CG sampling burst ends, a live utterance
+			// can still produce a late recorder. Sleep until the app reports
+			// a window, then allow CG and AX to converge again.
+			if notices == nil || ctx.Done() == nil {
+				return nil, OutcomeUnchanged, nil
+			}
+			ticker.Stop()
+			select {
+			case <-ctx.Done():
+				return nil, OutcomeCancelled, ctx.Err()
+			case _, open := <-notices:
+				if !open {
+					return nil, OutcomeUnchanged, nil
+				}
+			}
+			ticker.Reset(pollInterval)
+			deadline.Reset(observeLimit)
 		case <-ticker.C:
 		case _, open := <-notices:
 			if !open {

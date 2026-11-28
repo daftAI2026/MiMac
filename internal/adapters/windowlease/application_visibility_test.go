@@ -66,6 +66,61 @@ func TestPositionLeaseWakesForFullyClassifiedRecorder(t *testing.T) {
 	}
 }
 
+func TestDelayedRecorderDuringActiveSession(t *testing.T) {
+	for _, endFirst := range []bool{false, true} {
+		name := "created"
+		if endFirst {
+			name = "session ends first"
+		}
+		t.Run(name, func(t *testing.T) {
+			probe := newVisibilityTestProbe()
+			baseline, err := CaptureBaseline(visibilityTestPID, func() error { return nil }, probe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			type result struct {
+				lease   *Lease
+				outcome Outcome
+				err     error
+			}
+			finished := make(chan result, 1)
+			go func() {
+				lease, outcome, err := baseline.Suppress(ctx, visibilityTestEligible, 5*time.Millisecond, time.Hour, 0)
+				finished <- result{lease, outcome, err}
+			}()
+			select {
+			case early := <-finished:
+				t.Fatalf("discovery ended before the recorder or the utterance: %v", early.outcome)
+			case <-time.After(40 * time.Millisecond):
+			}
+			if endFirst {
+				cancel()
+			} else {
+				probe.putWindow(visibilityTestWindowRecord(true), true)
+				probe.sendApplicationEvent(ApplicationEventWindowCreated)
+			}
+			got := <-finished
+			if probe.events.closeCount != 1 {
+				t.Fatalf("observer closed %d times", probe.events.closeCount)
+			}
+			if endFirst {
+				if got.lease != nil || got.outcome != OutcomeCancelled || !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("after session end: %+v", got)
+				}
+				return
+			}
+			if got.lease == nil || got.outcome != OutcomeSuppressed || got.err != nil {
+				t.Fatalf("late recorder: %+v", got)
+			}
+			if err := got.lease.Restore(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestHiddenLeaseWaitsForAXMatchAndSuccessfulDismissalRead(t *testing.T) {
 	probe := newVisibilityTestProbe()
 	baseline := captureVisibilityTestBaseline(t, probe)
