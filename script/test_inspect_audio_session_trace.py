@@ -19,6 +19,11 @@ def row(at, *, pid=PID, generation=4, press=0, session=0, event="route_unavailab
             f"event={event} stage={stage} result={result}")
 
 
+def pcm_fields(*, rate=16000, source=12, eof=1, sink=12, cutoff=0):
+    return (f" pcm_rate_hz={rate} pcm_source_samples={source} pcm_source_eof={eof} "
+            f"pcm_sink_accepted_samples={sink} pcm_cutoff={cutoff}")
+
+
 class AudioSessionTraceInspectionTests(unittest.TestCase):
     def inspect_rows(self, rows, *, start="2026-11-28T10:00:00Z", end="2026-11-28T10:01:00Z",
                      pid=PID, voice_report_path=None):
@@ -238,6 +243,44 @@ class AudioSessionTraceInspectionTests(unittest.TestCase):
             parse_trace_line(row("2026-11-28T10:00:01Z", event="release") + " end_policy=toggle", 1)
         with self.assertRaisesRegex(ValueError, "end policy on non-acceptance"):
             parse_trace_line(row("2026-11-28T10:00:01Z", event="press") + " end_policy=toggle", 1)
+
+    def test_pcm_receipt_is_fixed_numeric_and_attaches_to_unique_accepted_terminal(self):
+        fields = pcm_fields(source=123, sink=123)
+        parsed = parse_trace_line(
+            row("2026-11-28T10:00:02Z", session=8, event="drained") + fields, 1)
+        self.assertEqual(parsed["pcm_receipt"], {
+            "sample_rate_hz": 16000,
+            "source_read_samples": 123,
+            "source_eof": True,
+            "sink_accepted_samples": 123,
+            "cutoff": False,
+        })
+        result = self.inspect_rows([
+            row("2026-11-28T10:00:01Z", press=1, session=8, event="press"),
+            row("2026-11-28T10:00:02Z", session=8, event="drained") + fields,
+        ])
+        self.assertEqual(result["presses"][0]["pcm_receipt"]["source_read_samples"], 123)
+        self.assertEqual(result["presses"][0]["pcm_receipt"]["sink_accepted_samples"], 123)
+
+    def test_failed_pcm_receipt_is_lower_bound_and_requires_cutoff(self):
+        parsed = parse_trace_line(
+            row("2026-11-28T10:00:02Z", session=8, event="failed", stage="sink_write", result="error") +
+            pcm_fields(source=320, eof=0, sink=160, cutoff=1), 1)
+        self.assertEqual(parsed["pcm_receipt"]["source_read_samples"], 320)
+        self.assertEqual(parsed["pcm_receipt"]["sink_accepted_samples"], 160)
+        self.assertTrue(parsed["pcm_receipt"]["cutoff"])
+        with self.assertRaisesRegex(ValueError, "failed PCM receipt lacks cutoff"):
+            parse_trace_line(
+                row("2026-11-28T10:00:02Z", session=8, event="failed") +
+                pcm_fields(source=320, eof=0, sink=160, cutoff=0), 1)
+
+    def test_pcm_receipt_rejects_partial_shape_and_nonterminal_attachment(self):
+        with self.assertRaisesRegex(ValueError, "invalid PCM receipt field shape"):
+            parse_trace_line(row("2026-11-28T10:00:02Z", session=8, event="drained") +
+                             " pcm_rate_hz=16000", 1)
+        with self.assertRaisesRegex(ValueError, "PCM receipt on non-terminal event"):
+            parse_trace_line(row("2026-11-28T10:00:02Z", press=1, session=8, event="press") +
+                             pcm_fields(), 1)
 
     def test_cli_requires_explicit_process_and_time_scope_and_emits_no_payload(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -298,6 +298,9 @@ func (r *startupReader) run() {
 			readErr = errors.New("audiosession: invalid PCM block length")
 			n = 0
 		}
+		if n > 0 {
+			r.session.sourceSamples.Add(uint64(n))
+		}
 		if err := r.session.ctx.Err(); err != nil {
 			r.result = err
 			return

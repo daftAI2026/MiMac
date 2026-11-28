@@ -15,7 +15,11 @@ from inspect_voice_report import inspect as inspect_voice_report
 
 
 TRACE_FIELDS = {"time", "pid", "generation", "press", "session", "event", "stage", "result"}
-OPTIONAL_TRACE_FIELDS = {"end_policy"}
+PCM_TRACE_FIELDS = {
+    "pcm_rate_hz", "pcm_source_samples", "pcm_source_eof",
+    "pcm_sink_accepted_samples", "pcm_cutoff",
+}
+OPTIONAL_TRACE_FIELDS = {"end_policy"} | PCM_TRACE_FIELDS
 END_POLICIES = {"release_edge", "release_after_drain", "toggle", "audio_only"}
 PRESS_EDGE_EVENTS = {"press", "press_during_session", "press_without_session", "press_deferred"}
 ACCEPTANCE_EVENTS = {"press", "press_promoted"}
@@ -51,6 +55,9 @@ def parse_trace_line(line: str, line_number: int) -> dict:
         fields[key] = value
     if not TRACE_FIELDS.issubset(fields) or fields.keys() - TRACE_FIELDS - OPTIONAL_TRACE_FIELDS:
         raise ValueError(f"line {line_number}: unexpected fixed-field shape")
+    present_pcm_fields = fields.keys() & PCM_TRACE_FIELDS
+    if present_pcm_fields and present_pcm_fields != PCM_TRACE_FIELDS:
+        raise ValueError(f"line {line_number}: invalid PCM receipt field shape")
     try:
         record = {
             "at": parse_time(fields["time"]),
@@ -62,6 +69,7 @@ def parse_trace_line(line: str, line_number: int) -> dict:
             "stage": fields["stage"],
             "result": fields["result"],
             "end_policy": fields.get("end_policy"),
+            "pcm_receipt": None,
         }
     except (TypeError, ValueError) as error:
         raise ValueError(f"line {line_number}: invalid fixed-field value") from error
@@ -75,6 +83,35 @@ def parse_trace_line(line: str, line_number: int) -> dict:
     if record["end_policy"] is not None and (
             record["event"] not in ACCEPTANCE_EVENTS or record["session"] == 0):
         raise ValueError(f"line {line_number}: end policy on non-acceptance event")
+    if present_pcm_fields:
+        try:
+            values = {key: int(fields[key]) for key in PCM_TRACE_FIELDS}
+        except ValueError as error:
+            raise ValueError(f"line {line_number}: invalid PCM receipt value") from error
+        boolean_fields = {"pcm_source_eof", "pcm_cutoff"}
+        if any(values[key] not in (0, 1) for key in boolean_fields):
+            raise ValueError(f"line {line_number}: invalid PCM receipt flag")
+        if values["pcm_source_samples"] < 0 or values["pcm_sink_accepted_samples"] < 0:
+            raise ValueError(f"line {line_number}: invalid PCM receipt count")
+        if values["pcm_rate_hz"] not in (0, 8000, 16000):
+            raise ValueError(f"line {line_number}: invalid PCM sample rate")
+        if values["pcm_rate_hz"] == 0 and any(values[key] for key in (
+                "pcm_source_samples", "pcm_source_eof", "pcm_sink_accepted_samples")):
+            raise ValueError(f"line {line_number}: uninitialized PCM receipt has measurements")
+        if record["event"] not in {"drained", "failed"} or record["session"] == 0:
+            raise ValueError(f"line {line_number}: PCM receipt on non-terminal event")
+        if record["event"] == "failed" and not values["pcm_cutoff"]:
+            raise ValueError(f"line {line_number}: failed PCM receipt lacks cutoff")
+        if record["event"] == "drained" and (
+                values["pcm_rate_hz"] == 0 or not values["pcm_source_eof"] or values["pcm_cutoff"]):
+            raise ValueError(f"line {line_number}: drained PCM receipt is incomplete")
+        record["pcm_receipt"] = {
+            "sample_rate_hz": values["pcm_rate_hz"],
+            "source_read_samples": values["pcm_source_samples"],
+            "source_eof": bool(values["pcm_source_eof"]),
+            "sink_accepted_samples": values["pcm_sink_accepted_samples"],
+            "cutoff": bool(values["pcm_cutoff"]),
+        }
     return record
 
 
@@ -207,6 +244,8 @@ def summarize(records: list[dict], *, pid: int, start: datetime, end: datetime,
                         result["terminal"] = "failed"
                         result["failure_codes"].append(record_code(terminal_row))
                     result["terminal_event"] = record_code(terminal_row)
+                    if terminal_row["pcm_receipt"] is not None:
+                        result["pcm_receipt"] = terminal_row["pcm_receipt"]
                 elif len(terminal_rows) > 1:
                     result["failure_codes"].append({"event": "multiple_terminal_events", "stage": "", "result": ""})
         elif acceptance_conflict:

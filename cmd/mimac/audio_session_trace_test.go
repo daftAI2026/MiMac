@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
+	"mimac.local/mimac/internal/audiosession"
 	"mimac.local/mimac/internal/bridge"
 )
 
@@ -27,6 +28,23 @@ func TestAudioTraceRecordRedactsTargetPayload(t *testing.T) {
 		if got != want {
 			t.Errorf("record = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestAudioCompletionTraceAddsOnlyFixedPCMReceipt(t *testing.T) {
+	at := time.Date(2026, 11, 24, 16, 0, 0, 0, time.FixedZone("local", 8*60*60))
+	receipt := audiosession.PCMReceipt{
+		SampleRate: 16000, SourceSamples: 320, SinkSamples: 160, Cutoff: true,
+	}
+	got := audioCompletionTraceRecord(at, 42, 7, 2, "failed", errors.New("private dictated payload"), receipt)
+	want := "time=2026-11-24T08:00:00Z pid=42 generation=7 press=0 session=2 event=failed stage= result=error " +
+		"pcm_rate_hz=16000 pcm_source_samples=320 pcm_source_eof=0 pcm_sink_accepted_samples=160 pcm_cutoff=1"
+	if got != want {
+		t.Fatalf("completion receipt = %q, want %q", got, want)
+	}
+	prepared := audioCompletionTraceRecord(at, 42, 7, 2, "prepared", nil, receipt)
+	if prepared != audioTraceRecord(at, 42, 7, 0, 2, "prepared", nil) {
+		t.Fatalf("non-terminal completion unexpectedly recorded PCM receipt: %q", prepared)
 	}
 }
 
