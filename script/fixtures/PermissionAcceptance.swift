@@ -1084,16 +1084,36 @@ func visibleWindow(_ pid: Int32, _ title: String) -> CGRect? {
     }
     return matching.count == 1 ? frame(matching[0]) : nil
 }
+func visiblePermissionList(under add: AXUIElement, in window: CGRect) -> CGRect? {
+    let parents = parentChain(add).dropFirst()
+    guard let group = parents.first,
+          let children = attribute(group, "AXChildren") as? [AXUIElement] else { return nil }
+    let lists = children.filter { property($0, "AXRole") == "AXScrollArea" }
+    guard lists.count == 1, let listBounds = rect(lists[0]), let buttonBounds = rect(add) else { return nil }
+    var visible = listBounds.intersection(window)
+    for parent in parents where property(parent, "AXRole") == "AXScrollArea" {
+        guard let clip = rect(parent) else { return nil }
+        visible = visible.intersection(clip)
+    }
+    // Some Settings versions expose a scroll area taller than its pinned Add/Remove footer.
+    let bottom = min(visible.maxY, buttonBounds.minY)
+    guard !visible.isNull, visible.width > 0, bottom > visible.minY else { return nil }
+    return CGRect(x: visible.minX, y: visible.minY, width: visible.width, height: bottom - visible.minY)
+}
+
 let addButtonElements = pageElements.filter {
     property($0, "AXRole") == "AXButton" && ["Add", "添加"].contains(property($0, "AXDescription"))
 }
-let addButtons = addButtonElements.compactMap(position)
-guard addButtonElements.count == 1, addButtons.count == 1,
+guard addButtonElements.count == 1, let addButton = addButtonElements.first,
       let panel = visibleWindow(appPID, "\(name) 系统权限"),
-      let settings = visibleWindow(settingsPID, title) else { stop("the card or list geometry is unavailable") }
-let addButtonBounds = addButtonElements.first.flatMap(rect)
-let button = addButtons[0]
-let destination = CGPoint(x: button.x + 94, y: button.y - 23)
+      let settings = visibleWindow(settingsPID, title),
+      let list = visiblePermissionList(under: addButton, in: settings) else {
+    stop("the card or visible permission list geometry is unavailable")
+}
+let addButtonBounds = rect(addButton)
+// Clearing an old permission can remove a row during a drag. Aim within the
+// first visible row so moving the list footer does not invalidate the drop.
+let destination = CGPoint(x: list.midX, y: list.minY + min(12, list.height / 2))
 let gap = min(abs(panel.maxX - settings.minX), abs(settings.maxX - panel.minX))
 guard abs(gap - 16) <= 1, abs(panel.minY - settings.minY) <= 1,
       settings.contains(destination), !panel.contains(destination),
@@ -1356,4 +1376,6 @@ emit(["performed": operation, "app": appPID, "settings": settingsPID,
       "source_kind": "panel-center", "mouse_down_at": mouseDownAt,
       "first_move_at": firstMoveAt, "mouse_up_at": releasedAt,
       "mouse_up_posted_at": releasePostedAt,
+      "target_kind": "visible-permission-list",
+      "list_bounds_before_drag": [list.minX, list.minY, list.width, list.height],
       "destination": [destination.x, destination.y]])
