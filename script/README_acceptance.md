@@ -73,6 +73,8 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 
 打包运行时，应用数据目录的 `audio-session.log` 记录宿主侧边界。用 UTC 时间与系统日志对时，再按 PID、设备代际、按压编号和会话编号关联。按下后若没有建立会话，查看同一按压的启动前检查。已建立的会话按 `prepared`、`drained` 或 `failed` 跟踪；失败的 `stage` 区分音源读取、等待读端、读端停读、写入、排空与获取最终文字。ATVV 源时序失败只记录固定枚举：`source_audio_before_start`（AUDIO_START 前音频）、`source_audio_after_stop`（AUDIO_STOP 后的迟到音频）、`source_stop_without_active_stream`（无活动流时收到 AUDIO_STOP；不进一步断言是重复 stop 还是缺少 start）；不记录逐包事件或内容。`source_rebuild` 和 `source_recovery_rearmed` 记录自动恢复及重新获得恢复机会的时点。
 
+遇到漏字，先找到这一次按压。支持逐句计数的版本在终态行记录音频路由采样率 `pcm_rate_hz`、音源实际读出的样本数 `pcm_source_samples`、是否读到结尾 `pcm_source_eof` 和本机音频输出确认接收的样本数 `pcm_sink_accepted_samples`。失败行的 `pcm_cutoff=1` 表示计数仅覆盖终态时已确认的部分。旧日志缺少的字段按未知处理。要验整句，使用已知测试语句并核对编辑器提交的最终文字。
+
 按进程、连接、流编号和事件顺序对齐系统日志的 `remote-audio`。开始通知中的 `codec` 为远端 AUDIO_START 声明的编码，`1`、`2` 分别对应 8、16 kHz IMA ADPCM。停止通知中的 `received_bytes` 是收到的蓝牙字节数，`stop_reason=-1` 表示设备未给原因，`host_close_sent` 表示 MiMac 在通知之前已向该流发出关闭请求。目标停读、遥控器停发与用户松键分别取各自的时间戳。同一停止通知中的 `packets` 为该流非空音频回调次数，`max_packet_gap_us` 为相邻回调的最大到达间隔，`last_packet_to_stop_us` 为最后一次回调到停止通知的时间。缺少对应样本时为 −1。主机回调间隔不能单独证明丢包。
 
 同一语音会话的 `shortcut_down`、`shortcut_up`、`shortcut_tap` 记录 MiMac 向键盘输出层提交该动作的时间和返回结果。用它对齐物理松键与目标停读时间。目标是否接收该动作另取目标侧证据。日志只记录动作类型。
