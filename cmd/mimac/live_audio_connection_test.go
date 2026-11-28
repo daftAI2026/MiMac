@@ -206,7 +206,8 @@ func TestLiveAudioConnectionCarriesUnclaimedDiscardAcrossConstruction(t *testing
 
 func TestLiveAudioConnectionPublishesDoneAfterPendingDiscard(t *testing.T) {
 	route := newLiveAudioConnectionTestRoute()
-	route.discardEnter = make(chan struct{})
+	discardEntered := make(chan struct{})
+	route.discardEnter = discardEntered
 	releaseDiscard := make(chan struct{})
 	route.discardBlock = releaseDiscard
 	factoryEntered := make(chan struct{})
@@ -219,7 +220,7 @@ func TestLiveAudioConnectionPublishesDoneAfterPendingDiscard(t *testing.T) {
 	<-factoryEntered
 	connection.DiscardUnclaimedPress()
 	close(releaseFactory)
-	<-route.discardEnter
+	<-discardEntered
 	select {
 	case <-connection.Done():
 		t.Fatal("Done closed before the pending discard reached the route")
