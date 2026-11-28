@@ -160,14 +160,89 @@ func TestWindowCreatedPrepaintOnscreenRaceUsesExistingPath(t *testing.T) {
 	probe.sendApplicationEvent(ApplicationEventWindowCreated)
 	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
 	lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibilityTestEligible, prepaintEligible, time.Second, time.Millisecond)
-	if err != nil || outcome != OutcomeSuppressed || lease == nil {
-		t.Fatalf("ordinary on-screen fallback: lease=%v outcome=%q err=%v", lease != nil, outcome, err)
+	if err != nil || outcome != OutcomeSuppressedOnShow || lease == nil {
+		t.Fatalf("created-element on-screen handoff: lease=%v outcome=%q err=%v", lease != nil, outcome, err)
 	}
 	if probe.snapshot().hideWrites != 1 {
 		t.Fatalf("fallback hide writes=%d, want one ordinary hide", probe.snapshot().hideWrites)
 	}
 	if err := lease.Restore(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowCreatedAlreadyOnscreenUsesOriginalElement(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline := captureVisibilityTestBaseline(t, probe)
+	probe.putWindow(visibilityTestWindowRecord(false), true)
+	probe.windowReadSignal = make(chan struct{}, 1)
+	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
+	visibleEligible := func(window Window) bool {
+		return visibilityTestEligible(window) && window.OnScreen && window.Frame.Size == (Size{Width: 200, Height: 130})
+	}
+	type result struct {
+		lease   *HiddenLease
+		outcome Outcome
+		err     error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibleEligible, prepaintEligible, time.Second, time.Hour)
+		finished <- result{lease: lease, outcome: outcome, err: err}
+	}()
+	select {
+	case <-probe.windowReadSignal:
+	case <-time.After(time.Second):
+		t.Fatal("initial offscreen read did not occur")
+	}
+	probe.setWindowOnScreen(visibilityTestWindow, true)
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	got := <-finished
+	if got.err != nil || got.outcome != OutcomeSuppressedOnShow || got.lease == nil {
+		t.Fatalf("already onscreen handoff: lease=%v outcome=%q err=%v", got.lease != nil, got.outcome, got.err)
+	}
+	if state := probe.snapshot(); state.hideWrites != 1 || !state.hidden {
+		t.Fatalf("handoff writes=%d hidden=%v", state.hideWrites, state.hidden)
+	}
+	if err := got.lease.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if state := probe.snapshot(); state.retained != 0 || state.observerCloses != 1 {
+		t.Fatalf("handoff cleanup refs=%d closes=%d", state.retained, state.observerCloses)
+	}
+}
+
+func TestWindowCreatedOnscreenHandoffFailureReleasesElementOnce(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline := captureVisibilityTestBaseline(t, probe)
+	probe.putWindow(visibilityTestWindowRecord(false), true)
+	probe.windowReadSignal = make(chan struct{}, 1)
+	prepaintEligible := func(window Window) bool { return visibilityTestEligible(window) && !window.OnScreen }
+	visibleEligible := func(window Window) bool { return visibilityTestEligible(window) && window.OnScreen }
+	type result struct {
+		lease   *HiddenLease
+		outcome Outcome
+		err     error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		lease, outcome, err := baseline.SuppressWithWindowCreatedPrepaint(context.Background(), visibleEligible, prepaintEligible, time.Second, time.Hour)
+		finished <- result{lease: lease, outcome: outcome, err: err}
+	}()
+	select {
+	case <-probe.windowReadSignal:
+	case <-time.After(time.Second):
+		t.Fatal("initial offscreen read did not occur")
+	}
+	probe.setWindowOnScreen(visibilityTestWindow, true)
+	probe.changeFocusOnNextSnapshot = true
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	got := <-finished
+	if got.lease != nil || got.outcome != OutcomeUnchanged || !errors.Is(got.err, ErrVisibilityConflict) {
+		t.Fatalf("changed-focus handoff: lease=%v outcome=%q err=%v", got.lease != nil, got.outcome, got.err)
+	}
+	if state := probe.snapshot(); state.hideWrites != 0 || state.retained != 0 || state.observerCloses != 1 || state.hidden {
+		t.Fatalf("failed handoff cleanup writes=%d refs=%d closes=%d hidden=%v", state.hideWrites, state.retained, state.observerCloses, state.hidden)
 	}
 }
 
@@ -554,6 +629,7 @@ type visibilityTestProbe struct {
 	incompleteFirstAXRead         bool
 	windowOnScreenOnIDRead        bool
 	showOnFirstHide               bool
+	windowReadSignal              chan struct{}
 	events                        *visibilityTestEvents
 }
 
@@ -633,6 +709,12 @@ func (p *visibilityTestProbe) WindowNumbers(pid int32) (map[uint32]struct{}, err
 func (p *visibilityTestProbe) Windows(pid int32, newerThan map[uint32]struct{}) ([]Window, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.windowReadSignal != nil {
+		select {
+		case p.windowReadSignal <- struct{}{}:
+		default:
+		}
+	}
 	result := make([]Window, 0, len(p.windows))
 	for id, window := range p.windows {
 		if window.OwnerPID != pid || !window.OnScreen {

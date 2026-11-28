@@ -24,6 +24,7 @@ const (
 	OutcomeUnchanged          Outcome = "unchanged"
 	OutcomeSuppressed         Outcome = "suppressed"
 	OutcomeSuppressedPrepaint Outcome = "suppressed_prepaint"
+	OutcomeSuppressedOnShow   Outcome = "suppressed_on_show"
 	OutcomeAmbiguous          Outcome = "ambiguous"
 	OutcomeCancelled          Outcome = "cancelled"
 	OutcomeUnavailable        Outcome = "unavailable"

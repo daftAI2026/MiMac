@@ -180,7 +180,7 @@ func (b *HiddenBaseline) suppress(ctx context.Context, eligible, prepaintEligibl
 				}
 				// Pass the sole retained element and observer to the lease.
 				transferEvents = true
-				return b.hideCandidate(ctx, window, events)
+				return b.hideCandidate(ctx, window, events, OutcomeSuppressed)
 			}
 			releaseWindows(b.probe, windows)
 		}
@@ -195,12 +195,17 @@ func (b *HiddenBaseline) suppress(ctx context.Context, eligible, prepaintEligibl
 				return nil, OutcomeUnavailable, ErrVisibilityUnavailable
 			}
 			if notice.Event == ApplicationEventWindowCreated && prepaintEligible != nil && notice.Element != 0 {
-				lease, outcome, done, err := b.suppressPrepaintCandidate(ctx, prepaintEligible, events, notice.Element)
+				lease, outcome, done, consumed, err := b.suppressPrepaintCandidate(ctx, eligible, prepaintEligible, events, notice.Element)
+				if consumed {
+					transferEvents = true
+				}
 				if lease != nil {
 					transferEvents = true
 					return lease, outcome, err
 				}
-				b.probe.Release(notice.Element)
+				if !consumed {
+					b.probe.Release(notice.Element)
+				}
 				if err != nil {
 					return nil, outcome, err
 				}
@@ -214,91 +219,108 @@ func (b *HiddenBaseline) suppress(ctx context.Context, eligible, prepaintEligibl
 	}
 }
 
-func (b *HiddenBaseline) suppressPrepaintCandidate(ctx context.Context, eligible func(Window) bool, events ApplicationEventSource, element uintptr) (*HiddenLease, Outcome, bool, error) {
+func (b *HiddenBaseline) suppressPrepaintCandidate(ctx context.Context, visibleEligible, prepaintEligible func(Window) bool, events ApplicationEventSource, element uintptr) (*HiddenLease, Outcome, bool, bool, error) {
 	probe, ok := b.probe.(prepaintWindowProbe)
 	if !ok {
-		return nil, OutcomeUnchanged, false, nil
+		return nil, OutcomeUnchanged, false, false, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, OutcomeCancelled, true, err
+		return nil, OutcomeCancelled, true, false, err
 	}
 	if err := b.checkIdentity(); err != nil {
-		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+		return nil, OutcomeUnavailable, true, false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 	}
 	window, onScreenCount, found, err := probe.WindowForPrepaint(b.pid, element)
 	if err != nil {
 		if errors.Is(err, ErrAmbiguous) {
-			return nil, OutcomeAmbiguous, true, err
+			return nil, OutcomeAmbiguous, true, false, err
 		}
-		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
+		return nil, OutcomeUnavailable, true, false, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, OutcomeCancelled, true, err
+		return nil, OutcomeCancelled, true, false, err
 	}
-	// A visible target or another visible IME window belongs to the ordinary
-	// exact on-screen path. A callback alone never claims an off-screen CG ID.
-	if !found || onScreenCount != 0 || window.OnScreen || window.ID == 0 || window.Element != element || !eligible(window) {
-		return nil, OutcomeUnchanged, false, nil
+	if !found || window.ID == 0 || window.Element != element {
+		return nil, OutcomeUnchanged, false, false, nil
+	}
+	windowIsOffscreen := !window.OnScreen && onScreenCount == 0 && prepaintEligible(window)
+	windowIsOnscreen := window.OnScreen && onScreenCount == 1 && visibleEligible(window)
+	if !windowIsOffscreen && !windowIsOnscreen {
+		return nil, OutcomeUnchanged, false, false, nil
+	}
+	if windowIsOnscreen {
+		// The full CG snapshot and event element already match. Let the normal
+		// claim perform the fresh unique-ID, AX-membership, and focus checks.
+		lease, outcome, err := b.hideCandidate(ctx, window, events, OutcomeSuppressedOnShow)
+		return lease, outcome, true, true, err
+	}
+	if err := b.checkIdentity(); err != nil {
+		return nil, OutcomeUnavailable, true, false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
+	}
+	current, found, err := b.probe.WindowByID(b.pid, window.ID)
+	if err != nil {
+		return nil, OutcomeUnavailable, true, false, err
+	}
+	if !found || !samePrepaintCGWindow(window, current) {
+		return nil, OutcomeUnchanged, false, false, nil
+	}
+	if current.OnScreen {
+		visibleWindow := window
+		visibleWindow.OnScreen = true
+		if !visibleEligible(visibleWindow) {
+			return nil, OutcomeUnchanged, false, false, nil
+		}
+		lease, outcome, err := b.hideCandidate(ctx, visibleWindow, events, OutcomeSuppressedOnShow)
+		return lease, outcome, true, true, err
 	}
 	state, err := b.appProbe.ApplicationVisibility(b.pid, element)
 	if err != nil {
-		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
+		return nil, OutcomeUnavailable, true, false, fmt.Errorf("%w: %v", ErrVisibilityUnavailable, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, OutcomeCancelled, true, err
+		return nil, OutcomeCancelled, true, false, err
 	}
 	if state.WindowCount > 1 {
-		return nil, OutcomeAmbiguous, true, ErrAmbiguous
+		return nil, OutcomeAmbiguous, true, false, ErrAmbiguous
 	}
 	if state.Hidden || state.WindowCount != 1 || !state.ContainsElement || state.FocusedPID != b.focusedPID {
-		return nil, OutcomeUnchanged, false, nil
+		return nil, OutcomeUnchanged, false, false, nil
 	}
 	if err := b.checkIdentity(); err != nil {
-		return nil, OutcomeUnavailable, true, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
-	}
-	// Recheck only the stable CG identity immediately before AXHidden. If it
-	// has become visible, continue observing so the ordinary path can handle it.
-	current, found, err := b.probe.WindowByID(b.pid, window.ID)
-	if err != nil {
-		return nil, OutcomeUnavailable, true, err
-	}
-	if !found || current.OnScreen || !samePrepaintCGWindow(window, current) {
-		return nil, OutcomeUnchanged, false, nil
+		return nil, OutcomeUnavailable, true, false, fmt.Errorf("%w: %v", ErrIdentityChanged, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, OutcomeCancelled, true, err
+		return nil, OutcomeCancelled, true, false, err
 	}
 	if err := b.appProbe.SetApplicationHidden(b.pid, true); err != nil {
-		return nil, OutcomeUnchanged, true, err
+		return nil, OutcomeUnchanged, true, false, err
 	}
 	if err := ctx.Err(); err != nil {
 		if b.checkIdentity() == nil {
 			_ = b.appProbe.SetApplicationHidden(b.pid, false)
 		}
-		return nil, OutcomeCancelled, true, err
+		return nil, OutcomeCancelled, true, false, err
 	}
 	state, err = b.appProbe.ApplicationVisibility(b.pid, element)
 	if err != nil {
 		if b.checkIdentity() == nil {
 			_ = b.appProbe.SetApplicationHidden(b.pid, false)
 		}
-		return nil, OutcomeUnavailable, true, err
+		return nil, OutcomeUnavailable, true, false, err
 	}
 	if !state.Hidden {
-		// The input method won the show race. Do not re-hide; resume observing
-		// so its now-visible recorder can use the existing exact path.
-		return nil, OutcomeUnchanged, false, nil
+		return nil, OutcomeUnchanged, false, false, nil
 	}
 	if state.WindowCount != 1 || !state.ContainsElement || state.FocusedPID != b.focusedPID {
 		if b.checkIdentity() == nil {
 			_ = b.appProbe.SetApplicationHidden(b.pid, false)
 		}
-		return nil, OutcomeUnchanged, true, nil
+		return nil, OutcomeUnchanged, true, false, nil
 	}
-	return &HiddenLease{baseline: b, element: element, events: events, hiddenByLease: true}, OutcomeSuppressedPrepaint, true, nil
+	return &HiddenLease{baseline: b, element: element, events: events, hiddenByLease: true}, OutcomeSuppressedPrepaint, true, true, nil
 }
 
-func (b *HiddenBaseline) hideCandidate(ctx context.Context, window Window, events ApplicationEventSource) (result *HiddenLease, outcome Outcome, err error) {
+func (b *HiddenBaseline) hideCandidate(ctx context.Context, window Window, events ApplicationEventSource, successOutcome Outcome) (result *HiddenLease, outcome Outcome, err error) {
 	lease := &HiddenLease{
 		baseline: b, element: window.Element, events: events,
 	}
@@ -343,7 +365,7 @@ func (b *HiddenBaseline) hideCandidate(ctx context.Context, window Window, event
 			return nil, OutcomeUnchanged, ErrVisibilityConflict
 		}
 		if state.Hidden {
-			return lease, OutcomeSuppressed, nil
+			return lease, successOutcome, nil
 		}
 		// The target can finish showing the very same panel during its first
 		// Hidden write. Retry only during this handoff, never during dictation.
