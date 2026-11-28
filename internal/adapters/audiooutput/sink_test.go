@@ -16,6 +16,9 @@ type fakeQueue struct {
 	slots                                                                                 []int
 	starts, checks, disposes                                                              int
 	pauses, primes                                                                        int
+	timelineResets                                                                        int
+	timelineExhausted                                                                     bool
+	timelineResetErr                                                                      error
 	stops                                                                                 []bool
 	running                                                                               bool
 	stayStopped                                                                           bool
@@ -75,6 +78,19 @@ func (q *fakeQueue) Check() (bool, error) {
 	q.events = append(q.events, "check")
 	q.checks++
 	return q.running, q.checkError
+}
+func (q *fakeQueue) ResetIfTimelineExhausted() (bool, error) {
+	q.events = append(q.events, "timeline_reset_check")
+	if q.timelineResetErr != nil {
+		return false, q.timelineResetErr
+	}
+	if q.timelineExhausted {
+		q.timelineResets++
+		q.timelineExhausted = false
+		q.running = false
+		return true, nil
+	}
+	return false, nil
 }
 func (q *fakeQueue) Dispose() error {
 	q.events = append(q.events, "dispose")
@@ -147,6 +163,70 @@ func TestBoundedWritesAreAllOrNothingOnBackpressure(t *testing.T) {
 	if len(q.pcm) != 5 || len(q.pcm[4]) != 1 || q.starts != 1 {
 		t.Fatal("buffer reuse/partial final buffer/start")
 	}
+}
+
+func TestSinkResetsOnlyAfterAllBuffersReturnAndClockIsExhausted(t *testing.T) {
+	t.Run("clock still within submitted window", func(t *testing.T) {
+		s, q := testSink(t)
+		first := []int16{1, 2, 3}
+		if err := s.TryWrite(first); err != nil {
+			t.Fatal(err)
+		}
+		q.returned(q.slots[0])
+		if err := s.TryWrite([]int16{4, 5}); err != nil {
+			t.Fatal(err)
+		}
+		if q.timelineResets != 0 || q.starts != 1 {
+			t.Fatalf("resets=%d starts=%d, want same live timeline", q.timelineResets, q.starts)
+		}
+	})
+
+	t.Run("clock exhausted", func(t *testing.T) {
+		s, q := testSink(t)
+		first := []int16{1, 2, 3}
+		if err := s.TryWrite(first); err != nil {
+			t.Fatal(err)
+		}
+		q.returned(q.slots[0])
+		q.timelineExhausted = true
+		second := []int16{4, 5}
+		if err := s.TryWrite(second); err != nil {
+			t.Fatal(err)
+		}
+		if q.timelineResets != 1 || q.starts != 2 || len(q.pcm) != 2 ||
+			!reflect.DeepEqual(q.pcm[0], first) || !reflect.DeepEqual(q.pcm[1], second) {
+			t.Fatalf("resets=%d starts=%d PCM=%v, want one same-queue reset and both blocks", q.timelineResets, q.starts, q.pcm)
+		}
+	})
+
+	t.Run("outstanding old buffer", func(t *testing.T) {
+		s, q := testSink(t)
+		if err := s.TryWrite([]int16{1}); err != nil {
+			t.Fatal(err)
+		}
+		q.timelineExhausted = true
+		if err := s.TryWrite([]int16{2}); err != nil {
+			t.Fatal(err)
+		}
+		if q.timelineResets != 0 || !q.timelineExhausted {
+			t.Fatalf("reset with native buffers pending: resets=%d pending=%t", q.timelineResets, q.timelineExhausted)
+		}
+	})
+
+	t.Run("reset failure faults output", func(t *testing.T) {
+		s, q := testSink(t)
+		if err := s.TryWrite([]int16{1}); err != nil {
+			t.Fatal(err)
+		}
+		q.returned(q.slots[0])
+		q.timelineResetErr = errors.New("timeline reset failed")
+		if err := s.TryWrite([]int16{2}); !errors.Is(err, q.timelineResetErr) {
+			t.Fatalf("reset error=%v", err)
+		}
+		if len(q.pcm) != 1 {
+			t.Fatalf("submitted PCM after reset failure: %v", q.pcm)
+		}
+	})
 }
 
 func TestOversizeAndEmptyWritesDoNotStart(t *testing.T) {

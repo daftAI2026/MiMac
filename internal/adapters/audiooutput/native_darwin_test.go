@@ -3,6 +3,7 @@
 package audiooutput
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"unsafe"
@@ -16,8 +17,10 @@ type fakeAudioQueueAPI struct {
 	allocations, failAllocation, disposals int
 	disposeStatus                          int32
 	primeStatus, pauseStatus, startStatus  int32
+	stopStatus, currentTimeStatus          int32
 	primeFrames                            uint32
 	primeCalls, pauseCalls, startCalls     int
+	stopCalls, currentTimeCalls            int
 	events                                 []string
 	returnedRefs                           []uintptr
 	format                                 audioStreamBasicDescription
@@ -25,11 +28,14 @@ type fakeAudioQueueAPI struct {
 	routeSame                              bool
 	converter                              uint32
 	running                                uint32
+	currentSampleTime                      float64
+	currentTimeFlags                       uint32
+	resetClockOnStop                       bool
 }
 
 func newFakeAudioQueueAPI(t *testing.T) *fakeAudioQueueAPI {
 	t.Helper()
-	f := &fakeAudioQueueAPI{failAllocation: -1, routeSame: true}
+	f := &fakeAudioQueueAPI{failAllocation: -1, routeSame: true, currentTimeFlags: audioTimeStampSampleTimeValid, resetClockOnStop: true}
 	f.api = &audioQueueAPI{
 		newOutput: func(format *audioStreamBasicDescription, cb, user, runloop, mode uintptr, flags uint32, out *uintptr) int32 {
 			f.format = *format
@@ -73,7 +79,37 @@ func newFakeAudioQueueAPI(t *testing.T) *fakeAudioQueueAPI {
 			f.pauseCalls++
 			return f.pauseStatus
 		},
-		stop:    func(uintptr, bool) int32 { return 0 },
+		stop: func(_ uintptr, immediate bool) int32 {
+			f.events = append(f.events, "stop")
+			f.stopCalls++
+			if f.stopStatus != 0 {
+				return f.stopStatus
+			}
+			if immediate {
+				f.running = 0
+				if f.resetClockOnStop {
+					f.currentSampleTime = 0
+				}
+			}
+			return 0
+		},
+		getCurrentTime: func(_ uintptr, _ uintptr, timestamp *audioTimeStamp, isRunning *uint8) int32 {
+			f.events = append(f.events, "current_time")
+			f.currentTimeCalls++
+			if f.currentTimeStatus != 0 {
+				return f.currentTimeStatus
+			}
+			timestamp.sampleTime = f.currentSampleTime
+			timestamp.flags = f.currentTimeFlags
+			if isRunning != nil {
+				if f.running != 0 {
+					*isRunning = 1
+				} else {
+					*isRunning = 0
+				}
+			}
+			return 0
+		},
 		dispose: func(uintptr, bool) int32 { f.disposals++; return f.disposeStatus },
 		setProperty: func(q uintptr, property uint32, value unsafe.Pointer, size uint32) int32 {
 			if property != audioQueuePropertyCurrentDevice || size != 8 {
@@ -285,9 +321,140 @@ func TestNativeRouteAndConverterErrors(t *testing.T) {
 	}
 }
 
+func TestNativeTimelineResetRequiresExhaustionAndSupportsRepeatedGaps(t *testing.T) {
+	f := newFakeAudioQueueAPI(t)
+	var returned []int
+	q, err := openNativeWithAPI(Config{DeviceUID: "fake", SampleRate: 16000}, func(slot int) { returned = append(returned, slot) }, f.api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := q.(*darwinNativeQueue)
+	defer d.Dispose()
+	queueHandle := d.queue
+
+	for slot := 0; slot < bufferCount; slot++ {
+		if err := d.Enqueue(slot, make([]int16, d.framesPerBuffer)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := d.timelineFrames, uint64(bufferCount*d.framesPerBuffer); got != want {
+		t.Fatalf("submitted frames=%d, want %d", got, want)
+	}
+	for slot := 0; slot < bufferCount; slot++ {
+		nativeAudioQueueBufferCallback(d.token, d.queue, d.buffers[slot])
+	}
+	if !reflect.DeepEqual(returned, []int{0, 1, 2, 3}) {
+		t.Fatalf("returned slots=%v", returned)
+	}
+
+	// Native buffers can return before the output clock has consumed the last
+	// samples. Do not reset until the queue clock is at least one full block past
+	// the end of all accepted PCM.
+	f.currentSampleTime = float64(d.timelineFrames + uint64(d.framesPerBuffer) - 1)
+	if reset, err := d.ResetIfTimelineExhausted(); err != nil || reset {
+		t.Fatalf("early reset=%t err=%v", reset, err)
+	}
+	if f.stopCalls != 0 {
+		t.Fatalf("early reset called AudioQueueStop %d times", f.stopCalls)
+	}
+
+	f.currentSampleTime++
+	if reset, err := d.ResetIfTimelineExhausted(); err != nil || !reset {
+		t.Fatalf("first reset=%t err=%v", reset, err)
+	}
+	if d.queue != queueHandle || d.timelineFrames != 0 || d.timelineBase != 0 || f.stopCalls != 1 {
+		t.Fatalf("first reset changed queue/timeline: queue=%d frames=%d base=%g stops=%d", d.queue, d.timelineFrames, d.timelineBase, f.stopCalls)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Enqueue(0, make([]int16, d.framesPerBuffer)); err != nil {
+		t.Fatal(err)
+	}
+	nativeAudioQueueBufferCallback(d.token, d.queue, d.buffers[0])
+	f.currentSampleTime = d.timelineBase + float64(d.timelineFrames) + float64(d.framesPerBuffer)
+	if reset, err := d.ResetIfTimelineExhausted(); err != nil || !reset {
+		t.Fatalf("second reset=%t err=%v", reset, err)
+	}
+	if d.queue != queueHandle || d.timelineFrames != 0 || d.timelineBase != 0 || f.stopCalls != 2 {
+		t.Fatalf("second reset changed queue/timeline: queue=%d frames=%d base=%g stops=%d", d.queue, d.timelineFrames, d.timelineBase, f.stopCalls)
+	}
+}
+
+func TestNativeTimelineBaseTracksNonzeroQueueClockEpochAcrossResets(t *testing.T) {
+	f := newFakeAudioQueueAPI(t)
+	f.resetClockOnStop = false
+	q, err := openNativeWithAPI(Config{DeviceUID: "fake", SampleRate: 16000}, func(int) {}, f.api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := q.(*darwinNativeQueue)
+	defer d.Dispose()
+
+	for resetNumber := 1; resetNumber <= 2; resetNumber++ {
+		slot := resetNumber - 1
+		if err := d.Enqueue(slot, make([]int16, d.framesPerBuffer)); err != nil {
+			t.Fatal(err)
+		}
+		nativeAudioQueueBufferCallback(d.token, d.queue, d.buffers[slot])
+		f.currentSampleTime = d.timelineBase + float64(d.timelineFrames) + float64(d.framesPerBuffer)
+		if reset, err := d.ResetIfTimelineExhausted(); err != nil || !reset {
+			t.Fatalf("reset %d=%t err=%v", resetNumber, reset, err)
+		}
+		wantBase := float64(resetNumber * 2 * d.framesPerBuffer)
+		if d.timelineBase != wantBase {
+			t.Fatalf("reset %d base=%g, want %g", resetNumber, d.timelineBase, wantBase)
+		}
+		if resetNumber < 2 {
+			if err := d.Start(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestNativeTimelineQueryFailuresLeaveQueuePathAvailable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int32
+		flags  uint32
+		time   float64
+	}{
+		{name: "get current time status", status: -50, flags: audioTimeStampSampleTimeValid, time: 10000},
+		{name: "sample time unavailable", flags: 0, time: 10000},
+		{name: "non-finite sample time", flags: audioTimeStampSampleTimeValid, time: math.NaN()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFakeAudioQueueAPI(t)
+			f.currentTimeStatus, f.currentTimeFlags, f.currentSampleTime = test.status, test.flags, test.time
+			q, err := openNativeWithAPI(Config{DeviceUID: "fake", SampleRate: 16000}, func(int) {}, f.api)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := q.(*darwinNativeQueue)
+			defer d.Dispose()
+			if err := d.Enqueue(0, make([]int16, d.framesPerBuffer)); err != nil {
+				t.Fatal(err)
+			}
+			nativeAudioQueueBufferCallback(d.token, d.queue, d.buffers[0])
+			reset, err := d.ResetIfTimelineExhausted()
+			if err != nil || reset || f.stopCalls != 0 {
+				t.Fatalf("reset=%t err=%v stop calls=%d", reset, err, f.stopCalls)
+			}
+			if err := d.Enqueue(1, []int16{1}); err != nil {
+				t.Fatalf("queue path unavailable after timing observation failure: %v", err)
+			}
+		})
+	}
+}
+
 func TestNativeAudioQueueABI(t *testing.T) {
 	var b audioQueueBuffer
 	if unsafe.Sizeof(audioStreamBasicDescription{}) != 40 || unsafe.Sizeof(b) != 56 || unsafe.Offsetof(b.audioData) != 8 || unsafe.Offsetof(b.audioDataByteSize) != 16 || unsafe.Offsetof(b.packetDescs) != 40 {
 		t.Fatal("AudioQueue ABI mismatch")
+	}
+	var timestamp audioTimeStamp
+	if unsafe.Sizeof(timestamp) != 64 || unsafe.Offsetof(timestamp.flags) != 56 {
+		t.Fatal("AudioTimeStamp ABI mismatch")
 	}
 }
