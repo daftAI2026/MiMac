@@ -172,6 +172,15 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 	defer deadline.Stop()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	// A fully classified recorder can be parked on first sight. Wake on window
+	// creation when the target supports it; the ticker also covers delayed AX data.
+	var notices <-chan ApplicationEvent
+	if watcher, ok := b.probe.(ApplicationVisibilityProbe); ok && stableInterval == 0 {
+		if events, err := watcher.WatchApplication(b.pid); err == nil && events != nil {
+			defer events.Close()
+			notices = events.Events()
+		}
+	}
 	var candidateID uint32
 	var stableSince time.Time
 	for {
@@ -204,10 +213,10 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 			if !eligible(window) {
 				releaseWindows(b.probe, newWindows)
 				candidateID, stableSince = 0, time.Time{}
-			} else if candidateID != window.ID {
+			} else if stableInterval > 0 && candidateID != window.ID {
 				releaseWindows(b.probe, newWindows)
 				candidateID, stableSince = window.ID, time.Now()
-			} else if time.Since(stableSince) >= stableInterval {
+			} else if stableInterval == 0 || time.Since(stableSince) >= stableInterval {
 				lease, outcome, err := b.moveWindow(ctx, window, watchWindowEvents)
 				releaseWindows(b.probe, newWindows)
 				return lease, outcome, err
@@ -223,6 +232,10 @@ func (b *Baseline) suppress(ctx context.Context, eligible func(Window) bool, obs
 		case <-deadline.C:
 			return nil, OutcomeUnchanged, nil
 		case <-ticker.C:
+		case _, open := <-notices:
+			if !open {
+				notices = nil
+			}
 		}
 	}
 }

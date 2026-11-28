@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -168,7 +169,7 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 	if _, exists := a.jobs[frame.Token]; exists {
 		return
 	}
-	// WeType can present its panel while Core is still preparing the input route.
+	// An input method can show its recorder before its audio route is ready.
 	preparing := tool.voicePromptOnPrepare && frame.Phase == bridge.PhasePreparing
 	if a.baseline == nil || (!preparing && frame.Phase != bridge.PhaseCapturing) {
 		return
@@ -187,10 +188,14 @@ func (s *shell) syncVoicePromptPresentation(frame voiceOverlayFrame) {
 		a.jobs = make(map[bridge.SessionToken]*voicePromptPresentationJob)
 	}
 	a.jobs[frame.Token] = job
+	tracePath := audioSessionTracePath()
 	go func(job *voicePromptPresentationJob) {
 		defer close(done)
-		lease, _, _ := baseline.Suppress(searchCtx)
+		lease, outcome, err := baseline.Suppress(searchCtx)
 		job.cancelSearch()
+		if tracePath != "" {
+			appendPrivateTrace(tracePath, audioTraceRecord(time.Now(), os.Getpid(), job.token.Device().Generation(), 0, job.token.ID(), "prompt_"+outcome, err))
+		}
 		if lease == nil {
 			return
 		}

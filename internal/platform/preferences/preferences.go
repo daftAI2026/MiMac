@@ -22,6 +22,7 @@ type State struct {
 	// OnlyShowMiMacVoicePrompt is a global opt-in. Only the selected tool's
 	// registered native presentation adapter can act on it.
 	OnlyShowMiMacVoicePrompt bool
+	VoicePromptTools         string
 	// LiveTextSupported describes the selected tool's interim-text capability.
 	// When false, the UI shows the switch off without changing ShowLiveText.
 	LiveTextSupported bool

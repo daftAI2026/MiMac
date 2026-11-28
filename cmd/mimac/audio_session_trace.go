@@ -13,18 +13,22 @@ import (
 	"mimac.local/mimac/internal/platform/audioroute"
 )
 
-// Called on the host thread at control boundaries, never per PCM block.
+// Resolve the packaged App's data directory on the host thread. Workers can
+// append their fixed-code receipts using the path captured for that session.
+func audioSessionTracePath() string {
+	if !mygo.App.IsPackaged() {
+		return ""
+	}
+	path, _ := hostDataPath("audio-session.log")
+	return path
+}
+
 // Only fixed stage and result codes leave the audio path. A target error may
 // contain text from another application and must not be persisted verbatim.
 func traceAudioSession(generation, press, session uint64, event string, err error) {
-	if !mygo.App.IsPackaged() {
-		return
+	if path := audioSessionTracePath(); path != "" {
+		appendPrivateTrace(path, audioTraceRecord(time.Now(), os.Getpid(), generation, press, session, event, err))
 	}
-	path, pathErr := hostDataPath("audio-session.log")
-	if pathErr != nil {
-		return
-	}
-	appendPrivateTrace(path, audioTraceRecord(time.Now(), os.Getpid(), generation, press, session, event, err))
 }
 
 func audioTraceRecord(at time.Time, pid int, generation, press, session uint64, event string, err error) string {

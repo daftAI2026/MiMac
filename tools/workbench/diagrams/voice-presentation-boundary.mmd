@@ -64,8 +64,8 @@ flowchart TD
     material --> localReady["本次会话的本地提示已显示"]
     dots --> localReady
     localReady --> exclusive["按当前偏好，由已选工具处理自己的录音条"]
-    exclusive --> externalBar["已选工具：豆包输入法"] --> baseline["按下前取得该进程的可见窗；以各自的原生控件特征验证新录音窗"]
-    baseline -->|唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
+    exclusive --> externalBar["已选工具：豆包输入法"] --> baseline["按下前取得可见窗并准备本地面板；本句准备阶段监听新窗，核对原生控件"]
+    baseline -->|首次确认唯一且布局匹配| park["暂移录音条；待原窗收起再复位，关开关时恢复"]
     exclusive -->|微信| wx["本会话预先核对微信进程、编辑器前台和窗口"]
     wx -->|仅有本次新开的录音窗| wxHide["暂时隐藏微信输入法的浮窗"]
     wxHide --> wxRestore["微信自行收起同一录音窗后恢复可见性"]

@@ -291,6 +291,10 @@ func TestVoicePromptSettingOffCancelsWithoutBlockingAndQuitJoinsRestore(t *testi
 
 func TestVoicePromptSuppressionIsRegisteredPerTool(t *testing.T) {
 	tools := builtInVoiceTools()
+	s := &shell{voiceToolsState: voiceToolsState{tools: tools}}
+	if got := s.voicePromptToolNames(); got != "豆包输入法、微信输入法" {
+		t.Fatalf("settings recorder support list = %q", got)
+	}
 	var doubaoTool, wetypeTool *voiceTool
 	for _, tool := range tools {
 		switch tool.id {
@@ -300,8 +304,8 @@ func TestVoicePromptSuppressionIsRegisteredPerTool(t *testing.T) {
 			wetypeTool = tool
 		}
 	}
-	if doubaoTool == nil || doubaoTool.voicePromptSuppressor == nil || doubaoTool.voicePromptBundleID != compatDoubaoBundleID {
-		t.Fatal("verified Doubao adapter has no registered prompt suppressor")
+	if doubaoTool == nil || doubaoTool.voicePromptSuppressor == nil || doubaoTool.voicePromptBundleID != compatDoubaoBundleID || !doubaoTool.voicePromptOnPrepare {
+		t.Fatal("Doubao must observe its own recorder when the local indicator appears")
 	}
 	if wetypeTool == nil || wetypeTool.audioRouteFactory == nil || !wetypeTool.releaseReady {
 		t.Fatal("WeType dictation route must remain available")

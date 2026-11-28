@@ -44,6 +44,28 @@ func TestCaptureHiddenBaselineRequiresVisibleEmptyAppAndFocusedEditor(t *testing
 	}
 }
 
+// A created-window wake can arrive before AX finishes populating the element.
+func TestPositionLeaseWakesForFullyClassifiedRecorder(t *testing.T) {
+	probe := newVisibilityTestProbe()
+	baseline, err := CaptureBaseline(visibilityTestPID, func() error { return nil }, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.putWindow(visibilityTestWindowRecord(true), true)
+	probe.incompleteFirstAXRead = true
+	probe.sendApplicationEvent(ApplicationEventWindowCreated)
+	lease, outcome, err := baseline.Suppress(context.Background(), visibilityTestEligible, time.Second, time.Hour, 0)
+	if err != nil || outcome != OutcomeSuppressed || lease == nil {
+		t.Fatalf("notification replay: outcome=%v err=%v", outcome, err)
+	}
+	if err := lease.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.events.closeCount != 1 || probe.hideWrites != 0 {
+		t.Fatalf("discovery observer closed %d times; app hidden %d times", probe.events.closeCount, probe.hideWrites)
+	}
+}
+
 func TestHiddenLeaseWaitsForAXMatchAndSuccessfulDismissalRead(t *testing.T) {
 	probe := newVisibilityTestProbe()
 	baseline := captureVisibilityTestBaseline(t, probe)

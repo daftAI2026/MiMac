@@ -97,8 +97,8 @@ func TestRecordingBarPresentationSuppressesOnlyOneNewSemanticWindow(t *testing.T
 	if got := probe.positionOf(700); got != frame.origin {
 		t.Fatalf("restored position = %+v, want %+v", got, frame.origin)
 	}
-	if got := probe.counts(); got.retained != 1 || got.released != 3 {
-		t.Fatalf("AX element ownership = %+v, want one lease retain and three releases", got)
+	if got := probe.counts(); got.retained != 1 || got.released != 2 {
+		t.Fatalf("AX element ownership = %+v, want releases for the matched element and retained lease", got)
 	}
 }
 
@@ -146,6 +146,24 @@ func TestRecordingBarPresentationExcludesExistingAndAmbiguousWindows(t *testing.
 				t.Fatalf("AX position writes = %d, want %d", got, test.wantWrites)
 			}
 		})
+	}
+}
+
+func TestRecordingBarCanParkOnFirstVerifiedObservation(t *testing.T) {
+	const pid = int32(42)
+	probe := newFakePresentationProbe()
+	baseline, err := captureRecordingBarBaseline(pid, func() error { return nil }, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.add(testRecordingWindow(11, pid, presentationPoint{x: 12, y: 13}, true))
+	// No second poll can occur in the discovery window.
+	lease, outcome, err := suppressDoubaoForTest(baseline, context.Background(), 35*time.Millisecond, time.Hour, 0)
+	if err != nil || outcome != OutcomeSuppressed || lease == nil {
+		t.Fatalf("first verified observation: outcome=%v err=%v", outcome, err)
+	}
+	if err := lease.Restore(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

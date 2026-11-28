@@ -30,9 +30,8 @@ const (
 type RecordingBarBaseline struct{ inner *windowlease.Baseline }
 
 const (
-	presentationObserveLimit   = 800 * time.Millisecond
-	presentationPollInterval   = 20 * time.Millisecond
-	presentationStableInterval = 60 * time.Millisecond
+	presentationObserveLimit = 800 * time.Millisecond
+	presentationPollInterval = 20 * time.Millisecond
 )
 
 // CaptureRecordingBarBaseline snapshots IDs from the exact, already-running
@@ -54,7 +53,7 @@ func (b *RecordingBarBaseline) Suppress(ctx context.Context) (*Suppression, Outc
 	if b == nil || b.inner == nil {
 		return nil, OutcomeUnavailable, ErrPresentationUnavailable
 	}
-	return b.inner.Suppress(ctx, doubaoRecordingWindow, presentationObserveLimit, presentationPollInterval, presentationStableInterval)
+	return b.inner.Suppress(ctx, doubaoRecordingWindow, presentationObserveLimit, presentationPollInterval, 0)
 }
 
 func doubaoRecordingWindow(window windowlease.Window) bool {

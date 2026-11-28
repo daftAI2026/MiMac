@@ -18,6 +18,7 @@ private struct PreferencesState: Decodable {
     var LiveTextSupported: Bool? = nil
     var LiveTextStatus: String? = nil
     var OnlyShowMiMacVoicePrompt = false
+    var VoicePromptTools: String? = nil
     var DotAtBottom = false
     var Appearance = "system"
     var Dark = false
@@ -186,9 +187,11 @@ private struct SettingsForm: View {
                     Text("实验室").font(.system(size: state.BodySize, weight: .semibold))
                 } footer: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("独占提示支持豆包输入法")
-                            .font(.system(size: state.CaptionSize))
-                            .accessibilityIdentifier("voice-prompt-suppression-status")
+                        if let tools = state.VoicePromptTools, !tools.isEmpty {
+                            Text("可隐藏\(tools)的录音条")
+                                .font(.system(size: state.CaptionSize))
+                                .accessibilityIdentifier("voice-prompt-suppression-status")
+                        }
                         if state.VoicePresentation == VoicePresentationChoice.dotBar.rawValue,
                            let status = state.LiveTextStatus, !status.isEmpty {
                             Text(status)

@@ -5,6 +5,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	nativeprefs "mimac.local/mimac/internal/platform/preferences"
+	"strings"
 )
 
 func (s *shell) nativePreferencesState() nativeprefs.State {
@@ -28,10 +29,21 @@ func (s *shell) nativePreferencesState() nativeprefs.State {
 		Login: p.loginEnabled, Dock: p.value.ShowInDock, VoicePresentation: presentationIndex,
 		ShowLiveText: p.value.ShowLiveText, LiveTextSupported: liveTextSupported, LiveTextStatus: liveTextStatus,
 		OnlyShowMiMacVoicePrompt: p.value.OnlyShowMiMacVoicePrompt,
+		VoicePromptTools:         s.voicePromptToolNames(),
 		DotAtBottom:              p.value.DotAtBottom, Appearance: string(p.value.Appearance), Dark: mygo.Theme.IsDark(),
 		Disabled: p.loadFailed, Error: errorText, TextSize: p.value.TextSize,
 		BodySize: float64(a.fonts.body), CaptionSize: float64(a.fonts.caption), Permissions: generalPermissionRows(permissions),
 	}
+}
+
+func (s *shell) voicePromptToolNames() string {
+	var names []string
+	for _, tool := range s.tools {
+		if tool != nil && s.voicePluginVisible(tool) && tool.voicePromptSuppressor != nil && tool.voicePromptBundleID != "" {
+			names = append(names, tool.name)
+		}
+	}
+	return strings.Join(names, "、")
 }
 
 func generalPermissionRows(snapshot permissionGuideSnapshot) []nativeprefs.PermissionRow {
