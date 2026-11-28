@@ -75,6 +75,14 @@ Apple 本机识别和 Hex 本机识别省略 `--audio-backend` 与 `--target-pid
 
 该文件按当前应用配置目录隔离，只写阶段和结果代号，达到 1 MiB 后在下一次写入时截断。普通启动即可保留这些事件。每个音频块的投递计数或识别文字仍需对应的现场验收证据。
 
+离线按 press 核对可用 `script/inspect_audio_session_trace.py`。必须指定单个 `audio-session.log`、PID 和含时区的 UTC 起止时间，避免把进程重开或其他 PID 的事件拼在一起：
+
+```sh
+python3 script/inspect_audio_session_trace.py --trace "$HOME/Library/Application Support/MiMac/audio-session.log" --pid "$PID" --start "$START_UTC" --end "$END_UTC"
+```
+
+摘要只读取该日志的八个固定字段，不打开音频或听写正文。只有 `press` 记录里的非零 session 才作为该 press 接纳的 session；`press_during_session` 是新 press，其 `session` 仅作旧会话引用，不接收旧句的 `prepared`/`drained`/`failed` 回执。回执按 PID、generation 和接纳的 session 精确关联。范围内没有终态时标为 `unknown`，不会从释放或其他事件推断完成。`failure_count` 是失败 press 数，不是错误日志行数。可选 `--voice-report PATH` 用既有 `inspect_voice_report.py` 单独摘要本地 I/O 计数；报告没有 PID，因此会明确保持未关联，不按可重复的 session 编号合并。退出码 1 表示有失败、未知终态或未匹配生命周期事件，2 表示输入无效。
+
 ### Verify the ordinary-launch audio route
 
 A session driven by an explicit backend argument verifies only that diagnostic launch. Check the ordinary launch with the same packaged identity, current tool, and installed audio endpoint before a Beta handoff. With a missing backend sidecar, a verified compatibility endpoint and a supported current tool select the existing route automatically. A saved or one-run empty value preserves shortcut-only mode. The independent restart verifier needs the expected automatic route for the fixed test machine. Confirm real source, target consumption and text in the live acceptance flow.
