@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 	"mimac.local/mimac/internal/audiosession"
+	"mimac.local/mimac/internal/bridge"
 	"mimac.local/mimac/internal/platform/audioroute"
 )
 
@@ -29,6 +30,29 @@ func traceAudioSession(generation, press, session uint64, event string, err erro
 	if path := audioSessionTracePath(); path != "" {
 		appendPrivateTrace(path, audioTraceRecord(time.Now(), os.Getpid(), generation, press, session, event, err))
 	}
+}
+
+// Write the accepted binding with the existing press receipt. It is the plan
+// adopted by this particular gesture, even if the user later changes tools.
+func traceVoiceEdge(press bridge.PressToken, state bridge.Snapshot, event string, err error) {
+	path := audioSessionTracePath()
+	if path == "" {
+		return
+	}
+	record := audioTraceRecord(time.Now(), os.Getpid(), press.Device().Generation(), press.PressID(), state.Session.Token.ID(), event, err)
+	if event == "press" && state.HasSession && state.Session.Press == press {
+		switch state.Session.Binding.Policy() {
+		case bridge.PolicyExactEdge:
+			record += " end_policy=release_edge"
+		case bridge.PolicyAfterDrain:
+			record += " end_policy=release_after_drain"
+		case bridge.PolicyToggle:
+			record += " end_policy=toggle"
+		case bridge.PolicyAudio:
+			record += " end_policy=audio_only"
+		}
+	}
+	appendPrivateTrace(path, record)
 }
 
 func audioTraceRecord(at time.Time, pid int, generation, press, session uint64, event string, err error) string {

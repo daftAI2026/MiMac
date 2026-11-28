@@ -137,7 +137,7 @@ func (d *deviceCoordinator) acceptWithRecorderIsolation(event devices.InputEvent
 			case state.Session.Press != edge.Press:
 				eventName = "press_during_session"
 			}
-			traceAudioSession(edge.Press.Device().Generation(), edge.Press.PressID(), state.Session.Token.ID(), eventName, stepErr)
+			traceVoiceEdge(edge.Press, state, eventName, stepErr)
 		}
 		eventErr = errors.Join(eventErr, stepErr)
 	}
