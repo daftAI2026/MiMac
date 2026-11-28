@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"mimac.local/mimac/internal/adapters/xiaomi/atvv"
 )
 
 func TestAudioTraceRecordRedactsTargetPayload(t *testing.T) {
@@ -14,6 +16,9 @@ func TestAudioTraceRecordRedactsTargetPayload(t *testing.T) {
 		want string
 	}{
 		{fmt.Errorf("example dictated text: %w", errCompatReceiverStopped), "target_stopped"},
+		{fmt.Errorf("private packet detail: %w", atvv.ErrAudioBeforeStart), "source_audio_before_start"},
+		{fmt.Errorf("private packet detail: %w", atvv.ErrAudioAfterStop), "source_audio_after_stop"},
+		{fmt.Errorf("private packet detail: %w", atvv.ErrUnexpectedStop), "source_stop_without_active_stream"},
 		{errors.New("private external payload"), "error"},
 	} {
 		got := audioTraceRecord(at, 42, 7, 3, 2, "failed", test.err)

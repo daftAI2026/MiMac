@@ -57,5 +57,10 @@ flowchart LR
     ordinaryAudio["日用启动：缺少后端配置时，已验证的兼容端点与受支持的当前工具启用现有 PCM 路由"] --> tool
     explicitAudio["显式关闭保留快捷键路径"] -.-> resolve
 
-    drain --> rearm["同代际匹配的会话完成后恢复一次自动音源重建机会"]
+    drain --> completion["同一会话的终止 Completion
+携带 Source.Read 曾返回非空 PCM 的回执"]
+    runtime -.->|失败且会话已读非空 PCM| completion
+    completion --> rearm{"会话 token、路由连接与代际仍匹配？"}
+    rearm -->|是：仅重置一次预算| recovery["后续源故障可触发一次有界音源重建"]
+    rearm -->|否：未读 PCM、过期或清理失败| spent["预算保持已用；不自动循环"]
     wait -.-> journal["宿主日志按代际、按压及会话记录读端等待、失败阶段与恢复"]

@@ -191,6 +191,7 @@ func TestLiveAudioRecoveryLatchRearmsOnlyAfterSuccessfulAudioDrain(t *testing.T)
 			}
 			waitXiaomiRoute(t, connection.Ready)
 			s.liveAudio.connection = connection
+			s.audioSession.connection = connection
 			s.liveAudio.recoveryAttempted = true
 
 			device, err := bridge.NewDevice("synthetic-source", 7)
@@ -226,6 +227,7 @@ func TestLiveAudioRecoveryLatchRearmsOnlyAfterSuccessfulAudioDrain(t *testing.T)
 			}
 			runHostTask(t, tasks) // Prepared opens the Core gate, but is not a completed session.
 			waitHostSignal(t, source.reading)
+			source.samples <- []int16{3, -3, 9}
 			if !s.liveAudio.recoveryAttempted {
 				t.Fatal("route readiness or SourcePrepared prematurely rearmed recovery")
 			}

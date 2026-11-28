@@ -191,8 +191,9 @@ func (s *shell) watchLiveAudio(connection *liveAudioConnection) {
 }
 
 // recoverFailedLiveAudio rebuilds only an explicitly faulted Source, through
-// the existing audio-session owner. One attempt is allowed between successful
-// audio sessions; the same persistent failure cannot create a retry loop.
+// the existing audio-session owner. One attempt is allowed until the rebuilt
+// source returns PCM in a matching session; a route that fails before producing
+// audio cannot rearm itself into an unattended retry loop.
 func (s *shell) recoverFailedLiveAudio(connection *liveAudioConnection) bool {
 	if s == nil || connection == nil || s.liveAudio.connection != connection || s.liveAudio.recoveryAttempted ||
 		s.liveAudio.retiring || s.audioSession == nil || s.plugins == nil || !s.plugins.Active(audioSessionPlugin) ||

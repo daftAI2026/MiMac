@@ -341,8 +341,10 @@ private final class ATVVTransport: NSObject, CBCentralManagerDelegate, CBPeriphe
     private func observeControlBoundaries(_ data: Data) {
         guard let opcode = data.first else { return }
         if opcode == 0x00 {
-            if activeStreamID != nil && !remoteStopObserved {
-                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes)")
+            if let streamID = activeStreamID, !remoteStopObserved {
+                let reason = data.dropFirst().first.map(Int.init) ?? -1
+                let hostCloseSent = closeSentForStream == streamID
+                Self.logger.notice("Remote audio stopped connection=\(self.handle) received_bytes=\(self.audioBytes) stop_reason=\(reason) host_close_sent=\(hostCloseSent)")
             }
             remoteStopObserved = true
             return

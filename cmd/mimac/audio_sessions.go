@@ -30,6 +30,7 @@ type audioSourceFactory func(context.Context, bridge.SessionToken) (audiosession
 type audioSessionHost struct {
 	runtime          *audiosession.Runtime
 	deliver          func(bridge.SessionToken, string) error
+	connection       *liveAudioConnection
 	cancel           context.CancelFunc
 	closeResources   func(context.Context) error
 	resourcesClosed  atomic.Bool
@@ -120,7 +121,10 @@ func (s *shell) audioSessionManifest() pluginrt.Manifest {
 			return func() error { return nil }, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		host := &audioSessionHost{runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose, deliver: s.audioResourcesDeliver}
+		host := &audioSessionHost{
+			runtime: runner, cancel: cancel, closeResources: s.audioResourcesClose,
+			deliver: s.audioResourcesDeliver, connection: s.liveAudio.connection,
+		}
 		s.audioSession = host
 		s.coordinator.audio = runner
 		// Activating a verified audio factory must also select Core's audio
@@ -273,13 +277,14 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 				}
 				if connection := s.liveAudio.connection; connection != nil {
 					// A ready route does not rearm recovery. Only a matching,
-					// successfully drained audio session proves that the rebuilt
-					// source worked; a later independent source failure gets one
-					// fresh recovery attempt.
-					if s.liveAudio.recoveryAttempted && successfulAudioDrain && stepErr == nil && !after.HasSession && after.Generation == before.Generation &&
-						s.liveAudio.generation == before.Generation && connection.sourceFailure() == nil {
+					// source PCM block proves that the rebuilt source has worked.
+					// This is not a sink or target acceptance acknowledgement. A
+					// route that fails before producing PCM keeps its allowance spent.
+					if s.liveAudio.recoveryAttempted && sourcePCMReceiptMatchesCurrentLiveSession(
+						completion, before, after, host.connection, connection, s.liveAudio.generation,
+					) {
 						s.liveAudio.recoveryAttempted = false
-						traceAudioSession(before.Generation, 0, before.Session.Token.ID(), "source_recovery_rearmed", nil)
+						traceAudioSession(before.Generation, 0, before.Session.Token.ID(), "source_recovery_rearmed", completion.Err)
 					}
 					s.recoverFailedLiveAudio(connection)
 				}
@@ -288,6 +293,20 @@ func (s *shell) receiveAudioCompletions(ctx context.Context, host *audioSessionH
 			})
 		}
 	}
+}
+
+func sourcePCMReceiptMatchesCurrentLiveSession(
+	completion audiosession.Completion,
+	before, after bridge.Snapshot,
+	hostConnection, currentConnection *liveAudioConnection,
+	liveGeneration uint64,
+) bool {
+	name, token := bridge.AudioEventIdentity(completion.Event)
+	terminal := name == "failed" || name == "drained"
+	return completion.SourcePCMRead && !completion.CleanupFailed && terminal &&
+		before.HasSession && before.Session.Token == token && !after.HasSession &&
+		before.Generation == after.Generation && liveGeneration == before.Generation &&
+		hostConnection != nil && hostConnection == currentConnection
 }
 
 // deferAudioQuit leaves the MyGo loop alive while a worker releases native

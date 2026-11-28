@@ -55,8 +55,12 @@ func audioTraceResult(err error) string {
 		return "remote_disconnected"
 	case errors.Is(err, atvv.ErrUnexpectedStream):
 		return "source_second_start"
-	case errors.Is(err, atvv.ErrAudioBeforeStart), errors.Is(err, atvv.ErrAudioAfterStop), errors.Is(err, atvv.ErrUnexpectedStop):
-		return "source_event_order"
+	case errors.Is(err, atvv.ErrAudioBeforeStart):
+		return "source_audio_before_start"
+	case errors.Is(err, atvv.ErrAudioAfterStop):
+		return "source_audio_after_stop"
+	case errors.Is(err, atvv.ErrUnexpectedStop):
+		return "source_stop_without_active_stream"
 	case errors.Is(err, atvv.ErrTransportFault):
 		return "source_transport"
 	case errors.Is(err, atvv.ErrSourceQueueFull):

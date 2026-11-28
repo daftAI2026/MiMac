@@ -551,6 +551,9 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := waitCompletion(t, runtime)
+	if prepared.SourcePCMRead {
+		t.Fatal("SourcePrepared claimed PCM before the session read any samples")
+	}
 	openEffects := applyCompletion(t, core, prepared)
 	waitSignal(t, source.readStarted)
 	select {
@@ -582,6 +585,9 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 	}
 	applySourceEffects(t, runtime, ended)
 	drained := waitCompletion(t, runtime)
+	if !drained.SourcePCMRead {
+		t.Fatal("drained completion lost the source PCM read receipt")
+	}
 	cleanup := applyCompletion(t, core, drained)
 	applySourceEffects(t, runtime, cleanup)
 	ctx, cancel := context.WithTimeout(context.Background(), audioSessionTestTimeout)
@@ -589,6 +595,52 @@ func TestRuntimeWaitsForOpenGateThenForwardsBoundedPCM(t *testing.T) {
 	if err := runtime.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRuntimeFailureCompletionCarriesSourcePCMReadBeforeSinkError(t *testing.T) {
+	source, sink := newSourceStub(), newSinkStub()
+	sink.defaultWriteErr = errors.New("target stopped")
+	runtime := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+		return testResources(source, sink), nil
+	})
+	core, device := newCoreForSessionTest(t, "audio-session-pcm-read-receipt")
+	_, _, prepare := beginVoiceSession(t, core, device, 1)
+	if err := runtime.Submit(prepare); err != nil {
+		t.Fatal(err)
+	}
+	prepared := waitCompletion(t, runtime)
+	if prepared.SourcePCMRead {
+		t.Fatal("prepared completion claimed PCM before read")
+	}
+	applySourceEffects(t, runtime, applyCompletion(t, core, prepared))
+	waitSignal(t, source.readStarted)
+	source.reads <- readResult{pcm: []int16{4, -7, 11}}
+	failed := waitCompletion(t, runtime)
+	if !errors.Is(failed.Err, sink.defaultWriteErr) || !failed.SourcePCMRead {
+		t.Fatalf("sink failure receipt = %#v, want source PCM read and target stopped", failed)
+	}
+	applyExpectedFailure(t, core, failed)
+}
+
+func TestRuntimeZeroLengthReadDoesNotClaimSourcePCM(t *testing.T) {
+	source, sink := newSourceStub(), newSinkStub()
+	runtime := newRuntimeForTest(t, func(context.Context, bridge.SessionToken) (Resources, error) {
+		return testResources(source, sink), nil
+	})
+	core, device := newCoreForSessionTest(t, "audio-session-empty-read-receipt")
+	_, _, prepare := beginVoiceSession(t, core, device, 1)
+	if err := runtime.Submit(prepare); err != nil {
+		t.Fatal(err)
+	}
+	prepared := waitCompletion(t, runtime)
+	applySourceEffects(t, runtime, applyCompletion(t, core, prepared))
+	waitSignal(t, source.readStarted)
+	source.reads <- readResult{}
+	failed := waitCompletion(t, runtime)
+	if failed.SourcePCMRead {
+		t.Fatalf("zero-length source read claimed PCM: %#v", failed)
+	}
+	applyExpectedFailure(t, core, failed)
 }
 
 func TestRuntimeReportsDrainedOnlyAfterReadEOFAndSinkDrain(t *testing.T) {

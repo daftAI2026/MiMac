@@ -62,6 +62,7 @@ func (r *Runtime) recordInputLevel(s *resource, pcm []int16) {
 	defer r.mu.Unlock()
 	if !r.closed && r.active == s && !s.finished && s.ctx.Err() == nil {
 		s.inputLevel = level
+		s.sourcePCMRead = true
 	}
 }
 

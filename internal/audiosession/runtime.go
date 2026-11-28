@@ -89,6 +89,10 @@ type Completion struct {
 	Transcript    *Transcript
 	Err           error
 	CleanupFailed bool
+	// SourcePCMRead is true after this session's Source returned at least one
+	// nonempty PCM block. It does not imply that the Sink accepted the block or
+	// that a target consumed it.
+	SourcePCMRead bool
 }
 
 var (
@@ -118,27 +122,28 @@ type Runtime struct {
 }
 
 type resource struct {
-	token        bridge.SessionToken
-	ctx          context.Context
-	cancel       context.CancelFunc
-	gate         chan struct{}
-	ready        chan struct{}
-	done         chan struct{}
-	resources    Resources // Immutable until the Read/Stop tasks have finished.
-	gateOpened   bool
-	stopStarted  bool
-	stopDone     chan struct{}
-	stopCtx      context.Context
-	stopCancel   context.CancelFunc
-	stopWatch    func() bool
-	sourceEOF    bool
-	stopReturned bool
-	tailSamples  int
-	cause        error
-	terminalSent bool // Protected by Runtime.mu; arbitrates Core terminal events.
-	finished     bool
-	cleanupErr   error
-	inputLevel   InputLevel // Protected by Runtime.mu; never contains PCM.
+	token         bridge.SessionToken
+	ctx           context.Context
+	cancel        context.CancelFunc
+	gate          chan struct{}
+	ready         chan struct{}
+	done          chan struct{}
+	resources     Resources // Immutable until the Read/Stop tasks have finished.
+	gateOpened    bool
+	stopStarted   bool
+	stopDone      chan struct{}
+	stopCtx       context.Context
+	stopCancel    context.CancelFunc
+	stopWatch     func() bool
+	sourceEOF     bool
+	stopReturned  bool
+	tailSamples   int
+	sourcePCMRead bool // Protected by Runtime.mu; carries one fact to Completion.
+	cause         error
+	terminalSent  bool // Protected by Runtime.mu; arbitrates Core terminal events.
+	finished      bool
+	cleanupErr    error
+	inputLevel    InputLevel // Protected by Runtime.mu; never contains PCM.
 }
 
 type receiverWatch struct {
@@ -270,7 +275,7 @@ func (r *Runtime) claimFailureLocked(s *resource) (Completion, bool) {
 	}
 	s.terminalSent = true
 	r.stopDeadlineLocked(s)
-	return Completion{Event: bridge.SourceFailed(s.token), Err: s.cause}, true
+	return Completion{Event: bridge.SourceFailed(s.token), Err: s.cause, SourcePCMRead: s.sourcePCMRead}, true
 }
 
 func (r *Runtime) stopDeadlineLocked(s *resource) {
@@ -587,6 +592,7 @@ func (r *Runtime) drainEOF(s *resource, watcher *receiverWatch) error {
 // cannot win merely because context.AfterFunc has not run yet.
 func (r *Runtime) claimDrain(s *resource, stopCtx context.Context, completion Completion) bool {
 	r.mu.Lock()
+	completion.SourcePCMRead = s.sourcePCMRead
 	if s.finished || s.terminalSent {
 		r.mu.Unlock()
 		return false
