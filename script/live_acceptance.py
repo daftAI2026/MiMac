@@ -166,6 +166,23 @@ def route_ready(log):
     return bool(events and "ready=true error=<nil>" in events[-1])
 
 
+def prepare_fixture(field, pid, source):
+    ready = command(field, "prepare")
+    if (ready.get("pid") == pid and ready.get("window_title") == "MiMac 语音验收"
+            and not ready.get("has_marked_text") and not ready.get("focused")):
+        # AppKit can publish the new frontmost PID before the new app has a
+        # key window. Observe our own window settling before reading its receipt.
+        def settled():
+            frame = command(field, "snapshot")
+            if frame.get("pid") != pid or frame.get("window_title") != "MiMac 语音验收":
+                raise RuntimeError("fixture identity changed during activation")
+            return frame.get("focused") and frame.get("app_active") and frame.get("frontmost_pid") == pid
+        wait_for(settled, 3)
+        ready = command(field, "prepare")
+    check_fixture(ready, pid, source, prepared=True)
+    return ready
+
+
 def validate_audio_target(value, pid, bundle_id):
     if value.get("reported_pid") != pid or value.get("running_input_status") != 0:
         raise RuntimeError("target audio identity/status is unverified")
@@ -390,8 +407,7 @@ def prepare(args):
         state.update(fixture_pid=fixture_pid)
         write(directory / "state.json", state)
         wait_for(lambda: (field / "pid").exists())
-        ready = command(field, "prepare")
-        check_fixture(ready, fixture_pid, expected_source, prepared=True)
+        ready = prepare_fixture(field, fixture_pid, expected_source)
         if not route_ready((directory / "stderr.log").read_text()):
             raise RuntimeError("audio route changed during fixture preparation")
         state.update(fixture_pid=fixture_pid, field=str(field), baseline_text=ready["text"])

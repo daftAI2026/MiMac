@@ -228,6 +228,19 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 check_fixture(candidate, 42, self.source, prepared=True)
 
+    def test_newly_frontmost_fixture_waits_for_appkit_key_window(self):
+        pending = {**self.field, "focused": False, "app_active": False, "action_ready": False}
+        settled = {**self.field, "action_ready": None}
+        with patch.object(live_acceptance, "command", side_effect=[pending, settled, self.field]) as rpc:
+            self.assertEqual(live_acceptance.prepare_fixture("field", 42, self.source), self.field)
+        self.assertEqual([c.args[1] for c in rpc.call_args_list], ["prepare", "snapshot", "prepare"])
+
+    def test_fixture_settling_rejects_unrelated_process(self):
+        pending = {**self.field, "focused": False, "app_active": False, "action_ready": False}
+        with patch.object(live_acceptance, "command", side_effect=[pending, {**self.field, "pid": 43}]):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                live_acceptance.prepare_fixture("field", 42, self.source)
+
     def test_target_identity_is_required_even_when_idle(self):
         idle = {**self.target, "running_input": 0, "input_devices": []}
         validate_audio_target(idle, 99, self.target["bundle_id"])
