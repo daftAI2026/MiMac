@@ -6,6 +6,8 @@ import "context"
 
 type unsupportedNative struct{}
 
+func WatchMarkedText(context.Context, func(string)) {}
+
 func defaultNative() native { return unsupportedNative{} }
 
 func hasAccessibilityAccess() bool       { return false }

@@ -40,6 +40,10 @@ type nativeAPI struct {
 
 	createApplication           func(int32) uintptr
 	copyAttributeValue          func(uintptr, uintptr, *uintptr) int32
+	setMessagingTimeout         func(uintptr, float32) int32
+	cfStringGetTypeID           func() uintptr
+	cfStringGetLength           func(uintptr) int64
+	cfStringGetCharacters       func(uintptr, nativeRange, *uint16)
 	copyParameterizedNames      func(uintptr, *uintptr) int32
 	copyParameterizedValue      func(uintptr, uintptr, uintptr, *uintptr) int32
 	getPID                      func(uintptr, *int32) int32
@@ -439,6 +443,10 @@ func loadNativeAPI() (*nativeAPI, error) {
 		}{
 			{1, &api.createApplication, "AXUIElementCreateApplication"},
 			{1, &api.copyAttributeValue, "AXUIElementCopyAttributeValue"},
+			{1, &api.setMessagingTimeout, "AXUIElementSetMessagingTimeout"},
+			{0, &api.cfStringGetTypeID, "CFStringGetTypeID"},
+			{0, &api.cfStringGetLength, "CFStringGetLength"},
+			{0, &api.cfStringGetCharacters, "CFStringGetCharacters"},
 			{1, &api.copyParameterizedNames, "AXUIElementCopyParameterizedAttributeNames"},
 			{1, &api.copyParameterizedValue, "AXUIElementCopyParameterizedAttributeValue"},
 			{1, &api.getPID, "AXUIElementGetPid"},
